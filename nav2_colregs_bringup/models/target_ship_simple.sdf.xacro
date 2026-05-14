@@ -1,0 +1,134 @@
+<?xml version="1.0"?>
+<sdf version="1.9" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="namespace" default="target_ship"/>
+
+  <model name="target_ship">
+    <pose>0 0 0.05 0 0 0</pose>
+
+    <link name="base_link">
+      <inertial>
+        <mass>12.0</mass>
+        <inertia>
+          <ixx>0.25</ixx>
+          <iyy>0.25</iyy>
+          <izz>0.45</izz>
+        </inertia>
+      </inertial>
+      <collision name="base_collision">
+        <geometry>
+          <box>
+            <size>0.9 0.5 0.2</size>
+          </box>
+        </geometry>
+      </collision>
+      <visual name="base_visual">
+        <geometry>
+          <box>
+            <size>0.9 0.5 0.2</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.85 0.35 0.15 1.0</ambient>
+          <diffuse>0.90 0.40 0.20 1.0</diffuse>
+        </material>
+      </visual>
+    </link>
+
+    <link name="left_wheel">
+      <pose>0 0.24 -0.02 1.5708 0 0</pose>
+      <inertial>
+        <mass>0.3</mass>
+        <inertia>
+          <ixx>0.002</ixx>
+          <iyy>0.002</iyy>
+          <izz>0.002</izz>
+        </inertia>
+      </inertial>
+      <collision name="left_wheel_collision">
+        <geometry>
+          <cylinder>
+            <radius>0.1</radius>
+            <length>0.06</length>
+          </cylinder>
+        </geometry>
+      </collision>
+      <visual name="left_wheel_visual">
+        <geometry>
+          <cylinder>
+            <radius>0.1</radius>
+            <length>0.06</length>
+          </cylinder>
+        </geometry>
+      </visual>
+    </link>
+
+    <link name="right_wheel">
+      <pose>0 -0.24 -0.02 1.5708 0 0</pose>
+      <inertial>
+        <mass>0.3</mass>
+        <inertia>
+          <ixx>0.002</ixx>
+          <iyy>0.002</iyy>
+          <izz>0.002</izz>
+        </inertia>
+      </inertial>
+      <collision name="right_wheel_collision">
+        <geometry>
+          <cylinder>
+            <radius>0.1</radius>
+            <length>0.06</length>
+          </cylinder>
+        </geometry>
+      </collision>
+      <visual name="right_wheel_visual">
+        <geometry>
+          <cylinder>
+            <radius>0.1</radius>
+            <length>0.06</length>
+          </cylinder>
+        </geometry>
+      </visual>
+    </link>
+
+    <joint name="left_wheel_joint" type="revolute">
+      <parent>base_link</parent>
+      <child>left_wheel</child>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <lower>-1e16</lower>
+          <upper>1e16</upper>
+        </limit>
+      </axis>
+    </joint>
+
+    <joint name="right_wheel_joint" type="revolute">
+      <parent>base_link</parent>
+      <child>right_wheel</child>
+      <axis>
+        <xyz>0 0 1</xyz>
+        <limit>
+          <lower>-1e16</lower>
+          <upper>1e16</upper>
+        </limit>
+      </axis>
+    </joint>
+
+    <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+      <left_joint>left_wheel_joint</left_joint>
+      <right_joint>right_wheel_joint</right_joint>
+      <wheel_separation>0.48</wheel_separation>
+      <wheel_radius>0.1</wheel_radius>
+      <max_linear_velocity>1.0</max_linear_velocity>
+      <min_linear_velocity>-1.0</min_linear_velocity>
+      <max_angular_velocity>1.0</max_angular_velocity>
+      <min_angular_velocity>-1.0</min_angular_velocity>
+      <topic>/$(arg namespace)/cmd_vel</topic>
+      <odom_topic>/$(arg namespace)/odom</odom_topic>
+      <tf_topic>/$(arg namespace)/tf</tf_topic>
+      <frame_id>odom</frame_id>
+      <child_frame_id>base_link</child_frame_id>
+      <odom_publish_frequency>30</odom_publish_frequency>
+    </plugin>
+  </model>
+</sdf>

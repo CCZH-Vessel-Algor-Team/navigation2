@@ -1,0 +1,28 @@
+vector_object_server:
+  ros__parameters:
+    map_topic: "/keepout_filter_mask"
+    global_frame_id: "map"
+    enforce_global_frame_id: false
+    transform_tolerance: 0.1
+    resolution: 0.05
+    width: 40.0
+    height: 40.0
+    origin_x: -20.0
+    origin_y: -20.0
+    default_value: 0
+    trigger_costmap_clear_on_shape_update: true
+    update_frequency: 5.0
+    shapes: ["Poly", "Circle"]
+    Poly:
+      type: "polygon"
+      frame_id: "map"
+      closed: true
+      value: 100
+      points: [2.0, -1.0, 4.0, -1.0, 4.0, 1.0, 2.0, 1.0]
+    Circle:
+      type: "circle"
+      frame_id: "ts_virtual_base_link"
+      fill: true
+      value: 100
+      center: [0.0, 0.0]
+      radius: 0.6
