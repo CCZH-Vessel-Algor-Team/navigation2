@@ -1,152 +1,141 @@
-# Nav2
-[![GitHub Workflow Status](https://github.com/ros-navigation/navigation2/actions/workflows/update_ci_image.yaml/badge.svg)](https://github.com/ros-navigation/navigation2/actions/workflows/update_ci_image.yaml)
-[![codecov](https://codecov.io/gh/ros-navigation/navigation2/branch/main/graph/badge.svg?token=S3iRmypwlg)](https://codecov.io/gh/ros-navigation/navigation2)
-[![Build Status](https://circleci.com/gh/ros-navigation/navigation2/tree/main.svg?style=svg)](https://circleci.com/gh/ros-navigation/navigation2/tree/main)
+# navigation2（Jazzy + COLREGS 扩展）
 
-<p align="center">
-  <img height="300" src="doc/nav2_logo.png" />
-</p>
+本仓库基于 `jazzy` 主干，新增了面向 COLREGS 场景的独立功能包与启动入口。  
+与官方 `navigation2` 相比，核心差异是新增了目标船（TS）仿真链路、动态 keepout 掩码链路和配套消息/服务定义。
 
-For detailed instructions on how to:
-- [Getting Started](https://docs.nav2.org/getting_started/index.html)
-- [Concepts](https://docs.nav2.org/concepts/index.html)
-- [Build](https://docs.nav2.org/development_guides/build_docs/index.html#build)
-- [Install](https://docs.nav2.org/development_guides/build_docs/index.html#install)
-- [General Tutorials](https://docs.nav2.org/tutorials/index.html) and [Algorithm Developer Tutorials](https://docs.nav2.org/plugin_tutorials/index.html)
-- [Configure](https://docs.nav2.org/configuration/index.html)
-- [Navigation Plugins](https://docs.nav2.org/plugins/index.html)
-- [Migration Guides](https://docs.nav2.org/migration/index.html)
-- [Container Images for Building Nav2](https://github.com/orgs/ros-navigation/packages/container/package/navigation2)
-- [Contribute](https://docs.nav2.org/development_guides/involvement_docs/index.html)
+## 一、相对官方新增的包
 
-Please visit our [documentation site](https://docs.nav2.org/). [Please visit our community Slack here](https://join.slack.com/t/navigation2/shared_invite/zt-uj428p0x-jKx8U7OzK1IOWp5TnDS2rA) (if this link does not work, please contact maintainers to reactivate).
+### 1) `nav2_colregs_msgs`
+- 作用：定义 COLREGS 扩展消息与服务接口。
+- 主要内容：
+  - `msg/TrackedShip.msg`：目标船状态。
+  - `msg/CircleObject.msg`、`msg/PolygonObject.msg`：矢量障碍物形状。
+  - `srv/AddShapes.srv`、`srv/GetShapes.srv`、`srv/RemoveShapes.srv`：矢量对象增删查。
 
-**⚠️ If you need professional services related to Nav2, please contact [Open Navigation](https://www.opennav.org/) at info@opennav.org.**
+### 2) `nav2_colregs_vector_object_server`
+- 作用：发布矢量对象栅格化后的 keepout mask（`/keepout_filter_mask`）。
+- 特点：
+  - 生命周期节点（LifecycleNode）。
+  - 支持 `circle` / `polygon`。
+  - 支持静态地图尺寸或动态尺寸。
+  - 与 `nav2_map_server/costmap_filter_info_server` 配套使用。
 
-## Our Sponsors
+### 3) `nav2_colregs_bringup`
+- 作用：提供 COLREGS 场景的 launch、参数、地图、世界、模型、脚本。
+- 主要脚本：
+  - `scripts/target_ship_state_publisher.py`：从 Gazebo 世界位姿生成 `/tracked_ship`，并广播 `map -> ts_virtual_base_link`。
+  - `scripts/target_ship_motion_commander.py`：发布 `/target_ship/cmd_vel`，驱动目标船往返运动。
 
-Please thank our amazing sponsors for their generous support of Nav2 on behalf of the community to allow the project to continue to be professionally maintained, developed, and supported for the long-haul! [Open Navigation LLC](https://www.opennav.org/) provides project leadership, maintenance, development, and support services to the Nav2 & ROS community. 
+## 二、编译方式
 
-<p align="center">
-  <img src="doc/sponsors_feb_2024.png" />
-</p>
+> 建议在已配置 ROS 2 Jazzy 的环境中执行（如 `nav_env`）。
 
-### [Dexory](https://www.dexory.com/) develops robotics and AI logistics solutions to drive better business decisions using a digital twin of warehouses to provide inventory insights.
+### 1) 全量编译
 
-### [Nvidia](https://www.nvidia.com/en-us/deep-learning-ai/industries/robotics/) develops GPU and AI technologies that power modern robotics, autonomous driving, data centers, gaming, and more.
-
-### [Polymath Robotics](https://www.polymathrobotics.com/) creates safety-critical navigation systems for industrial vehicles that are radically simple to enable and deploy.
-
-### [Stereolabs](https://www.stereolabs.com/) produces the high-quality ZED stereo cameras with a complete vision pipeline from neural depth to SLAM, 3D object tracking, AI and more.
-
-### Confidential is just happy to support Nav2's mission!
-
-
-## Citation
-
-If you use the navigation framework, an algorithm from this repository, or ideas from it
-please cite this work in your papers!
-
- - S. Macenski, F. Martín, R. White, J. Clavero. [**The Marathon 2: A Navigation System**](https://arxiv.org/abs/2003.00368). IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS), 2020.
- 
- ```bibtex
- @InProceedings{macenski2020marathon2,
-   title = {The Marathon 2: A Navigation System},
-   author = {Macenski, Steve and Martín, Francisco and White, Ruffin and Ginés Clavero, Jonatan},
-   year = {2020},
-   booktitle = {2020 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
-   url = {https://github.com/ros-planning/navigation2},
-   pdf = {https://arxiv.org/abs/2003.00368}
- }
+```bash
+colcon build --symlink-install
 ```
 
-If you use **any** of the algorithms in Nav2 or the analysis of the algorithms in your work, please cite this work in your papers!
+### 2) 仅编译 COLREGS 新增包
 
-- S. Macenski, T. Moore, DV Lu, A. Merzlyakov, M. Ferguson, [**From the desks of ROS maintainers: A survey of modern & capable mobile robotics algorithms in the robot operating system 2**](https://arxiv.org/pdf/2307.15236.pdf), Robotics and Autonomous Systems, 2023.
-
-```bibtex
-  @article{macenski2023survey,
-        title={From the desks of ROS maintainers: A survey of modern & capable mobile robotics algorithms in the robot operating system 2}, 
-        author={S. Macenski, T. Moore, DV Lu, A. Merzlyakov, M. Ferguson},
-        year={2023},
-        journal = {Robotics and Autonomous Systems}
-  }
+```bash
+colcon build --symlink-install \
+  --packages-select \
+  nav2_colregs_msgs \
+  nav2_colregs_vector_object_server \
+  nav2_colregs_bringup
 ```
 
-If you use the Smac Planner (Hybrid A*, State Lattice, 2D), please cite this work in your papers!
+### 3) 编译后加载环境
 
-- S. Macenski, M. Booker, J. Wallace, [**Open-Source, Cost-Aware Kinematically Feasible Planning for Mobile and Surface Robotics**](https://arxiv.org/abs/2401.13078). 2024.
-
-```bibtex
-@article{macenski2024smac,
-      title={Open-Source, Cost-Aware Kinematically Feasible Planning for Mobile and Surface Robotics}, 
-      author={Steve Macenski and Matthew Booker and Josh Wallace},
-      year={2024},
-      journal = {Arxiv}
-}
+```bash
+source install/setup.bash
 ```
 
-If you use the Regulated Pure Pursuit Controller algorithm or software from this repository, please cite this work in your papers!
+## 三、启动方式（launch 入口）
 
-- S. Macenski, S. Singh, F. Martin, J. Gines, [**Regulated Pure Pursuit for Robot Path Tracking**](https://arxiv.org/abs/2305.20026). Autonomous Robots, 2023.
+### 1) `colregs_simulation_launch.py`
+- 命令：
 
-```bibtex
-@article{macenski2023regulated,
-      title={Regulated Pure Pursuit for Robot Path Tracking}, 
-      author={Steve Macenski and Shrijit Singh and Francisco Martin and Jonatan Gines},
-      year={2023},
-      journal = {Autonomous Robots}
-}
+```bash
+ros2 launch nav2_colregs_bringup colregs_simulation_launch.py
 ```
 
- If you use our work on VSLAM and formal comparisons for service robot needs, please cite the paper:
+- 作用：单船（TB3）COLREGS 基础仿真，不含目标船。
 
- - A. Merzlyakov, S. Macenski. [**A Comparison of Modern General-Purpose Visual SLAM Approaches**](https://arxiv.org/abs/2107.07589). IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS), 2021.
+### 2) `colregs_ts_simulation_launch.py`
+- 命令：
 
- ```bibtex
- @InProceedings{vslamComparison2021,
-   title = {A Comparison of Modern General-Purpose Visual SLAM Approaches},
-   author = {Merzlyakov, Alexey and Macenski, Steven},
-   year = {2021},
-   booktitle = {2021 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
-   pdf = {https://arxiv.org/abs/2107.07589}
- }
+```bash
+ros2 launch nav2_colregs_bringup colregs_ts_simulation_launch.py
 ```
 
-## Build Status
+- 作用：单船 + 目标船（TS）仿真，含 TS 状态发布与运动控制。
 
-| Package | humble Source | humble Debian | iron Source | iron Debian | jazzy Source | jazzy Debian | 
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| navigation2 | [![Build Status](https://build.ros2.org/job/Hsrc_uj__navigation2__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__navigation2__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__navigation2__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__navigation2__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__navigation2__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__navigation2__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__navigation2__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__navigation2__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__navigation2__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__navigation2__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__navigation2__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__navigation2__ubuntu_noble_amd64__binary/) | 
-| nav2_amcl | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_amcl__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_amcl__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_amcl__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_amcl__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_amcl__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_amcl__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_amcl__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_amcl__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_amcl__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_amcl__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_amcl__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_amcl__ubuntu_noble_amd64__binary/) | 
-| nav2_behavior_tree | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_behavior_tree__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_behavior_tree__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_behavior_tree__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_behavior_tree__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_behavior_tree__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_behavior_tree__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_behavior_tree__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_behavior_tree__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_behavior_tree__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_behavior_tree__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_behavior_tree__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_behavior_tree__ubuntu_noble_amd64__binary/) | 
-| nav2_behaviors | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_behaviors__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_behaviors__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_behaviors__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_behaviors__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_behaviors__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_behaviors__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_behaviors__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_behaviors__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_behaviors__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_behaviors__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_behaviors__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_behaviors__ubuntu_noble_amd64__binary/) | 
-| nav2_bringup | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_bringup__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_bringup__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_bringup__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_bringup__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_bringup__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_bringup__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_bringup__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_bringup__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_bringup__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_bringup__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_bringup__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_bringup__ubuntu_noble_amd64__binary/) | 
-| nav2_bt_navigator | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_bt_navigator__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_bt_navigator__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_bt_navigator__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_bt_navigator__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_bt_navigator__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_bt_navigator__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_bt_navigator__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_bt_navigator__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_bt_navigator__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_bt_navigator__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_bt_navigator__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_bt_navigator__ubuntu_noble_amd64__binary/) | 
-| nav2_collision_monitor | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_collision_monitor__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_collision_monitor__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_collision_monitor__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_collision_monitor__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_collision_monitor__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_collision_monitor__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_collision_monitor__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_collision_monitor__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_collision_monitor__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_collision_monitor__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_collision_monitor__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_collision_monitor__ubuntu_noble_amd64__binary/) | 
-| nav2_common | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_common__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_common__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_common__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_common__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_common__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_common__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_common__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_common__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_common__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_common__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_common__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_common__ubuntu_noble_amd64__binary/) | 
-| nav2_constrained_smoother | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_constrained_smoother__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_constrained_smoother__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_constrained_smoother__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_constrained_smoother__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_constrained_smoother__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_constrained_smoother__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_constrained_smoother__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_constrained_smoother__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_constrained_smoother__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_constrained_smoother__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_constrained_smoother__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_constrained_smoother__ubuntu_noble_amd64__binary/) | 
-| nav2_controller | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_controller__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_controller__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_controller__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_controller__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_controller__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_controller__ubuntu_noble_amd64__binary/) | 
-| nav2_core | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_core__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_core__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_core__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_core__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_core__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_core__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_core__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_core__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_core__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_core__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_core__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_core__ubuntu_noble_amd64__binary/) | 
-| nav2_costmap_2d | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_costmap_2d__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_costmap_2d__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_costmap_2d__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_costmap_2d__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_costmap_2d__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_costmap_2d__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_costmap_2d__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_costmap_2d__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_costmap_2d__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_costmap_2d__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_costmap_2d__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_costmap_2d__ubuntu_noble_amd64__binary/) | 
-| nav2_docking | [![Build Status](https://build.ros2.org/job/Hsrc_uj__opennav_docking__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__opennav_docking__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__opennav_docking__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__opennav_docking__ubuntu_jammy_amd64__binary/) | N/A | N/A | [![Build Status](https://build.ros2.org/job/Jsrc_un__opennav_docking__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__opennav_docking__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__opennav_docking__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__opennav_docking__ubuntu_noble_amd64__binary/) | 
-| nav2_dwb_controller | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_dwb_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_dwb_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_dwb_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_dwb_controller__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_dwb_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_dwb_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_dwb_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_dwb_controller__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_dwb_controller__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_dwb_controller__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_dwb_controller__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_dwb_controller__ubuntu_noble_amd64__binary/) | 
-| nav2_graceful_controller | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_graceful_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_graceful_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_graceful_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_graceful_controller__ubuntu_jammy_amd64__binary/) | N/A | N/A | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_graceful_controller__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_graceful_controller__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_graceful_controller__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_graceful_controller__ubuntu_noble_amd64__binary/) | 
-| nav2_lifecycle_manager | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_lifecycle_manager__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_lifecycle_manager__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_lifecycle_manager__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_lifecycle_manager__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_lifecycle_manager__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_lifecycle_manager__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_lifecycle_manager__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_lifecycle_manager__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_lifecycle_manager__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_lifecycle_manager__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_lifecycle_manager__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_lifecycle_manager__ubuntu_noble_amd64__binary/) | 
-| nav2_map_server | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_map_server__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_map_server__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_map_server__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_map_server__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_map_server__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_map_server__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_map_server__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_map_server__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_map_server__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_map_server__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_map_server__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_map_server__ubuntu_noble_amd64__binary/) | 
-| nav2_mppi_controller | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_mppi_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_mppi_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_mppi_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_mppi_controller__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_mppi_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_mppi_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_mppi_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_mppi_controller__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_mppi_controller__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_mppi_controller__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_mppi_controller__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_mppi_controller__ubuntu_noble_amd64__binary/) | 
-| nav2_msgs | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_msgs__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_msgs__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_msgs__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_msgs__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_msgs__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_msgs__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_msgs__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_msgs__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_msgs__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_msgs__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_msgs__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_msgs__ubuntu_noble_amd64__binary/) | 
-| nav2_navfn_planner | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_navfn_planner__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_navfn_planner__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_navfn_planner__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_navfn_planner__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_navfn_planner__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_navfn_planner__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_navfn_planner__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_navfn_planner__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_navfn_planner__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_navfn_planner__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_navfn_planner__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_navfn_planner__ubuntu_noble_amd64__binary/) | 
-| nav2_planner | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_planner__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_planner__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_planner__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_planner__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_planner__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_planner__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_planner__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_planner__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_planner__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_planner__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_planner__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_planner__ubuntu_noble_amd64__binary/) | 
-| nav2_regulated_pure_pursuit | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_regulated_pure_pursuit_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_regulated_pure_pursuit_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_regulated_pure_pursuit_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_regulated_pure_pursuit_controller__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_regulated_pure_pursuit_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_regulated_pure_pursuit_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_regulated_pure_pursuit_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_regulated_pure_pursuit_controller__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_regulated_pure_pursuit_controller__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_regulated_pure_pursuit_controller__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_regulated_pure_pursuit_controller__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_regulated_pure_pursuit_controller__ubuntu_noble_amd64__binary/) | 
-| nav2_rotation_shim_controller | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_rotation_shim_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_rotation_shim_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_rotation_shim_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_rotation_shim_controller__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_rotation_shim_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_rotation_shim_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_rotation_shim_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_rotation_shim_controller__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_rotation_shim_controller__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_rotation_shim_controller__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_rotation_shim_controller__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_rotation_shim_controller__ubuntu_noble_amd64__binary/) | 
-| nav2_rviz_plugins | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_rviz_plugins__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_rviz_plugins__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_rviz_plugins__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_rviz_plugins__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_rviz_plugins__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_rviz_plugins__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_rviz_plugins__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_rviz_plugins__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_rviz_plugins__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_rviz_plugins__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_rviz_plugins__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_rviz_plugins__ubuntu_noble_amd64__binary/) | 
-| nav2_simple_commander | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_simple_commander__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_simple_commander__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_simple_commander__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_simple_commander__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_simple_commander__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_simple_commander__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_simple_commander__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_simple_commander__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_simple_commander__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_simple_commander__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_simple_commander__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_simple_commander__ubuntu_noble_amd64__binary/) | 
-| nav2_smac_planner | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_smac_planner__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_smac_planner__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_smac_planner__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_smac_planner__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_smac_planner__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_smac_planner__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_smac_planner__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_smac_planner__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_smac_planner__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_smac_planner__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_smac_planner__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_smac_planner__ubuntu_noble_amd64__binary/) | 
-| nav2_smoother | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_smoother__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_smoother__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_smoother__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_smoother__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_smoother__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_smoother__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_smoother__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_smoother__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_smoother__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_smoother__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_smoother__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_smoother__ubuntu_noble_amd64__binary/) | 
-| nav2_system_tests | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_system_tests__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_system_tests__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_system_tests__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_system_tests__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_system_tests__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_system_tests__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_system_tests__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_system_tests__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_system_tests__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_system_tests__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_system_tests__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_system_tests__ubuntu_noble_amd64__binary/) | 
-| nav2_theta_star_planner | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_theta_star_planner__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_theta_star_planner__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_theta_star_planner__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_theta_star_planner__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_theta_star_planner__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_theta_star_planner__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_theta_star_planner__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_theta_star_planner__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_theta_star_planner__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_theta_star_planner__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_theta_star_planner__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_theta_star_planner__ubuntu_noble_amd64__binary/) | 
-| nav2_util | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_util__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_util__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_util__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_util__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_util__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_util__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_util__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_util__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_util__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_util__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_util__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_util__ubuntu_noble_amd64__binary/) | 
-| nav2_velocity_smoother | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_velocity_smoother__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_velocity_smoother__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_velocity_smoother__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_velocity_smoother__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_velocity_smoother__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_velocity_smoother__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_velocity_smoother__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_velocity_smoother__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_velocity_smoother__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_velocity_smoother__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_velocity_smoother__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_velocity_smoother__ubuntu_noble_amd64__binary/) | 
-| nav2_voxel_grid | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_voxel_grid__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_voxel_grid__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_voxel_grid__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_voxel_grid__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_voxel_grid__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_voxel_grid__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_voxel_grid__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_voxel_grid__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_voxel_grid__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_voxel_grid__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_voxel_grid__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_voxel_grid__ubuntu_noble_amd64__binary/) | 
-| nav2_waypoint_follower | [![Build Status](https://build.ros2.org/job/Hsrc_uj__nav2_waypoint_follower__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uj__nav2_waypoint_follower__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uj64__nav2_waypoint_follower__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uj64__nav2_waypoint_follower__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Isrc_uj__nav2_waypoint_follower__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Isrc_uj__nav2_waypoint_follower__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Ibin_uj64__nav2_waypoint_follower__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Ibin_uj64__nav2_waypoint_follower__ubuntu_jammy_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Jsrc_un__nav2_waypoint_follower__ubuntu_noble__source/badge/icon)](https://build.ros2.org/job/Jsrc_un__nav2_waypoint_follower__ubuntu_noble__source/) | [![Build Status](https://build.ros2.org/job/Jbin_un64__nav2_waypoint_follower__ubuntu_noble_amd64__binary/badge/icon)](https://build.ros2.org/job/Jbin_un64__nav2_waypoint_follower__ubuntu_noble_amd64__binary/) | 
+### 3) `colregs_ts_keepout_simulation_launch.py`
+- 命令：
+
+```bash
+ros2 launch nav2_colregs_bringup colregs_ts_keepout_simulation_launch.py
+```
+
+- 作用：在 TS 仿真基础上，加载静态 keepout mask + keepout filter info。
+
+### 4) `colregs_ts_vector_keepout_simulation_launch.py`
+- 命令：
+
+```bash
+ros2 launch nav2_colregs_bringup colregs_ts_vector_keepout_simulation_launch.py
+```
+
+- 作用：在 TS 仿真基础上，使用 `nav2_colregs_vector_object_server` 动态生成 keepout mask。
+
+## 四、关键可配置参数
+
+以下为高频参数（完整参数见 `nav2_colregs_bringup/launch/*.py` 与 `params/*.yaml`）。
+
+### 通用参数（多个 launch 共享）
+- `use_sim_time`：是否使用仿真时钟（默认 `true`）。
+- `autostart`：Nav2 生命周期自动激活（默认 `true`）。
+- `headless`：是否关闭 Gazebo GUI（默认 `True` 或 `False`，以各 launch 默认值为准）。
+- `params_file`：Nav2 参数文件路径。
+
+### TS 仿真参数（`colregs_ts_simulation_launch.py`）
+- `ts_x_pose`、`ts_y_pose`、`ts_yaw`：目标船初始位姿。
+- `ts_speed`：目标船速度。
+- `ts_pingpong_distance`：往返切换距离。
+- `enable_ts_motion`：是否启用目标船运动控制。
+
+### Keepout 参数
+- `keepout_mask`（`colregs_ts_keepout_simulation_launch.py`）：静态 keepout mask yaml 路径。
+- `vector_keepout_params_file`（`colregs_ts_vector_keepout_simulation_launch.py`）：矢量对象服务参数文件路径。
+
+## 五、推荐启动示例
+
+```bash
+export GZ_IP=127.0.0.1
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+
+ros2 launch nav2_colregs_bringup colregs_ts_vector_keepout_simulation_launch.py \
+  headless:=False
+```
+
+## 六、目录说明（新增包）
+
+```text
+nav2_colregs_msgs/
+nav2_colregs_vector_object_server/
+nav2_colregs_bringup/
+  launch/
+  params/
+  maps/
+  worlds/
+  models/
+  rviz/
+  scripts/
+```
+
+---
+
+如需进一步迁移规划、keepout 问题修复方案或 KVM 工作流说明，请结合仓库中的 `AGENTS.md` 与项目文档继续推进。
