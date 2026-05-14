@@ -28,7 +28,8 @@
 
 ## 二、编译方式
 
-> 建议在已配置 ROS 2 Jazzy 的环境中执行（如 `nav_env`）。
+> 建议在 **clean 的、apt 安装的 ROS 2 Jazzy 环境** 中执行。
+> 当前使用 KVM 仅是因为宿主机已采用 RoboStack 管理 ROS 栈，不满足该前提。
 
 ### 1) 全量编译
 
@@ -136,6 +137,16 @@ nav2_colregs_bringup/
   scripts/
 ```
 
+## 七、Phase 2 运行与诊断
+
+Phase 2 的运行基线、验收标准和 Keepout 分层诊断步骤见：
+
+- `doc/colregs_phase2_runbook.md`
+
 ---
 
-如需进一步迁移规划、keepout 问题修复方案或 KVM 工作流说明，请结合仓库中的 `AGENTS.md` 与项目文档继续推进。
+## 八、Bug 修复记录
+
+Keepout filter 动态跟随与拖影问题的根因分析及修复详见：
+
+- `doc/keepout_filter_bugfix.md`

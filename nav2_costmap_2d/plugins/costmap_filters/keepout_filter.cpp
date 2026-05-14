@@ -148,11 +148,30 @@ void KeepoutFilter::maskCallback(
       logger_,
       "KeepoutFilter: New filter mask arrived from %s topic. Updating old filter mask.",
       mask_topic_.c_str());
+    // Expand cumulative bounds with old mask world range to clear trailing residue
+    double old_min_x = mask_origin_x_;
+    double old_min_y = mask_origin_y_;
+    double old_max_x = mask_origin_x_ + width_ * filter_mask_->info.resolution;
+    double old_max_y = mask_origin_y_ + height_ * filter_mask_->info.resolution;
+    if (!has_cumulative_bounds_) {
+      cumulative_min_x_ = old_min_x;
+      cumulative_min_y_ = old_min_y;
+      cumulative_max_x_ = old_max_x;
+      cumulative_max_y_ = old_max_y;
+      has_cumulative_bounds_ = true;
+    } else {
+      cumulative_min_x_ = std::min(cumulative_min_x_, old_min_x);
+      cumulative_min_y_ = std::min(cumulative_min_y_, old_min_y);
+      cumulative_max_x_ = std::max(cumulative_max_x_, old_max_x);
+      cumulative_max_y_ = std::max(cumulative_max_y_, old_max_y);
+    }
     filter_mask_.reset();
   }
 
   // Store filter_mask_
   filter_mask_ = msg;
+  mask_origin_x_ = msg->info.origin.position.x;
+  mask_origin_y_ = msg->info.origin.position.y;
   has_updated_data_ = true;
   x_ = y_ = 0;
   width_ = msg->info.width;
@@ -175,13 +194,24 @@ void KeepoutFilter::updateBounds(
 
   double wx, wy;
 
-  layered_costmap_->getCostmap()->mapToWorld(x_, y_, wx, wy);
+  wx = mask_origin_x_;
+  wy = mask_origin_y_;
   *min_x = std::min(wx, *min_x);
   *min_y = std::min(wy, *min_y);
 
-  layered_costmap_->getCostmap()->mapToWorld(x_ + width_, y_ + height_, wx, wy);
+  wx = mask_origin_x_ + width_ * filter_mask_->info.resolution;
+  wy = mask_origin_y_ + height_ * filter_mask_->info.resolution;
   *max_x = std::max(wx, *max_x);
   *max_y = std::max(wy, *max_y);
+
+  // Also cover cumulative range of all mask positions since last updateBounds
+  if (has_cumulative_bounds_) {
+    *min_x = std::min(cumulative_min_x_, *min_x);
+    *min_y = std::min(cumulative_min_y_, *min_y);
+    *max_x = std::max(cumulative_max_x_, *max_x);
+    *max_y = std::max(cumulative_max_y_, *max_y);
+    has_cumulative_bounds_ = false;
+  }
 
   has_updated_data_ = false;
 }

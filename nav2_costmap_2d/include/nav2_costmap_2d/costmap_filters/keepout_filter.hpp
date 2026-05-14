@@ -127,6 +127,13 @@ private:
   unsigned int y_{0};
   unsigned int width_{0};
   unsigned int height_{0};
+  double mask_origin_x_{0.0};
+  double mask_origin_y_{0.0};
+  bool has_cumulative_bounds_{false};
+  double cumulative_min_x_{0.0};
+  double cumulative_min_y_{0.0};
+  double cumulative_max_x_{0.0};
+  double cumulative_max_y_{0.0};
   bool has_updated_data_{false};
 };
 
