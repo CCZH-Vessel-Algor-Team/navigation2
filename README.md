@@ -55,6 +55,8 @@ source install/setup.bash
 
 ## 三、启动方式（launch 入口）
 
+注：gz sim 可能需要额外设置 `export GZ_IP=127.0.0.1`
+
 ### 1) `colregs_simulation_launch.py`
 - 命令：
 
