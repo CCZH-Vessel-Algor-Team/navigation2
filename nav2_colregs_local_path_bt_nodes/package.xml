@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>nav2_colregs_local_path_bt_nodes</name>
+  <version>1.0.0</version>
+  <description>BT action node that bridges the blackboard to the CreateLocalPath action server.</description>
+  <maintainer email="vectorwang@hotmail.com">Vector Wang</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>nav2_behavior_tree</depend>
+  <depend>nav2_colregs_local_path_behavior</depend>
+  <depend>nav_msgs</depend>
+  <depend>behaviortree_cpp</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

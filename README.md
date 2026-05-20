@@ -27,12 +27,14 @@
   - `scripts/target_ship_motion_commander.py`：发布 `/target_ship/cmd_vel`，驱动目标船往返运动。
 
 ### 4) `nav2_colregs_local_path_behavior`
-- 作用：自定义 Behavior 插件（`TimedBehavior`），现阶段功能为打印全局路径信息。
-- 关键文件：
-  - `action/CreateLocalPath.action`：输入 `nav_msgs/Path`，返回路径点数。
-  - `plugins/create_local_path.cpp`：在 `onRun()` 中打印路径长度与首末点。
-- 注册方式：通过 `pluginlib` 导出为 `nav2_core::Behavior`，由 `behavior_server` 加载。
-- BT Action Node 待接入。
+- 作用：自定义 Behavior 插件（`TimedBehavior`），由 `behavior_server` 加载，接收全局路径并在 `onRun()` 中打印路径长度与首末点。
+- Action：`action/CreateLocalPath.action`，Goal 为 `nav_msgs/Path`。
+- 对应的 BT Action Node 在 `nav2_colregs_local_path_bt_nodes` 中。
+
+### 5) `nav2_colregs_local_path_bt_nodes`
+- 作用：`CreateLocalPath` 的 BT Action Node，独立编译为 `nav2_create_local_path_action_bt_node` 库。
+- 从 blackboard 读取 `{path}`，编码为 action goal 发送到 behavior_server，成功后将路径透传写回 `{local_path}`。
+- 依赖 `nav2_behavior_tree` + `nav2_colregs_local_path_behavior`（action 类型）。
 
 ## 二、编译方式
 
@@ -52,6 +54,7 @@ colcon build --symlink-install \
   --packages-select \
   nav2_colregs_msgs \
   nav2_colregs_vector_object_server \
+  nav2_colregs_local_path_bt_nodes \
   nav2_colregs_local_path_behavior \
   nav2_colregs_bringup
 ```
@@ -111,7 +114,7 @@ ros2 launch nav2_colregs_bringup colregs_ts_vector_keepout_simulation_launch.py
 ros2 launch nav2_colregs_bringup colregs_ts_behavior_validation_launch.py
 ```
 
-- 作用：独立验证 launch，功能等价于 vector keepout launch，但使用独立的 params/BT XML 配置，用于 behavior 插件可行性验证。
+- 作用：独立验证 launch。在 TS 仿真 + vector keepout 基础上，插入 `CreateLocalPath` BT 节点（1Hz），读取全局路径、打印路径信息并通过 `{local_path}` 透传给 `FollowPath`，用于 behavior 插件端到端验证。
 
 ## 四、关键可配置参数
 
@@ -149,6 +152,9 @@ ros2 launch nav2_colregs_bringup colregs_ts_vector_keepout_simulation_launch.py 
 ```text
 nav2_colregs_msgs/
 nav2_colregs_vector_object_server/
+nav2_colregs_local_path_bt_nodes/
+  include/
+  src/
 nav2_colregs_local_path_behavior/
   action/
   include/

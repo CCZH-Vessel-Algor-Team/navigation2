@@ -19,7 +19,6 @@ find_package(builtin_interfaces REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
 find_package(nav2_core REQUIRED)
-find_package(nav2_behavior_tree REQUIRED)
 find_package(nav2_behaviors REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
@@ -48,7 +47,6 @@ set(dependencies
   nav2_core
   pluginlib
   nav2_behaviors
-  nav2_behavior_tree
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -58,10 +56,10 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 
 add_library(${library_name} SHARED
   src/create_local_path.cpp
-  src/create_local_path_action.cpp
 )
 
 target_compile_definitions(${library_name} PUBLIC "PLUGINLIB__DISABLE_BOOST_FUNCTIONS")
+target_compile_definitions(${library_name} PRIVATE "BT_PLUGIN_EXPORT")
 
 ament_target_dependencies(${library_name}
   ${dependencies}
