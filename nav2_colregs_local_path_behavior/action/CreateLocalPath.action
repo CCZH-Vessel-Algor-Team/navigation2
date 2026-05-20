@@ -1,0 +1,14 @@
+# Goal: global path
+nav_msgs/Path path
+---
+#result definition
+
+# Error codes
+uint16 NONE=0
+uint16 EMPTY_PATH=31001
+
+builtin_interfaces/Duration total_elapsed_time
+uint16 error_code
+string error_msg
+---
+#feedback definition

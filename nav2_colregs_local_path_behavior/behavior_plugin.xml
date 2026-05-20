@@ -1,0 +1,5 @@
+<library path="nav2_colregs_local_path_behavior_plugin">
+  <class type="nav2_colregs_local_path_behavior::CreateLocalPath" base_class_type="nav2_core::Behavior">
+    <description>Experimental plugin for marinetime local path planning.</description>
+  </class>
+</library>
