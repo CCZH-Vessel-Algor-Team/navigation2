@@ -8,7 +8,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY launch worlds params maps models rviz scripts configs
+  DIRECTORY launch worlds params maps models rviz scripts configs behavior_trees
   DESTINATION share/${PROJECT_NAME}
 )
 
