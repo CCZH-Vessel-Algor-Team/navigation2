@@ -26,6 +26,14 @@
   - `scripts/target_ship_state_publisher.py`：从 Gazebo 世界位姿生成 `/tracked_ship`，并广播 `map -> ts_virtual_base_link`。
   - `scripts/target_ship_motion_commander.py`：发布 `/target_ship/cmd_vel`，驱动目标船往返运动。
 
+### 4) `nav2_colregs_local_path_behavior`
+- 作用：自定义 Behavior 插件（`TimedBehavior`），现阶段功能为打印全局路径信息。
+- 关键文件：
+  - `action/CreateLocalPath.action`：输入 `nav_msgs/Path`，返回路径点数。
+  - `plugins/create_local_path.cpp`：在 `onRun()` 中打印路径长度与首末点。
+- 注册方式：通过 `pluginlib` 导出为 `nav2_core::Behavior`，由 `behavior_server` 加载。
+- BT Action Node 待接入。
+
 ## 二、编译方式
 
 > 建议在 **clean 的、apt 安装的 ROS 2 Jazzy 环境** 中执行。
@@ -44,8 +52,11 @@ colcon build --symlink-install \
   --packages-select \
   nav2_colregs_msgs \
   nav2_colregs_vector_object_server \
+  nav2_colregs_local_path_behavior \
   nav2_colregs_bringup
 ```
+
+> `reference/` 目录已放置 `COLCON_IGNORE` 文件，colcon 不会扫描该目录，避免与 `src/navigation2/` 下同名包冲突。
 
 ### 3) 编译后加载环境
 
@@ -93,6 +104,15 @@ ros2 launch nav2_colregs_bringup colregs_ts_vector_keepout_simulation_launch.py
 
 - 作用：在 TS 仿真基础上，使用 `nav2_colregs_vector_object_server` 动态生成 keepout mask。
 
+### 5) `colregs_ts_behavior_validation_launch.py`
+- 命令：
+
+```bash
+ros2 launch nav2_colregs_bringup colregs_ts_behavior_validation_launch.py
+```
+
+- 作用：独立验证 launch，功能等价于 vector keepout launch，但使用独立的 params/BT XML 配置，用于 behavior 插件可行性验证。
+
 ## 四、关键可配置参数
 
 以下为高频参数（完整参数见 `nav2_colregs_bringup/launch/*.py` 与 `params/*.yaml`）。
@@ -129,9 +149,15 @@ ros2 launch nav2_colregs_bringup colregs_ts_vector_keepout_simulation_launch.py 
 ```text
 nav2_colregs_msgs/
 nav2_colregs_vector_object_server/
+nav2_colregs_local_path_behavior/
+  action/
+  include/
+  src/
+  behavior_plugin.xml
 nav2_colregs_bringup/
   launch/
   params/
+  behavior_trees/
   maps/
   worlds/
   models/
