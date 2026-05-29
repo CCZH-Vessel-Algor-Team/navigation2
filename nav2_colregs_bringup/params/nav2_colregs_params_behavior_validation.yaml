@@ -104,11 +104,9 @@ controller_server:
       required_movement_radius: 0.5
       movement_time_allowance: 10.0
     general_goal_checker:
-      stateful: true
-      plugin: "nav2_controller::SimpleGoalChecker"
+      plugin: "nav2_controller::PositionGoalChecker"
       xy_goal_tolerance: 0.25
-      yaw_goal_tolerance: 0.25
-      path_length_tolerance: 1.0
+      stateful: true
     PathHandler:
       plugin: "nav2_controller::FeasiblePathHandler"
       prune_distance: 2.0
@@ -119,32 +117,13 @@ controller_server:
       minimum_rotation_angle: 0.785
       reject_unit_path: false
     FollowPath:
-      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      plugin: "nav2_colregs_los_controller::LOSController"
       desired_linear_vel: 0.5
-      lookahead_dist: 0.6
-      min_lookahead_dist: 0.4
-      max_lookahead_dist: 0.9
-      lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 1.8
-      transform_tolerance: 0.1
-      use_velocity_scaled_lookahead_dist: false
-      min_approach_linear_velocity: 0.05
-      approach_velocity_scaling_dist: 1.0
-      max_allowed_time_to_collision_up_to_carrot: 1.0
-      use_regulated_linear_velocity_scaling: true
-      use_cost_regulated_linear_velocity_scaling: false
-      cost_scaling_dist: 0.6
-      cost_scaling_gain: 1.0
-      inflation_cost_scaling_factor: 3.0
-      regulated_linear_scaling_min_radius: 0.9
-      regulated_linear_scaling_min_speed: 0.25
-      use_rotate_to_heading: true
-      allow_reversing: false
-      rotate_to_heading_min_angle: 0.785
-      max_angular_accel: 3.2
+      max_linear_accel: 0.5
+      max_angular_vel: 0.5
+      max_angular_accel: 1.0
+      lookahead_dist: 1.2
       max_robot_pose_search_dist: 10.0
-      use_interpolation: true
-      use_collision_detection: true
 
 local_costmap:
   local_costmap:
