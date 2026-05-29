@@ -36,6 +36,11 @@
 - 从 blackboard 读取 `{path}`，编码为 action goal 发送到 behavior_server，成功后将路径透传写回 `{local_path}`。
 - 依赖 `nav2_behavior_tree` + `nav2_colregs_local_path_behavior`（action 类型）。
 
+### 6) `nav2_colregs_los_controller`
+- 作用：最简 LOS 制导 Controller 插件，搭载于 `controller_server`。
+- 算法：沿路径找前视点 → atan2(y,x) 算目标艏向 → 角/线速度梯形加速 → footprint 碰撞检测。
+- 关键参数：`desired_linear_vel`, `max_linear_accel`, `max_angular_vel`, `max_angular_accel`, `lookahead_dist`。
+
 ## 二、编译方式
 
 > 建议在 **clean 的、apt 安装的 ROS 2 Jazzy 环境** 中执行。
@@ -56,6 +61,7 @@ colcon build --symlink-install \
   nav2_colregs_vector_object_server \
   nav2_colregs_local_path_bt_nodes \
   nav2_colregs_local_path_behavior \
+  nav2_colregs_los_controller \
   nav2_colregs_bringup
 ```
 
@@ -160,6 +166,10 @@ nav2_colregs_local_path_behavior/
   include/
   src/
   behavior_plugin.xml
+nav2_colregs_los_controller/
+  include/
+  src/
+  los_controller_plugin.xml
 nav2_colregs_bringup/
   launch/
   params/
