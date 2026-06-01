@@ -39,7 +39,7 @@
 ### 6) `nav2_colregs_los_controller`
 - 作用：最简 LOS 制导 Controller 插件，搭载于 `controller_server`。
 - 算法：沿路径找前视点 → atan2(y,x) 算目标艏向 → 角/线速度梯形加速 → footprint 碰撞检测。
-- 关键参数：`desired_linear_vel`, `max_linear_accel`, `max_angular_vel`, `max_angular_accel`, `lookahead_dist`。
+- 关键参数：`desired_linear_vel`, `max_linear_accel`, `max_angular_vel`, `max_angular_accel`, `lookahead_dist`, `max_angle_for_motion`（超阈值原地转向，0=关闭）。
 
 ## 二、编译方式
 

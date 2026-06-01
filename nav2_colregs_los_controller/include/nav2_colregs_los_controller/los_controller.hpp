@@ -132,6 +132,7 @@ protected:
   double max_robot_pose_search_dist_{10.0};
   double goal_dist_tol_{0.25};
   double control_duration_{0.05};
+  double max_angle_for_motion_{0.3};   // 0 = disabled
   bool debug_log_enabled_{false};
 };
 

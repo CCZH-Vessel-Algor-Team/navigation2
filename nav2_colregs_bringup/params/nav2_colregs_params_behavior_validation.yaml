@@ -123,6 +123,7 @@ controller_server:
       max_angular_vel: 0.5
       max_angular_accel: 1.0
       lookahead_dist: 1.2
+      max_angle_for_motion: 1.047
       max_robot_pose_search_dist: 10.0
 
 local_costmap:

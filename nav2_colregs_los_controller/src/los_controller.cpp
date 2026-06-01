@@ -52,6 +52,8 @@ void LOSController::configure(
   nav2_util::declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_robot_pose_search_dist", rclcpp::ParameterValue(10.0));
   nav2_util::declare_parameter_if_not_declared(
+    node, plugin_name_ + ".max_angle_for_motion", rclcpp::ParameterValue(0.3));
+  nav2_util::declare_parameter_if_not_declared(
     node, plugin_name_ + ".debug_log_enabled", rclcpp::ParameterValue(false));
 
   node->get_parameter(plugin_name_ + ".desired_linear_vel", desired_linear_vel_);
@@ -61,6 +63,7 @@ void LOSController::configure(
   node->get_parameter(plugin_name_ + ".lookahead_dist", lookahead_dist_);
   node->get_parameter(plugin_name_ + ".max_robot_pose_search_dist",
                       max_robot_pose_search_dist_);
+  node->get_parameter(plugin_name_ + ".max_angle_for_motion", max_angle_for_motion_);
   node->get_parameter(plugin_name_ + ".debug_log_enabled", debug_log_enabled_);
 
   double controller_frequency = 20.0;
@@ -175,6 +178,15 @@ geometry_msgs::msg::TwistStamped LOSController::computeVelocityCommands(
   geometry_msgs::msg::TwistStamped cmd_vel;
   cmd_vel.header = pose.header;
   cmd_vel.twist.angular.z = computeAngularVelocity(angle_error, speed);
+
+  // 5b — Turn-in-place gate: if the heading error exceeds the configured
+  //      threshold, keep linear velocity at zero until facing the target.
+  //      max_angle_for_motion_ = 0 disables this feature entirely.
+  if (max_angle_for_motion_ > 0.0 &&
+      std::fabs(angle_error) > max_angle_for_motion_)
+  {
+    return cmd_vel;
+  }
 
   // 6 — Linear velocity with trapezoidal profile.
   double dist_to_goal = std::hypot(
