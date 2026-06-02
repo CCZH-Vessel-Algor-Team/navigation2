@@ -18,6 +18,7 @@
   - 生命周期节点（LifecycleNode）。
   - 支持 `circle` / `polygon`。
   - 支持静态地图尺寸或动态尺寸。
+  - 内置指数梯度膨胀（复用 Nav2 InflationLayer 模型）：`inflation_radius` / `cost_scaling_factor` / `inscribed_radius` 为全局参数，所有 shape 共享。
   - 与 `nav2_map_server/costmap_filter_info_server` 配套使用。
 
 ### 3) `nav2_colregs_bringup`
@@ -149,6 +150,7 @@ ros2 launch nav2_colregs_bringup colregs_ts_behavior_validation_launch.py
 ### Keepout 参数
 - `keepout_mask`（`colregs_ts_keepout_simulation_launch.py`）：静态 keepout mask yaml 路径。
 - `vector_keepout_params_file`（`colregs_ts_vector_keepout_simulation_launch.py`）：矢量对象服务参数文件路径。
+- `inflation_radius` / `cost_scaling_factor` / `inscribed_radius`（`vector_object_server`）：全局 shape 膨胀参数，复用 Nav2 InflationLayer 的指数衰减模型。
 
 ## 五、推荐启动示例
 
