@@ -116,13 +116,28 @@ controller_server:
       inversion_yaw_tolerance: 0.4
       minimum_rotation_angle: 0.785
       reject_unit_path: false
+    # LOS (basic, no sideslip compensation):
+    # FollowPath:
+    #   plugin: "nav2_colregs_los_controller::LOSController"
+    #   desired_linear_vel: 0.5
+    #   max_linear_accel: 0.5
+    #   max_angular_vel: 0.5
+    #   max_angular_accel: 1.0
+    #   lookahead_dist: 1.2
+    #   max_angle_for_motion: 1.047
+    #   max_robot_pose_search_dist: 10.0
+
+    # ALOS (adaptive LOS with sideslip compensation):
     FollowPath:
-      plugin: "nav2_colregs_los_controller::LOSController"
+      plugin: "nav2_colregs_alos_controller::ALOSController"
       desired_linear_vel: 0.5
       max_linear_accel: 0.5
       max_angular_vel: 0.5
       max_angular_accel: 1.0
-      lookahead_dist: 1.2
+      forward_dist: 2.0
+      gamma: 0.0006
+      beta_hat0: 0.0
+      reset_beta_on_new_path: true
       max_angle_for_motion: 1.047
       max_robot_pose_search_dist: 10.0
 
