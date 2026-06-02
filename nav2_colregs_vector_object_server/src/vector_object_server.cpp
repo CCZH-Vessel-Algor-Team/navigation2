@@ -15,6 +15,7 @@
 #include "nav2_colregs_vector_object_server/vector_object_server.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <exception>
 #include <functional>
 #include <limits>
@@ -195,6 +196,14 @@ bool VectorObjectServer::obtainParams()
   map_origin_y_ = nav2_util::declare_or_get_parameter(node, "origin_y", 0.0);
   use_fixed_map_ = (map_width_ > 0.0 && map_height_ > 0.0);
 
+  // Shape inflation — shared by all shapes
+  inflation_radius_ = nav2_util::declare_or_get_parameter(
+    node, "inflation_radius", 0.0);
+  cost_scaling_factor_ = nav2_util::declare_or_get_parameter(
+    node, "cost_scaling_factor", 3.0);
+  inscribed_radius_ = nav2_util::declare_or_get_parameter(
+    node, "inscribed_radius", 0.0);
+
   // Shapes
   auto shape_names = nav2_util::declare_or_get_parameter(node, "shapes", std::vector<std::string>());
   for (std::string shape_name : shape_names) {
@@ -294,6 +303,12 @@ void VectorObjectServer::getMapBoundaries(
     max_y = std::max(max_y, max_p_y);
   }
 
+  // Pad map boundaries to accommodate the inflation band around all shapes.
+  min_x -= inflation_radius_;
+  min_y -= inflation_radius_;
+  max_x += inflation_radius_;
+  max_y += inflation_radius_;
+
   if (
     min_x == std::numeric_limits<double>::max() ||
     min_y == std::numeric_limits<double>::max() ||
@@ -344,6 +359,11 @@ void VectorObjectServer::updateMap(
 
 void VectorObjectServer::putVectorObjectsOnMap()
 {
+  // Propagate global inflation params to all shapes before rasterization
+  for (auto shape : shapes_) {
+    shape->setInflationParams(inflation_radius_, cost_scaling_factor_, inscribed_radius_);
+  }
+
   // Filling the shapes
   for (auto shape : shapes_) {
     if (shape->isFill()) {
@@ -382,6 +402,60 @@ void VectorObjectServer::putVectorObjectsOnMap()
     } else {
       // Put shape borders on map
       shape->putBorders(map_, overlay_type_);
+    }
+  }
+
+  // Post-rasterization: uniform multi-pass dilation for all shapes
+  // with exponential cost gradient (replicating Nav2 InflationLayer model).
+  if (inflation_radius_ > 0.0 && cost_scaling_factor_ > 0.0) {
+    const int dilation_steps = static_cast<int>(
+      std::ceil(inflation_radius_ / map_->info.resolution));
+    const unsigned int w = map_->info.width;
+    const unsigned int h = map_->info.height;
+
+    std::vector<uint8_t> initial_frontier(w * h, 0);
+    for (unsigned int i = 0; i < w * h; i++) {
+      if (map_->data[i] > 0) {
+        initial_frontier[i] = 1;
+      }
+    }
+
+    for (int step = 0; step < dilation_steps; step++) {
+      std::vector<unsigned int> step_frontier;
+      for (unsigned int i = 0; i < w * h; i++) {
+        if (initial_frontier[i]) {
+          step_frontier.push_back(i);
+        }
+      }
+
+      std::vector<uint8_t> next_frontier(w * h, 0);
+      for (auto idx : step_frontier) {
+        unsigned int x = idx % w;
+        unsigned int y = idx / w;
+
+        for (int dy = -1; dy <= 1; dy++) {
+          for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = static_cast<int>(x) + dx;
+            int ny = static_cast<int>(y) + dy;
+            if (nx < 0 || ny < 0 ||
+                nx >= static_cast<int>(w) || ny >= static_cast<int>(h))
+            {
+              continue;
+            }
+            unsigned int nidx = ny * w + nx;
+            if (map_->data[nidx] == 0) {
+              // Exponential gradient: cost based on step distance from edge.
+              int8_t inf_val = computeInflationCost(
+                (step + 0.5), map_->info.resolution,
+                inscribed_radius_, cost_scaling_factor_);
+              processVal(map_->data[nidx], inf_val, overlay_type_);
+              next_frontier[nidx] = 1;
+            }
+          }
+        }
+      }
+      initial_frontier = std::move(next_frontier);
     }
   }
 }

@@ -147,6 +147,31 @@ public:
   virtual bool isPointInside(const double px, const double py) const = 0;
 
   /**
+   * @brief Determine the OccupancyGrid value for a world point.
+   *        Default: binary core / outside.  Inflation is handled by
+   *        an exponential-gradient post-pass in putVectorObjectsOnMap().
+   * @param px X-coordinate of the world point
+   * @param py Y-coordinate of the world point
+   * @return OccupancyGrid value (core value if inside, 0 otherwise)
+   */
+  virtual int8_t getPointValue(const double px, const double py) const;
+
+  /**
+   * @brief Whether this shape has an inflation band configured.
+   * @return True if inflation_radius_ > 0 and cost_scaling_factor_ > 0
+   */
+  bool hasInflation() const;
+
+  /**
+   * @brief Set inflation parameters from global vector object server config.
+   *        Applied before rasterization so all shapes share the same band.
+   * @param radius  Inflation band radius in metres
+   * @param cost_scaling  Exponential decay rate (Nav2 cost_scaling_factor)
+   * @param inscribed  Inner dead-zone radius (m, typically 0)
+   */
+  void setInflationParams(double radius, double cost_scaling, double inscribed);
+
+  /**
    * @brief Puts shape borders on map.
    * Empty virtual method intended to be used in child implementations
    * @param map Output map pointer
@@ -161,6 +186,13 @@ protected:
 
   /// @brief VectorObjectServer node
   nav2_util::LifecycleNode::WeakPtr node_;
+
+  /// @brief Inflation band radius beyond shape boundary (metres, 0 = disabled)
+  double inflation_radius_{0.0};
+  /// @brief Exponential decay rate (Nav2 cost_scaling_factor analogue)
+  double cost_scaling_factor_{3.0};
+  /// @brief Inner dead-zone radius (m, 0 for USV)
+  double inscribed_radius_{0.0};
 };
 
 /// @brief Polygon shape class

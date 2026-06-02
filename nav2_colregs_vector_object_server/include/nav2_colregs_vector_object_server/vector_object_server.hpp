@@ -224,6 +224,13 @@ protected:
   /// @brief Fixed map origin Y in world coordinates
   double map_origin_y_{0.0};
 
+  /// @brief Per-shape inflation band radius (metres, 0 = disabled, shared by all shapes)
+  double inflation_radius_{0.0};
+  /// @brief Exponential decay rate for inflation band (same as Nav2 cost_scaling_factor)
+  double cost_scaling_factor_{3.0};
+  /// @brief Inner dead-zone radius inside which cost = OCCUPIED (m, 0 for USV)
+  double inscribed_radius_{0.0};
+
   /// @brief AddShapes service
   rclcpp::Service<nav2_colregs_msgs::srv::AddShapes>::SharedPtr add_shapes_service_;
   /// @brief GetShapes service

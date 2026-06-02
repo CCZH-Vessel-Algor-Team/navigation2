@@ -8,6 +8,9 @@ vector_object_server:
     default_value: 0
     trigger_costmap_clear_on_shape_update: true
     update_frequency: 5.0
+    inflation_radius: 0.6
+    cost_scaling_factor: 3.0
+    inscribed_radius: 0.0
     shapes: ["Poly", "Circle"]
     Poly:
       type: "polygon"

@@ -15,6 +15,7 @@
 #ifndef NAV2_MAP_SERVER__VECTOR_OBJECT_UTILS_HPP_
 #define NAV2_MAP_SERVER__VECTOR_OBJECT_UTILS_HPP_
 
+#include <cmath>
 #include <uuid/uuid.h>
 #include <stdexcept>
 #include <string>
@@ -101,6 +102,37 @@ inline void processCell(
   int8_t map_val = map->data[offset];
   processVal(map_val, shape_val, overlay_type);
   map->data[offset] = map_val;
+}
+
+// ---------- Inflation cost model (replicated from Nav2 InflationLayer) ----------
+
+/**
+ * @brief Compute inflation cost using the Nav2 exponential decay model.
+ *        Adapted for OccupancyGrid output range (0-100) instead of costmap (0-254).
+ *
+ *        distance = 0                          → OCC_GRID_OCCUPIED (100)
+ *        distance * res ≤ inscribed_radius    → OCC_GRID_OCCUPIED (100)
+ *        distance * res > inscribed_radius    → 100 * exp(-k * (d * res - inscribed))
+ *
+ * @param dist_cells  Distance from shape edge in grid cells
+ * @param resolution  Grid resolution (m/cell)
+ * @param inscribed_radius  Inner inscribed radius for dead zone (m, typically 0 for USV)
+ * @param cost_scaling_factor  Exponential decay rate
+ * @return OccupancyGrid value in 0-100 range
+ */
+inline int8_t computeInflationCost(
+  double dist_cells, double resolution,
+  double inscribed_radius, double cost_scaling_factor)
+{
+  if (dist_cells <= 0.0) {
+    return nav2_util::OCC_GRID_OCCUPIED;   // 100
+  }
+  double dist_m = dist_cells * resolution;
+  if (dist_m <= inscribed_radius) {
+    return nav2_util::OCC_GRID_OCCUPIED;   // 100
+  }
+  double factor = std::exp(-cost_scaling_factor * (dist_m - inscribed_radius));
+  return static_cast<int8_t>(nav2_util::OCC_GRID_OCCUPIED * factor);
 }
 
 /// @brief Functor class used in raytraceLine algorithm

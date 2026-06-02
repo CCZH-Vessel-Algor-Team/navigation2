@@ -116,6 +116,24 @@ ShapeType Shape::getType()
   return type_;
 }
 
+int8_t Shape::getPointValue(const double px, const double py) const
+{
+  // Default: binary core/outside, no inflation.
+  return isPointInside(px, py) ? getValue() : static_cast<int8_t>(0);
+}
+
+bool Shape::hasInflation() const
+{
+  return inflation_radius_ > 0.0 && cost_scaling_factor_ > 0.0;
+}
+
+void Shape::setInflationParams(double radius, double cost_scaling, double inscribed)
+{
+  inflation_radius_ = radius;
+  cost_scaling_factor_ = cost_scaling;
+  inscribed_radius_ = inscribed;
+}
+
 bool Shape::obtainShapeUUID(const std::string & shape_name, unsigned char * out_uuid)
 {
   auto node = node_.lock();
