@@ -41,6 +41,13 @@
 - 算法：沿路径找前视点 → atan2(y,x) 算目标艏向 → 角/线速度梯形加速 → footprint 碰撞检测。
 - 关键参数：`desired_linear_vel`, `max_linear_accel`, `max_angular_vel`, `max_angular_accel`, `lookahead_dist`, `max_angle_for_motion`（超阈值原地转向，0=关闭）。
 
+### 7) `nav2_colregs_alos_controller`
+- 作用：Adaptive LOS（ALOS）制导 Controller 插件，在 LOS 基础上加入侧滑角自适应估计。
+- 算法：基于 Fossen (2023) — 找最近点 + 前推点 → 计算路径切线角 π_h 和侧偏 y_e → 自适应侧滑估计 β̂ → 目标角度 ψ_d = π_h - β̂ - atan(y_e/Δ)。
+- 特点：无段追踪（利用稠密 path），β̂ 积分消除 USV 流/风稳态侧偏。
+- 关键参数：`desired_linear_vel`, `max_linear_accel`, `max_angular_vel`, `max_angular_accel`, `forward_dist`, `gamma`, `beta_hat0`, `reset_beta_on_new_path`。
+- 已知限制：原地转向（`max_angle_for_motion` 触发）期间 β̂ 仍会更新，几何 y_e 可能被误认为侧滑。详见代码注释。
+
 ## 二、编译方式
 
 > 建议在 **clean 的、apt 安装的 ROS 2 Jazzy 环境** 中执行。
@@ -62,6 +69,7 @@ colcon build --symlink-install \
   nav2_colregs_local_path_bt_nodes \
   nav2_colregs_local_path_behavior \
   nav2_colregs_los_controller \
+  nav2_colregs_alos_controller \
   nav2_colregs_bringup
 ```
 
@@ -170,6 +178,10 @@ nav2_colregs_los_controller/
   include/
   src/
   los_controller_plugin.xml
+nav2_colregs_alos_controller/
+  include/
+  src/
+  alos_controller_plugin.xml
 nav2_colregs_bringup/
   launch/
   params/

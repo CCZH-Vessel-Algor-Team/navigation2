@@ -207,10 +207,20 @@ geometry_msgs::msg::TwistStamped ALOSController::computeVelocityCommands(
 
   // Update sideslip estimate for the NEXT control cycle.
   //  dot_beta = gamma * Delta * y_e / sqrt(Delta^2 + y_e^2)  (Fossen 2023, Ch. 10)
+  //
+  //  NOTE: beta_hat_ is updated unconditionally every cycle, including during
+  //  turn-in-place (max_angle_for_motion gate).  During pure rotation the robot
+  //  is stationary, so y_e is purely geometric and does not represent actual
+  //  sideslip.  This may cause beta_hat_ to accumulate spurious corrections.
+  //  A future improvement would gate the update on the linear velocity exceeding
+  //  a threshold (e.g. |cmd_vel.linear.x| > 0.01), similar to the conditional
+  //  integration in Enhanced ALOS (EALOS).
   double denom = std::sqrt(forward_dist_ * forward_dist_ + y_e * y_e);
   beta_hat_ += gamma_ * forward_dist_ * y_e / denom * control_duration_;
 
   // 5 — Angular velocity with trapezoidal profile.
+	//   !!! potential issue: beta hat accumulates even when turning-in-place
+	//   which is against the hypothesis of the ALOS algor
   geometry_msgs::msg::TwistStamped cmd_vel;
   cmd_vel.header = pose.header;
   cmd_vel.twist.angular.z = computeAngularVelocity(angle_error, speed);
