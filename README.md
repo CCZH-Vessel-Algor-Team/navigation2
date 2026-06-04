@@ -27,7 +27,12 @@
   - `scripts/target_ship_state_publisher.py`：从 Gazebo 世界位姿生成 `/tracked_ship`，并广播 `map -> ts_virtual_base_link`。
   - `scripts/target_ship_motion_commander.py`：发布 `/target_ship/cmd_vel`，驱动目标船往返运动。
 
-### 4) `nav2_colregs_local_path_behavior`
+### 4) `nav2_colregs_costmap_layers`
+- 作用：自定义 Costmap Layer 插件。`TSProjectionLayer` 订阅 `/tracked_ship`，直接在 `master_grid` 上标注目标船当前位姿的 LETHAL 圆形障碍物。
+- 对标 `ObstacleLayer` 的 "topic → 标记 master_grid" 模式，不通过 keepout mask 中转。
+- 配套验证 launch：`colregs_ts_projection_validation_launch.py`（不含 vector_object_server）。
+
+### 5) `nav2_colregs_local_path_behavior`
 - 作用：自定义 Behavior 插件（`TimedBehavior`），由 `behavior_server` 加载，接收全局路径并在 `onRun()` 中打印路径长度与首末点。
 - Action：`action/CreateLocalPath.action`，Goal 为 `nav_msgs/Path`。
 - 对应的 BT Action Node 在 `nav2_colregs_local_path_bt_nodes` 中。
@@ -37,7 +42,16 @@
 - 从 blackboard 读取 `{path}`，编码为 action goal 发送到 behavior_server，成功后将路径透传写回 `{local_path}`。
 - 依赖 `nav2_behavior_tree` + `nav2_colregs_local_path_behavior`（action 类型）。
 
-### 6) `nav2_colregs_los_controller`
+### 6) `colregs_ts_projection_validation_launch.py`
+- 命令：
+
+```bash
+ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py
+```
+
+- 作用：TS 代价图投影验证 launch。使用 `TSProjectionLayer` 替代 vector_object_server，直接在 costmap 中标注 TS 障碍物。不含 keepout 链路。
+
+### 7) `nav2_colregs_los_controller`
 - 作用：最简 LOS 制导 Controller 插件，搭载于 `controller_server`。
 - 算法：沿路径找前视点 → atan2(y,x) 算目标艏向 → 角/线速度梯形加速 → footprint 碰撞检测。
 - 关键参数：`desired_linear_vel`, `max_linear_accel`, `max_angular_vel`, `max_angular_accel`, `lookahead_dist`, `max_angle_for_motion`（超阈值原地转向，0=关闭）。
@@ -67,6 +81,7 @@ colcon build --symlink-install \
   --packages-select \
   nav2_colregs_msgs \
   nav2_colregs_vector_object_server \
+  nav2_colregs_costmap_layers \
   nav2_colregs_local_path_bt_nodes \
   nav2_colregs_local_path_behavior \
   nav2_colregs_los_controller \
@@ -168,6 +183,10 @@ ros2 launch nav2_colregs_bringup colregs_ts_vector_keepout_simulation_launch.py 
 ```text
 nav2_colregs_msgs/
 nav2_colregs_vector_object_server/
+nav2_colregs_costmap_layers/
+  include/
+  src/
+  plugins.xml
 nav2_colregs_local_path_bt_nodes/
   include/
   src/
