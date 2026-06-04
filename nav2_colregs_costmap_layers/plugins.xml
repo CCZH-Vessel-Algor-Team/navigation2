@@ -1,0 +1,5 @@
+<library path="nav2_colregs_costmap_layers_plugin">
+  <class type="nav2_colregs_costmap_layers::TSProjectionLayer" base_class_type="nav2_costmap_2d::Layer">
+    <description>Minimal PoC: subscribes to /tracked_ship and marks a LETHAL circle in the costmap.</description>
+  </class>
+</library>
