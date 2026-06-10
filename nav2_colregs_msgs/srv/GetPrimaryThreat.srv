@@ -1,0 +1,4 @@
+
+---
+bool              has_threat
+ProcessedTS       primary_threat
