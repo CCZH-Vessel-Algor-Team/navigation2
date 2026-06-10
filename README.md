@@ -51,12 +51,15 @@ ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py
 
 - 作用：TS 代价图投影验证 launch。使用 `TSProjectionLayer` 替代 vector_object_server，直接在 costmap 中标注 TS 障碍物。不含 keepout 链路。
 
-### 7) `nav2_colregs_los_controller`
+### 8) `nav2_colregs_ts_manager`
+- 作用：TS 状态管理节点（LifecycleNode）。订阅 `/tracked_ship` 和 `/odom`，计算本船-TS 之间的 CPA/TCPA，通过 `/get_primary_threat` 服务向外暴露是否构成碰撞威胁。
+- 与 `TSProjectionLayer` 配合：前者负责"TS 是否危险"的判定，后者负责"将 TS 位姿画入 costmap"。
+
+### 9) `nav2_colregs_los_controller`
 - 作用：最简 LOS 制导 Controller 插件，搭载于 `controller_server`。
 - 算法：沿路径找前视点 → atan2(y,x) 算目标艏向 → 角/线速度梯形加速 → footprint 碰撞检测。
-- 关键参数：`desired_linear_vel`, `max_linear_accel`, `max_angular_vel`, `max_angular_accel`, `lookahead_dist`, `max_angle_for_motion`（超阈值原地转向，0=关闭）。
 
-### 7) `nav2_colregs_alos_controller`
+### 10) `nav2_colregs_alos_controller`
 - 作用：Adaptive LOS（ALOS）制导 Controller 插件，在 LOS 基础上加入侧滑角自适应估计。
 - 算法：基于 Fossen (2023) — 找最近点 + 前推点 → 计算路径切线角 π_h 和侧偏 y_e → 自适应侧滑估计 β̂ → 目标角度 ψ_d = π_h - β̂ - atan(y_e/Δ)。
 - 特点：无段追踪（利用稠密 path），β̂ 积分消除 USV 流/风稳态侧偏。
@@ -84,6 +87,7 @@ colcon build --symlink-install \
   nav2_colregs_costmap_layers \
   nav2_colregs_local_path_bt_nodes \
   nav2_colregs_local_path_behavior \
+  nav2_colregs_ts_manager \
   nav2_colregs_los_controller \
   nav2_colregs_alos_controller \
   nav2_colregs_bringup
@@ -119,32 +123,23 @@ ros2 launch nav2_colregs_bringup colregs_ts_simulation_launch.py
 
 - 作用：单船 + 目标船（TS）仿真，含 TS 状态发布与运动控制。
 
-### 3) `colregs_ts_keepout_simulation_launch.py`
-- 命令：
-
-```bash
-ros2 launch nav2_colregs_bringup colregs_ts_keepout_simulation_launch.py
-```
-
-- 作用：在 TS 仿真基础上，加载静态 keepout mask + keepout filter info。
-
-### 4) `colregs_ts_vector_keepout_simulation_launch.py`
-- 命令：
-
-```bash
-ros2 launch nav2_colregs_bringup colregs_ts_vector_keepout_simulation_launch.py
-```
-
-- 作用：在 TS 仿真基础上，使用 `nav2_colregs_vector_object_server` 动态生成 keepout mask。
-
-### 5) `colregs_ts_behavior_validation_launch.py`
+### 3) `colregs_ts_behavior_validation_launch.py`
 - 命令：
 
 ```bash
 ros2 launch nav2_colregs_bringup colregs_ts_behavior_validation_launch.py
 ```
 
-- 作用：独立验证 launch。在 TS 仿真 + vector keepout 基础上，插入 `CreateLocalPath` BT 节点（1Hz），读取全局路径、打印路径信息并通过 `{local_path}` 透传给 `FollowPath`，用于 behavior 插件端到端验证。
+- 作用：独立验证 launch。在 TS 仿真 + vector keepout 基础上，插入 `CreateLocalPath` BT 节点（1Hz），读取全局路径、打印路径信息并通过 `{local_path}` 透传给 `FollowPath`。
+
+### 4) `colregs_ts_projection_validation_launch.py`
+- 命令：
+
+```bash
+ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py
+```
+
+- 作用：COLREGS 基础开发 launch（后续开发以此为准）。包含 TSProjectionLayer（直接在 costmap 标注 TS 障碍物）和 TS State Manager 节点（订阅 `/tracked_ship`，提供 `/get_primary_threat` 服务）。不含 vector_object_server 和 keepout 链路。
 
 ## 四、关键可配置参数
 
@@ -187,6 +182,9 @@ nav2_colregs_costmap_layers/
   include/
   src/
   plugins.xml
+nav2_colregs_ts_manager/
+  include/
+  src/
 nav2_colregs_local_path_bt_nodes/
   include/
   src/

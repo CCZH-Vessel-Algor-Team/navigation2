@@ -116,15 +116,8 @@ void TSProjectionLayer::updateCosts(
 
   unsigned int mx, my;
   if (!master_grid.worldToMap(ts_x, ts_y, mx, my)) {
-    RCLCPP_INFO_THROTTLE(logger_, *clock_, 3000,
-      "%s: TS (%.2f, %.2f) outside costmap bounds",
-      global_frame_.c_str(), ts_x, ts_y);
     return;
   }
-
-  RCLCPP_INFO_THROTTLE(logger_, *clock_, 3000,
-    "%s: marking TS circle at (%.2f, %.2f) r=%.2f → cell (%u, %u)",
-    global_frame_.c_str(), ts_x, ts_y, ts_r, mx, my);
 
   // Radius in cells (ceiling to ensure full coverage).
   const unsigned int radius_in_cells =
@@ -158,12 +151,6 @@ void TSProjectionLayer::updateCosts(
       }
     }
   }
-
-  // Verify: immediately read back the cell we just marked
-  unsigned char written = master_grid.getCharMap()[master_grid.getIndex(mx, my)];
-  RCLCPP_INFO_THROTTLE(logger_, *clock_, 2000,
-    "%s: post-write cell at (%u,%u) = %u (LETHAL=%u)", global_frame_.c_str(),
-    mx, my, written, nav2_costmap_2d::LETHAL_OBSTACLE);
 }
 
 void TSProjectionLayer::reset()

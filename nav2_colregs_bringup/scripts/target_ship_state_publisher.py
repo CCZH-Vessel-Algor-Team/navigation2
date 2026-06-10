@@ -40,6 +40,9 @@ class TargetShipStatePublisher(Node):
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self._count = 0
+        self._prev_x = None
+        self._prev_y = None
+        self._prev_stamp = None
         self._name_regex = re.compile(r'^\s*name:\s+"([^"]+)"\s*$')
         self._x_regex = re.compile(r'^\s*x:\s+([-+0-9.eE]+)\s*$')
         self._y_regex = re.compile(r'^\s*y:\s+([-+0-9.eE]+)\s*$')
@@ -173,6 +176,19 @@ class TargetShipStatePublisher(Node):
         tracked.pose.orientation.z = latest[5]
         tracked.pose.orientation.w = latest[6]
         tracked.radius = self.target_radius
+
+        # Compute TS velocity from finite difference of position.
+        if self._prev_x is not None and self._prev_stamp is not None:
+            curr_t = stamp.sec + stamp.nanosec * 1e-9
+            prev_t = self._prev_stamp.sec + self._prev_stamp.nanosec * 1e-9
+            dt = curr_t - prev_t
+            if dt > 0.001:
+                tracked.twist.linear.x = (latest[0] - self._prev_x) / dt
+                tracked.twist.linear.y = (latest[1] - self._prev_y) / dt
+        self._prev_x = latest[0]
+        self._prev_y = latest[1]
+        self._prev_stamp = stamp
+
         self.tracked_pub.publish(tracked)
 
         transform = TransformStamped()
@@ -187,11 +203,6 @@ class TargetShipStatePublisher(Node):
         transform.transform.rotation.z = latest[5]
         transform.transform.rotation.w = latest[6]
         self.tf_broadcaster.sendTransform(transform)
-
-        self.get_logger().info(
-            f'target_ship world pose sample#{self._count}: '
-            f'x={latest[0]:.3f}, y={latest[1]:.3f}, z={latest[2]:.3f}',
-            throttle_duration_sec=0.5)
 
     def destroy_node(self):
         self._stop_event.set()
