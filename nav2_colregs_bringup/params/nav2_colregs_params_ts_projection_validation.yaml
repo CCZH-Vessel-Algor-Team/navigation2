@@ -444,3 +444,14 @@ docking_server:
       projection_time: 5.0
       simulation_step: 0.1
       dock_collision_threshold: 0.3
+
+ts_state_manager:
+  ros__parameters:
+    frequency: 10.0
+    ts_timeout: 1.0
+    tcpa_horizon: 10.0
+    safety_factor: 1.1
+    os_radius: 0.3
+    global_frame: "map"
+    robot_base_frame: "base_link"
+    odom_topic: "odom"
