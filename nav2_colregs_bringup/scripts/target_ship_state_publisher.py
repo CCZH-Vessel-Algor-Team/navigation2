@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
-"""Publish /tracked_ship and TS TF from Gazebo world absolute pose."""
+"""Publish /tracked_ship (TrackedShipList) and TS TF from Gazebo world absolute pose."""
 
 import queue
 import re
 import subprocess
 import threading
+import uuid
 
 import rclpy
 from geometry_msgs.msg import TransformStamped
-from nav2_colregs_msgs.msg import TrackedShip
+from nav2_colregs_msgs.msg import TrackedShip, TrackedShipList
 from rclpy.node import Node
 from tf2_ros import TransformBroadcaster
+
+
+# DNS namespace UUID (RFC 4122) used for UUID5 derivation.
+_NAMESPACE_UUID = uuid.UUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8')
+
+
+def _model_to_uuid(model_name):
+    """Deterministic UUID5 from model_name."""
+    return uuid.uuid5(_NAMESPACE_UUID, model_name)
 
 
 class TargetShipStatePublisher(Node):
@@ -30,13 +40,16 @@ class TargetShipStatePublisher(Node):
         self.target_radius = float(self.get_parameter('target_radius').value)
         self.tf_child_frame_id = str(self.get_parameter('tf_child_frame_id').value)
 
+        self._uuid = _model_to_uuid(self.target_model_name)
+        self._target_id = [int(b) for b in self._uuid.bytes]
+
         self._events = queue.Queue()
         self._stop_event = threading.Event()
         self._reader_thread = threading.Thread(target=self._reader_main, daemon=True)
         self._reader_thread.start()
         self.timer = self.create_timer(0.05, self._drain_events)
 
-        self.tracked_pub = self.create_publisher(TrackedShip, self.tracked_topic, 10)
+        self.tracked_pub = self.create_publisher(TrackedShipList, self.tracked_topic, 10)
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self._count = 0
@@ -51,7 +64,8 @@ class TargetShipStatePublisher(Node):
 
         self.get_logger().info(
             f'Listening Gazebo pose topic: {self.gz_pose_topic} for model={self.target_model_name}; '
-            f'publishing {self.tracked_topic} and TF {self.tracked_frame_id}->{self.tf_child_frame_id}')
+            f'publishing {self.tracked_topic} and TF {self.tracked_frame_id}->{self.tf_child_frame_id}'
+            f' (UUID: {self._uuid})')
 
     def _reader_main(self):
         process = subprocess.Popen(
@@ -165,17 +179,16 @@ class TargetShipStatePublisher(Node):
         stamp = self.get_clock().now().to_msg()
         self._count += 1
 
-        tracked = TrackedShip()
-        tracked.header.stamp = stamp
-        tracked.header.frame_id = self.tracked_frame_id
-        tracked.pose.position.x = latest[0]
-        tracked.pose.position.y = latest[1]
-        tracked.pose.position.z = latest[2]
-        tracked.pose.orientation.x = latest[3]
-        tracked.pose.orientation.y = latest[4]
-        tracked.pose.orientation.z = latest[5]
-        tracked.pose.orientation.w = latest[6]
-        tracked.radius = self.target_radius
+        ship = TrackedShip()
+        ship.target_id.uuid = self._target_id
+        ship.pose.position.x = latest[0]
+        ship.pose.position.y = latest[1]
+        ship.pose.position.z = latest[2]
+        ship.pose.orientation.x = latest[3]
+        ship.pose.orientation.y = latest[4]
+        ship.pose.orientation.z = latest[5]
+        ship.pose.orientation.w = latest[6]
+        ship.radius = self.target_radius
 
         # Compute TS velocity from finite difference of position.
         if self._prev_x is not None and self._prev_stamp is not None:
@@ -183,13 +196,17 @@ class TargetShipStatePublisher(Node):
             prev_t = self._prev_stamp.sec + self._prev_stamp.nanosec * 1e-9
             dt = curr_t - prev_t
             if dt > 0.001:
-                tracked.twist.linear.x = (latest[0] - self._prev_x) / dt
-                tracked.twist.linear.y = (latest[1] - self._prev_y) / dt
+                ship.twist.linear.x = (latest[0] - self._prev_x) / dt
+                ship.twist.linear.y = (latest[1] - self._prev_y) / dt
         self._prev_x = latest[0]
         self._prev_y = latest[1]
         self._prev_stamp = stamp
 
-        self.tracked_pub.publish(tracked)
+        tracked_list = TrackedShipList()
+        tracked_list.header.stamp = stamp
+        tracked_list.header.frame_id = self.tracked_frame_id
+        tracked_list.ships = [ship]
+        self.tracked_pub.publish(tracked_list)
 
         transform = TransformStamped()
         transform.header.stamp = stamp

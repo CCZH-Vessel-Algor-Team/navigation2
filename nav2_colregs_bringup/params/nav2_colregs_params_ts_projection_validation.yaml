@@ -157,6 +157,7 @@ local_costmap:
       ts_projection_layer:
         plugin: "nav2_colregs_costmap_layers::TSProjectionLayer"
         enabled: True
+        track_timeout: 3.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.0
@@ -200,6 +201,7 @@ global_costmap:
       ts_projection_layer:
         plugin: "nav2_colregs_costmap_layers::TSProjectionLayer"
         enabled: True
+        track_timeout: 3.0
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: true
@@ -448,7 +450,7 @@ docking_server:
 ts_state_manager:
   ros__parameters:
     frequency: 10.0
-    ts_timeout: 1.0
+    ts_timeout: 3.0
     tcpa_horizon: 10.0
     safety_factor: 1.1
     os_radius: 0.3
