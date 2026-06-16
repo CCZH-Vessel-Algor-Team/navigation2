@@ -13,6 +13,7 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TrackedShip.msg"
+  "msg/TrackedShipList.msg"
   "msg/CircleObject.msg"
   "msg/PolygonObject.msg"
   "msg/ProcessedTS.msg"

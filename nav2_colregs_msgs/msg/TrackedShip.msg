@@ -1,8 +1,8 @@
 # TrackedShip.msg
-# Represents a tracked ship (Target Ship) with position, velocity, and collision radius.
-# Published on /tracked_ship by the target ship controller.
+# Represents a tracked ship (Target Ship) — one entry in a TrackedShipList.
+# Frame is inherited from TrackedShipList.header.frame_id.
 
-std_msgs/Header header
-geometry_msgs/Pose  pose      # current position + orientation in map frame
-geometry_msgs/Twist twist     # current velocity (linear + angular)
-float64             radius    # collision radius (meters) for costmap projection
+unique_identifier_msgs/UUID target_id   # deterministic ID (UUID5 from model name)
+geometry_msgs/Pose  pose                # position + orientation (in list frame_id)
+geometry_msgs/Twist twist               # velocity (linear + angular)
+float64             radius              # collision radius (meters)
