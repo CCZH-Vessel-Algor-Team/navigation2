@@ -14,13 +14,14 @@ find_package(rosidl_default_generators REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TrackedShip.msg"
   "msg/TrackedShipList.msg"
+  "msg/ProcessedTS.msg"
+  "msg/ProcessedTSList.msg"
+  "msg/VOBarrierLines.msg"
   "msg/CircleObject.msg"
   "msg/PolygonObject.msg"
-  "msg/ProcessedTS.msg"
   "srv/AddShapes.srv"
   "srv/RemoveShapes.srv"
   "srv/GetShapes.srv"
-  "srv/GetPrimaryThreat.srv"
   DEPENDENCIES geometry_msgs std_msgs unique_identifier_msgs
 )
 
