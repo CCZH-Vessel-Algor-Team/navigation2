@@ -1,0 +1,12 @@
+# GetAvoidancePoint.srv
+# Computes a safe avoidance point for COLREGS-compliant path planning.
+# The service internally selects the primary threat from its /processed_ts_list cache.
+
+geometry_msgs/Pose os_pose     # own-ship pose in map frame
+geometry_msgs/Pose goal        # navigation goal (optional, for direction bias)
+string avoid_direction         # "right" or "left" — starboard/port passing preference
+---
+unique_identifier_msgs/UUID primary_target_id  # selected primary threat (all zeros if none)
+geometry_msgs/Point point                      # avoidance point in map frame
+float64 safe_heading                           # recommended safe heading (rad, map frame)
+bool has_feasible_angle                        # false if inescapable or no threat
