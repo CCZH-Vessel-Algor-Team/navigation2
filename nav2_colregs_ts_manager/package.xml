@@ -2,7 +2,7 @@
 <package format="3">
   <name>nav2_colregs_ts_manager</name>
   <version>1.0.0</version>
-  <description>TS State Manager: subscribes /tracked_ship, computes CPA/TCPA, exposes /get_primary_threat service.</description>
+  <description>TS State Manager: subscribes /tracked_ship, computes CPA/TCPA, publishes /processed_ts_list.</description>
   <maintainer email="vectorwang@hotmail.com">Vector Wang</maintainer>
   <license>MIT</license>
 

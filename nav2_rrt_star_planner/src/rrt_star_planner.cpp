@@ -162,9 +162,8 @@ nav_msgs::msg::Path RRTStarPlanner::createPlan(
   plan.header.frame_id = global_frame_;
 
   RCLCPP_INFO(logger_, "RRTStarPlanner: found path with %ld points "
-    "(raw=%ld, pruned=%ld) in %.1f ms",
-    plan.poses.size(), raw_path.size(), (!prune_path_ ? raw_path.size() : raw_path.size()),
-    elapsed_ms);
+    "(raw=%ld, prune=%d) plan=%.1f ms",
+    plan.poses.size(), raw_path.size(), prune_path_, elapsed_ms);
 
   return plan;
 }

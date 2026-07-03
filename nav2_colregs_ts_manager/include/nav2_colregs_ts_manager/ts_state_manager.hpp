@@ -1,21 +1,41 @@
 #ifndef NAV2_COLREGS_TS_MANAGER__TS_STATE_MANAGER_HPP_
 #define NAV2_COLREGS_TS_MANAGER__TS_STATE_MANAGER_HPP_
 
-#include <memory>
-#include <string>
+#include <iomanip>
 #include <limits>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <unordered_map>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
-#include "nav2_colregs_msgs/msg/tracked_ship.hpp"
+#include "nav2_colregs_msgs/msg/tracked_ship_list.hpp"
 #include "nav2_colregs_msgs/msg/processed_ts.hpp"
-#include "nav2_colregs_msgs/srv/get_primary_threat.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
 namespace nav2_colregs_ts_manager
 {
+
+inline std::string uuidToString(const uint8_t * data)
+{
+  std::ostringstream oss;
+  oss << std::hex << std::setfill('0');
+  for (size_t i = 0; i < 16; ++i) {
+    if (i == 4 || i == 6 || i == 8 || i == 10) oss << '-';
+    oss << std::setw(2) << static_cast<int>(data[i]);
+  }
+  return oss.str();
+}
+
+struct TSEntry
+{
+  double x, y, radius;
+  double vx, vy;
+  rclcpp::Time last_seen;
+};
 
 class TSStateManager : public rclcpp_lifecycle::LifecycleNode
 {
@@ -36,26 +56,20 @@ protected:
   on_cleanup(const rclcpp_lifecycle::State & state) override;
 
 private:
-  void trackedShipCallback(nav2_colregs_msgs::msg::TrackedShip::ConstSharedPtr msg);
+  void trackedShipCallback(
+    nav2_colregs_msgs::msg::TrackedShipList::ConstSharedPtr msg);
   void odomCallback(nav_msgs::msg::Odometry::ConstSharedPtr msg);
   void timerCallback();
-  void handleServiceRequest(
-    const std::shared_ptr<rmw_request_id_t> request_header,
-    const std::shared_ptr<nav2_colregs_msgs::srv::GetPrimaryThreat::Request> request,
-    const std::shared_ptr<nav2_colregs_msgs::srv::GetPrimaryThreat::Response> response);
 
-  rclcpp::Subscription<nav2_colregs_msgs::msg::TrackedShip>::SharedPtr ts_sub_;
+  rclcpp::Subscription<nav2_colregs_msgs::msg::TrackedShipList>::SharedPtr ts_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
-  rclcpp::Service<nav2_colregs_msgs::srv::GetPrimaryThreat>::SharedPtr threat_service_;
   rclcpp::TimerBase::SharedPtr timer_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
-  nav2_colregs_msgs::msg::TrackedShip::ConstSharedPtr last_ts_;
-  rclcpp::Time last_ts_stamp_;
+  std::unordered_map<std::string, TSEntry> ts_map_;
   nav_msgs::msg::Odometry::ConstSharedPtr last_odom_;
-  bool ts_valid_{false};
 
   nav2_colregs_msgs::msg::ProcessedTS threat_;
   bool has_threat_{false};

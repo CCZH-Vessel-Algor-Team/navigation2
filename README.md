@@ -13,7 +13,6 @@
   - `ProcessedTS.msg`：经 TS State Manager 处理后的目标船快照（含 `target_id`、CPA/TCPA、威胁标识）。
   - `CircleObject.msg`、`PolygonObject.msg`：矢量障碍物形状（vector_object_server 用）。
 - 服务：
-  - `GetPrimaryThreat.srv`：查询主威胁（TCPA 最小的 TS，含 `ProcessedTS`）。
   - `AddShapes.srv`、`GetShapes.srv`、`RemoveShapes.srv`：矢量对象增删查。
 
 ### 2) `nav2_colregs_vector_object_server`
@@ -44,7 +43,7 @@
 - 从 blackboard 读取 `{path}`，编码为 action goal 发送到 behavior_server，成功后将路径透传写回 `{local_path}`。
 
 ### 7) `nav2_colregs_ts_manager`
-- 作用：TS 状态管理节点（LifecycleNode）。订阅 `/tracked_ship`（`TrackedShipList`）和 `/odom`，逐 `target_id` 维护多 TS 状态，计算 CPA/TCPA，通过 `/get_primary_threat` 服务返回 TCPA 最紧迫的威胁。
+- 作用：TS 状态管理节点（LifecycleNode）。订阅 `/tracked_ship`（`TrackedShipList`）和 `/odom`，逐 `target_id` 维护多 TS 状态，计算 CPA/TCPA，发布 `/processed_ts_list` topic。
 - TS 位姿通过 TF 从消息 frame_id 变换到 `global_frame`（map），确保多坐标系兼容。
 - 与 `TSProjectionLayer` 配合：前者判断"TS 是否危险"，后者将"TS 位姿画入 costmap"。
 - 超时参数：`ts_timeout: 3.0`（自动清除失联船舶）。
@@ -106,7 +105,7 @@ ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py
 ```
 作用：COLREGS 全套开发 launch。组件链：
 - **TSProjectionLayer**（costmap 内标记 TS 障碍物）
-- **TS State Manager**（CPA/TCPA 威胁判定，`/get_primary_threat` 服务）
+  - **TS State Manager**（CPA/TCPA 计算，`/processed_ts_list` topic）
 - **CreateLocalPath BT 节点**（透传路径）
 - **ALOS Controller**（制导）
 - 不含 vector_object_server / keepout 链路。
@@ -154,8 +153,8 @@ ros2 topic echo /tracked_ship --once
 # 检查 costmap 中 TS LETHAL 标记
 ros2 topic echo /local_costmap/costmap --once
 
-# 查询主威胁
-ros2 service call /get_primary_threat nav2_colregs_msgs/srv/GetPrimaryThreat
+# 检查 TS 处理列表
+ros2 topic echo /processed_ts_list --once
 
 # TF 检查
 ros2 run tf2_ros tf2_echo map odom
