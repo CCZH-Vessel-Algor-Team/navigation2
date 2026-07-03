@@ -7,11 +7,13 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "nav2_colregs_msgs/msg/tracked_ship_list.hpp"
 #include "nav2_colregs_msgs/msg/processed_ts.hpp"
+#include "nav2_colregs_msgs/msg/processed_ts_list.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
@@ -61,18 +63,24 @@ private:
   void odomCallback(nav_msgs::msg::Odometry::ConstSharedPtr msg);
   void timerCallback();
 
+  void computeCollisionCone(
+    const TSEntry & ts,
+    double os_x, double os_y, double os_speed,
+    std::vector<double> & min_intervals,
+    std::vector<double> & max_intervals);
+
   rclcpp::Subscription<nav2_colregs_msgs::msg::TrackedShipList>::SharedPtr ts_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
+
+  rclcpp::Publisher<nav2_colregs_msgs::msg::ProcessedTSList>::SharedPtr
+    processed_ts_pub_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
   std::unordered_map<std::string, TSEntry> ts_map_;
   nav_msgs::msg::Odometry::ConstSharedPtr last_odom_;
-
-  nav2_colregs_msgs::msg::ProcessedTS threat_;
-  bool has_threat_{false};
 
   double frequency_{10.0};
   double ts_timeout_{1.0};

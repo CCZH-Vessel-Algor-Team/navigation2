@@ -208,6 +208,9 @@ class TargetShipStatePublisher(Node):
         tracked_list.ships = [ship]
         self.tracked_pub.publish(tracked_list)
 
+        # if self._count % 100 == 0:
+        #     self.get_logger().info(f'published {self._count} msgs on {self.tracked_topic}')
+
         transform = TransformStamped()
         transform.header.stamp = stamp
         transform.header.frame_id = self.tracked_frame_id
