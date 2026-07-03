@@ -9,25 +9,16 @@ namespace nav2_colregs_ts_manager
 {
 
 TSStateManager::TSStateManager()
-: rclcpp_lifecycle::LifecycleNode("ts_state_manager")
+: rclcpp::Node("ts_state_manager")
 {
-}
-
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
-
-rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
-TSStateManager::on_configure(const rclcpp_lifecycle::State &)
-{
-  declare_parameter("frequency", frequency_);
-  declare_parameter("ts_timeout", ts_timeout_);
-  declare_parameter("tcpa_horizon", tcpa_horizon_);
-  declare_parameter("safety_factor", safety_factor_);
-  declare_parameter("os_radius", os_radius_);
-  declare_parameter("global_frame", global_frame_);
-  declare_parameter("robot_base_frame", robot_base_frame_);
-  declare_parameter("odom_topic", odom_topic_);
+  declare_parameter("frequency", 10.0);
+  declare_parameter("ts_timeout", 1.0);
+  declare_parameter("tcpa_horizon", 3.0);
+  declare_parameter("safety_factor", 1.1);
+  declare_parameter("os_radius", 0.3);
+  declare_parameter("global_frame", "map");
+  declare_parameter("robot_base_frame", "base_link");
+  declare_parameter("odom_topic", "odom");
 
   frequency_ = get_parameter("frequency").as_double();
   ts_timeout_ = get_parameter("ts_timeout").as_double();
@@ -39,16 +30,7 @@ TSStateManager::on_configure(const rclcpp_lifecycle::State &)
   odom_topic_ = get_parameter("odom_topic").as_string();
 
   tf_ = std::make_shared<tf2_ros::Buffer>(get_clock());
-  tf_->setUsingDedicatedThread(true);
-  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_, shared_from_this(), true);
 
-  RCLCPP_INFO(get_logger(), "TSStateManager configured (ts_timeout=%.1fs)", ts_timeout_);
-  return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
-}
-
-rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
-TSStateManager::on_activate(const rclcpp_lifecycle::State &)
-{
   ts_sub_ = create_subscription<nav2_colregs_msgs::msg::TrackedShipList>(
     "tracked_ship", rclcpp::SystemDefaultsQoS(),
     std::bind(&TSStateManager::trackedShipCallback, this, std::placeholders::_1));
@@ -65,29 +47,10 @@ TSStateManager::on_activate(const rclcpp_lifecycle::State &)
     std::chrono::duration<double>(1.0 / frequency_));
   timer_ = create_wall_timer(period, std::bind(&TSStateManager::timerCallback, this));
 
-  RCLCPP_INFO(get_logger(), "TSStateManager activated");
-  return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
-}
+  tf_->setUsingDedicatedThread(true);
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_, true);
 
-rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
-TSStateManager::on_deactivate(const rclcpp_lifecycle::State &)
-{
-  timer_.reset();
-  ts_sub_.reset();
-  odom_sub_.reset();
-  processed_ts_pub_.reset();
-  ts_map_.clear();
-  RCLCPP_INFO(get_logger(), "TSStateManager deactivated");
-  return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
-}
-
-rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
-TSStateManager::on_cleanup(const rclcpp_lifecycle::State &)
-{
-  tf_listener_.reset();
-  tf_.reset();
-  RCLCPP_INFO(get_logger(), "TSStateManager cleaned up");
-  return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
+  RCLCPP_INFO(get_logger(), "TSStateManager started (ts_timeout=%.1fs)", ts_timeout_);
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +144,6 @@ void TSStateManager::timerCallback()
     const double rel_vx = ts.vx - os_vx;
     const double rel_vy = ts.vy - os_vy;
 
-    // CPA.
     const double rel_speed_sq = rel_vx * rel_vx + rel_vy * rel_vy;
     double tcpa = std::numeric_limits<double>::infinity();
     double dcpa = std::hypot(rel_x, rel_y);
@@ -194,14 +156,12 @@ void TSStateManager::timerCallback()
     const double safe_dist = (os_radius_ + ts.radius) * safety_factor_;
     bool has_threat = (tcpa > 0.0 && tcpa <= tcpa_horizon_ && dcpa < safe_dist);
 
-    // Collision cone.
     std::vector<double> cone_min, cone_max;
     if (os_speed > 1e-6) {
       computeCollisionCone(ts, os_pose.pose.position.x, os_pose.pose.position.y,
                            os_speed, cone_min, cone_max);
     }
 
-    // Fill ProcessedTS.
     nav2_colregs_msgs::msg::ProcessedTS entry;
     entry.header.stamp = now;
     entry.header.frame_id = global_frame_;
@@ -217,9 +177,6 @@ void TSStateManager::timerCallback()
     entry.collision_cone_min = cone_min;
     entry.collision_cone_max = cone_max;
     entry.encounter_type = nav2_colregs_msgs::msg::ProcessedTS::UNKNOWN;
-    for (size_t i = 0; i < 16; ++i) {
-      entry.target_id.uuid[i] = pair.first.empty() ? 0 : 0;
-    }
     {
       const std::string & s = pair.first;
       size_t byte_idx = 0;
@@ -258,7 +215,6 @@ void TSStateManager::computeCollisionCone(
   const double dist = std::hypot(rel_x, rel_y);
   const double sum_r = os_radius_ + ts.radius;
 
-  // Inescapable: TS covers entire heading space.
   if (dist <= sum_r) {
     min_intervals.push_back(0.0);
     max_intervals.push_back(2.0 * M_PI);
@@ -266,26 +222,21 @@ void TSStateManager::computeCollisionCone(
   }
 
   const double threshold = std::asin(sum_r / dist);
-  constexpr double kResolution = 2.0 * M_PI / 180.0;  // 2° in radians
+  constexpr double kResolution = 2.0 * M_PI / 180.0;
 
-  // Brute-force scan: check each heading whether rel_vel collides.
   const int N = static_cast<int>(2.0 * M_PI / kResolution);
   std::vector<bool> unsafe(N, false);
   bool any_unsafe = false;
 
   for (int i = 0; i < N; ++i) {
     double heading = i * kResolution;
-    // OS velocity at this heading.
     double os_vx_h = os_speed * std::cos(heading);
     double os_vy_h = os_speed * std::sin(heading);
-    // Relative velocity OS→TS.
     double rvx = os_vx_h - ts.vx;
     double rvy = os_vy_h - ts.vy;
     double rv_len = std::hypot(rvx, rvy);
 
     if (rv_len < 1e-6) {
-      // OS and TS moving identically → no relative motion.
-      // If already within collision distance, collision inevitable.
       if (dist < sum_r) {
         unsafe[i] = true;
         any_unsafe = true;
@@ -293,7 +244,6 @@ void TSStateManager::computeCollisionCone(
       continue;
     }
 
-    // Angle between rel_pos and rel_vel.
     double dot = rel_x * rvx + rel_y * rvy;
     double cos_angle = dot / (dist * rv_len);
     cos_angle = std::max(-1.0, std::min(1.0, cos_angle));
@@ -309,8 +259,6 @@ void TSStateManager::computeCollisionCone(
     return;
   }
 
-  // Merge adjacent unsafe bins into intervals, handling wrap-around.
-  // Treat the circular array as linear by scanning once, then check wrap.
   bool in_interval = false;
   double start = 0.0;
 
@@ -325,14 +273,10 @@ void TSStateManager::computeCollisionCone(
       in_interval = false;
     }
   }
-  // Tail: interval runs to 2π.
   if (in_interval) {
     min_intervals.push_back(start);
     max_intervals.push_back(2.0 * M_PI);
   }
-
-  // Cross-0 intervals (e.g. [350°, 10°]) are kept as two separate intervals.
-  // Consumer handles cyclic complement.
 }
 
 }  // namespace nav2_colregs_ts_manager

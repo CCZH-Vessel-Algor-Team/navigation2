@@ -7,8 +7,6 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
-from launch_ros.actions import Node
-
 
 def generate_launch_description():
     bringup_dir = get_package_share_directory('nav2_colregs_bringup')
@@ -40,24 +38,13 @@ def generate_launch_description():
         }.items(),
     )
 
-    ts_state_manager = Node(
-        package='nav2_colregs_ts_manager',
-        executable='ts_state_manager',
-        name='ts_state_manager',
-        output='screen',
-        parameters=[params_file, {'use_sim_time': use_sim_time}],
-    )
-
-    lifecycle_manager_ts = Node(
-        package='nav2_lifecycle_manager',
-        executable='lifecycle_manager',
-        name='lifecycle_manager_ts',
-        output='screen',
-        parameters=[
-            {'use_sim_time': use_sim_time},
-            {'autostart': autostart},
-            {'node_names': ['ts_state_manager']},
-        ],
+    ts_subsystem = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(bringup_dir, 'launch', 'ts_subsystem_launch.py')),
+        launch_arguments={
+            'params_file': params_file,
+            'use_sim_time': use_sim_time,
+        }.items(),
     )
 
     ld = LaunchDescription()
@@ -66,6 +53,5 @@ def generate_launch_description():
     ld.add_action(declare_autostart)
     ld.add_action(declare_headless)
     ld.add_action(base_launch)
-    ld.add_action(ts_state_manager)
-    ld.add_action(lifecycle_manager_ts)
+    ld.add_action(ts_subsystem)
     return ld

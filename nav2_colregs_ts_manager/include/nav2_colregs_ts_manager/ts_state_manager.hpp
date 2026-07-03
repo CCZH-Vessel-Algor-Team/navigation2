@@ -10,7 +10,6 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
-#include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "nav2_colregs_msgs/msg/tracked_ship_list.hpp"
 #include "nav2_colregs_msgs/msg/processed_ts.hpp"
 #include "nav2_colregs_msgs/msg/processed_ts_list.hpp"
@@ -39,23 +38,10 @@ struct TSEntry
   rclcpp::Time last_seen;
 };
 
-class TSStateManager : public rclcpp_lifecycle::LifecycleNode
+class TSStateManager : public rclcpp::Node
 {
 public:
   TSStateManager();
-
-protected:
-  rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
-  on_configure(const rclcpp_lifecycle::State & state) override;
-
-  rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
-  on_activate(const rclcpp_lifecycle::State & state) override;
-
-  rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
-  on_deactivate(const rclcpp_lifecycle::State & state) override;
-
-  rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
-  on_cleanup(const rclcpp_lifecycle::State & state) override;
 
 private:
   void trackedShipCallback(
@@ -72,9 +58,7 @@ private:
   rclcpp::Subscription<nav2_colregs_msgs::msg::TrackedShipList>::SharedPtr ts_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
-
-  rclcpp::Publisher<nav2_colregs_msgs::msg::ProcessedTSList>::SharedPtr
-    processed_ts_pub_;
+  rclcpp::Publisher<nav2_colregs_msgs::msg::ProcessedTSList>::SharedPtr processed_ts_pub_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;

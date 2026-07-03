@@ -2,14 +2,13 @@
 <package format="3">
   <name>nav2_colregs_ts_manager</name>
   <version>1.0.0</version>
-  <description>TS State Manager: subscribes /tracked_ship, computes CPA/TCPA, publishes /processed_ts_list.</description>
+  <description>TS Subsystem: TS State Manager (CPA + LVO), Avoidance Point, COLREGS Barrier</description>
   <maintainer email="vectorwang@hotmail.com">Vector Wang</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
-  <depend>rclcpp_lifecycle</depend>
   <depend>nav2_colregs_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
