@@ -1,4 +1,4 @@
-"""TS subsystem launch — TS State Manager + Avoidance Point."""
+"""TS subsystem launch — TS State Manager + Avoidance Point + COLREGS Barrier."""
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -27,6 +27,13 @@ def generate_launch_description():
             package='nav2_colregs_ts_manager',
             executable='avoidance_point_node',
             name='avoidance_point_node',
+            output='screen',
+            parameters=[params_file, {'use_sim_time': use_sim_time}],
+        ),
+        Node(
+            package='nav2_colregs_ts_manager',
+            executable='barrier_node',
+            name='barrier_node',
             output='screen',
             parameters=[params_file, {'use_sim_time': use_sim_time}],
         ),

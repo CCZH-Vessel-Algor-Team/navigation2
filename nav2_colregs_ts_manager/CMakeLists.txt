@@ -18,6 +18,7 @@ set(library_name ts_manager_core)
 add_library(${library_name} SHARED
   src/ts_state_manager.cpp
   src/avoidance_point.cpp
+  src/barrier_node.cpp
 )
 
 ament_target_dependencies(${library_name}
@@ -31,8 +32,12 @@ add_executable(avoidance_point_node src/avoidance_point_main.cpp)
 target_link_libraries(avoidance_point_node ${library_name})
 ament_target_dependencies(avoidance_point_node rclcpp)
 
+add_executable(barrier_node src/barrier_node_main.cpp)
+target_link_libraries(barrier_node ${library_name})
+ament_target_dependencies(barrier_node rclcpp)
+
 install(TARGETS ${library_name} ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
-install(TARGETS ts_state_manager avoidance_point_node RUNTIME DESTINATION lib/${PROJECT_NAME})
+install(TARGETS ts_state_manager avoidance_point_node barrier_node RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include/)
 
 ament_export_include_directories(include)
