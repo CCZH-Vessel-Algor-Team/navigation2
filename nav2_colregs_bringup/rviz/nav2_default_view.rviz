@@ -549,6 +549,18 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: route_graph
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: CPA Markers
+      Namespaces:
+        cpa: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: cpa_markers
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
