@@ -1,0 +1,5 @@
+<library path="nav2_colregs_vo_rrt_star_planner">
+  <class type="nav2_colregs_vo_rrt_star_planner::VORRTStarPlanner" base_class_type="nav2_core::GlobalPlanner">
+    <description>VO-RRT* global planner with COLREGS avoidance service integration</description>
+  </class>
+</library>
