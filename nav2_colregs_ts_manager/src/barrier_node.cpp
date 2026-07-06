@@ -23,6 +23,8 @@ BarrierNode::BarrierNode()
     std::bind(&BarrierNode::handleService, this,
               std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
+  barrier_markers_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("barrier_markers", 10);
+
   RCLCPP_INFO(get_logger(), "BarrierNode started (ray_length=%.1f, os_radius=%.2f)",
     ray_length_, os_radius_);
 }
@@ -81,6 +83,24 @@ void BarrierNode::handleService(
 
   generateBarrierLines(os_x, os_y, ts_x, ts_y, ts_r,
                        request->avoid_direction, response->barriers);
+
+  // Visualize barrier lines.
+  if (!response->barriers.points.empty()) {
+    visualization_msgs::msg::MarkerArray markers;
+    visualization_msgs::msg::Marker lines;
+    lines.header.frame_id = "map";
+    lines.header.stamp = now();
+    lines.ns = "barrier";
+    lines.id = 0;
+    lines.type = visualization_msgs::msg::Marker::LINE_LIST;
+    lines.action = visualization_msgs::msg::Marker::ADD;
+    lines.scale.x = 0.05;
+    lines.color.r = 0.9;  lines.color.g = 0.2;  lines.color.b = 0.2;  lines.color.a = 0.8;
+    lines.lifetime.sec = 0;
+    lines.points = response->barriers.points;
+    markers.markers.push_back(lines);
+    barrier_markers_pub_->publish(markers);
+  }
 }
 
 // ---------------------------------------------------------------------------

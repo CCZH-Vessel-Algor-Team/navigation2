@@ -7,6 +7,7 @@
 
 #include "nav2_colregs_msgs/msg/processed_ts_list.hpp"
 #include "nav2_colregs_msgs/srv/get_avoidance_point.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 #include "rclcpp/rclcpp.hpp"
 
 namespace nav2_colregs_ts_manager
@@ -39,6 +40,7 @@ private:
     ts_list_sub_;
   rclcpp::Service<nav2_colregs_msgs::srv::GetAvoidancePoint>::SharedPtr
     service_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
 
   nav2_colregs_msgs::msg::ProcessedTSList::ConstSharedPtr last_ts_list_;
 };

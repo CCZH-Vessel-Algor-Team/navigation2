@@ -561,6 +561,30 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: cpa_markers
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Avoidance Point
+      Namespaces:
+        avoidance: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: avoidance_point_marker
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Barrier Lines
+      Namespaces:
+        barrier: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: barrier_markers
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

@@ -19,6 +19,8 @@ AvoidancePointNode::AvoidancePointNode()
     std::bind(&AvoidancePointNode::handleService, this,
               std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
+  marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("avoidance_point_marker", 10);
+
   RCLCPP_INFO(get_logger(), "AvoidancePointNode started");
 }
 
@@ -77,6 +79,23 @@ void AvoidancePointNode::handleService(
   response->point.z = 0.0;
   response->safe_heading = safe_heading;
   response->has_feasible_angle = true;
+
+  visualization_msgs::msg::MarkerArray markers;
+  visualization_msgs::msg::Marker arrow;
+  arrow.header.frame_id = "map";
+  arrow.header.stamp = now();
+  arrow.ns = "avoidance";
+  arrow.id = 0;
+  arrow.type = visualization_msgs::msg::Marker::ARROW;
+  arrow.action = visualization_msgs::msg::Marker::ADD;
+  arrow.points.resize(2);
+  arrow.points[0].x = os_x;  arrow.points[0].y = os_y;
+  arrow.points[1].x = response->point.x;  arrow.points[1].y = response->point.y;
+  arrow.scale.x = 0.1;  arrow.scale.y = 0.2;  arrow.scale.z = 0.2;
+  arrow.color.r = 0.2;  arrow.color.g = 0.8;  arrow.color.b = 0.2;  arrow.color.a = 0.8;
+  arrow.lifetime.sec = 0;
+  markers.markers.push_back(arrow);
+  marker_pub_->publish(markers);
 }
 
 // ---------------------------------------------------------------------------
