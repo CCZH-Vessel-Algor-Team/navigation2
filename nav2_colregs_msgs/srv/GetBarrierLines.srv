@@ -1,0 +1,8 @@
+# GetBarrierLines.srv
+# Generates U-shaped virtual barrier lines around a target ship for VO-RRT collision avoidance.
+
+geometry_msgs/Pose os_pose                     # own-ship pose in map frame (for bearing reference)
+unique_identifier_msgs/UUID target_id           # target ship to build barrier around
+string avoid_direction                          # "right" or "left" — starboard/port passing preference
+---
+VOBarrierLines barriers                         # 3 segments = 6 Points

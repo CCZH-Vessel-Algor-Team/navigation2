@@ -20,6 +20,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CircleObject.msg"
   "msg/PolygonObject.msg"
   "srv/GetAvoidancePoint.srv"
+  "srv/GetBarrierLines.srv"
   "srv/AddShapes.srv"
   "srv/RemoveShapes.srv"
   "srv/GetShapes.srv"
