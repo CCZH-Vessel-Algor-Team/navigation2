@@ -14,6 +14,7 @@
 #include "nav2_colregs_msgs/msg/processed_ts.hpp"
 #include "nav2_colregs_msgs/msg/processed_ts_list.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 
@@ -59,6 +60,7 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Publisher<nav2_colregs_msgs::msg::ProcessedTSList>::SharedPtr processed_ts_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr cpa_markers_pub_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;

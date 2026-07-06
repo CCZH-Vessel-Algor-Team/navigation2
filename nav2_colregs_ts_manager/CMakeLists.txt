@@ -10,6 +10,7 @@ find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 include_directories(include)
 
@@ -22,7 +23,7 @@ add_library(${library_name} SHARED
 )
 
 ament_target_dependencies(${library_name}
-  rclcpp nav2_colregs_msgs nav_msgs geometry_msgs tf2_ros tf2_geometry_msgs)
+  rclcpp nav2_colregs_msgs nav_msgs geometry_msgs tf2_ros tf2_geometry_msgs visualization_msgs)
 
 add_executable(ts_state_manager src/main.cpp)
 target_link_libraries(ts_state_manager ${library_name})
@@ -42,5 +43,5 @@ install(DIRECTORY include/ DESTINATION include/)
 
 ament_export_include_directories(include)
 ament_export_libraries(${library_name})
-ament_export_dependencies(rclcpp nav2_colregs_msgs)
+ament_export_dependencies(rclcpp nav2_colregs_msgs visualization_msgs)
 ament_package()

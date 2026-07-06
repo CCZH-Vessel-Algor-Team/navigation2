@@ -42,6 +42,9 @@ TSStateManager::TSStateManager()
   processed_ts_pub_ = create_publisher<nav2_colregs_msgs::msg::ProcessedTSList>(
     "processed_ts_list", 10);
 
+  cpa_markers_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
+    "cpa_markers", 10);
+
   using namespace std::chrono_literals;
   auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
     std::chrono::duration<double>(1.0 / frequency_));
@@ -195,6 +198,53 @@ void TSStateManager::timerCallback()
   }
 
   processed_ts_pub_->publish(*list_msg);
+
+  // Publish CPA markers for visualization.
+  auto markers = std::make_shared<visualization_msgs::msg::MarkerArray>();
+  int id = 0;
+  for (const auto & pair : ts_map_) {
+    const auto & ts = pair.second;
+
+    const double rel_x = ts.x - os_pose.pose.position.x;
+    const double rel_y = ts.y - os_pose.pose.position.y;
+    const double rel_vx = ts.vx - os_vx;
+    const double rel_vy = ts.vy - os_vy;
+    const double rel_speed_sq = rel_vx * rel_vx + rel_vy * rel_vy;
+    double tcpa = std::numeric_limits<double>::infinity();
+    if (rel_speed_sq > 1e-6) {
+      tcpa = -(rel_x * rel_vx + rel_y * rel_vy) / rel_speed_sq;
+    }
+    if (tcpa < 0.0) tcpa = 0.0;
+
+    bool is_threat = (tcpa > 0.0 && tcpa <= tcpa_horizon_ &&
+      std::hypot(rel_x + rel_vx * tcpa, rel_y + rel_vy * tcpa) <
+      (os_radius_ + ts.radius) * safety_factor_);
+
+    double cpa_x = ts.x + ts.vx * tcpa;
+    double cpa_y = ts.y + ts.vy * tcpa;
+
+    visualization_msgs::msg::Marker m;
+    m.header.stamp = now;
+    m.header.frame_id = global_frame_;
+    m.ns = "cpa";
+    m.id = id++;
+    m.type = visualization_msgs::msg::Marker::SPHERE;
+    m.action = visualization_msgs::msg::Marker::ADD;
+    m.pose.position.x = cpa_x;
+    m.pose.position.y = cpa_y;
+    m.pose.orientation.w = 1.0;
+    m.scale.x = m.scale.y = m.scale.z = 0.3;
+    m.color.a = 0.8;
+    if (is_threat) {
+      m.color.r = 1.0; m.color.g = 0.2; m.color.b = 0.2;
+    } else {
+      m.color.r = 1.0; m.color.g = 0.6; m.color.b = 0.2;
+    }
+    m.lifetime.sec = 0;
+    m.lifetime.nanosec = 500000000;  // 0.5s
+    markers->markers.push_back(m);
+  }
+  cpa_markers_pub_->publish(*markers);
 }
 
 // ---------------------------------------------------------------------------
