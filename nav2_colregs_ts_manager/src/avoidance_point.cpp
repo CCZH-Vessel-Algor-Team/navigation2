@@ -189,15 +189,8 @@ bool AvoidancePointNode::findSafeHeading(
     }
   }
 
+  // ENU: CCW is +. "right" = CW = decreasing angle → scan backward from goal.
   if (avoid_direction == "right") {
-    for (const auto & s : safe) {
-      if (s.first > goal_angle) {
-        safe_heading = s.first;
-        return true;
-      }
-    }
-    safe_heading = safe.front().first;
-  } else {
     for (auto it = safe.rbegin(); it != safe.rend(); ++it) {
       if (it->second < goal_angle) {
         safe_heading = it->second;
@@ -205,6 +198,14 @@ bool AvoidancePointNode::findSafeHeading(
       }
     }
     safe_heading = safe.back().second;
+  } else {
+    for (const auto & s : safe) {
+      if (s.first > goal_angle) {
+        safe_heading = s.first;
+        return true;
+      }
+    }
+    safe_heading = safe.front().first;
   }
   return true;
 }

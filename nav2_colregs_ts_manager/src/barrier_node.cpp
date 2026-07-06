@@ -119,9 +119,9 @@ void BarrierNode::generateBarrierLines(
   // Perpendicular direction (±90° based on avoid direction).
   double perp = bearing;
   if (avoid_direction == "right") {
-    perp += M_PI_2;  // starboard side
+    perp += M_PI_2;  // port side blockade → forces starboard passing
   } else {
-    perp -= M_PI_2;  // port side
+    perp -= M_PI_2;  // starboard side blockade → forces port passing
   }
 
   const double line1_len = os_radius_ + ts_r;
@@ -142,10 +142,10 @@ void BarrierNode::generateBarrierLines(
   p3.y = p1.y - line2_len * std::sin(bearing);
   p3.z = 0.0;
 
-  // Segment 3: outward ray (substituted by long segment).
+  // Segment 3: opposite perpendicular (closes the U-shape).
   p4 = p3;
-  p5.x = p3.x + ray_length_ * std::cos(perp);
-  p5.y = p3.y + ray_length_ * std::sin(perp);
+  p5.x = p3.x - ray_length_ * std::cos(perp);
+  p5.y = p3.y - ray_length_ * std::sin(perp);
   p5.z = 0.0;
 
   barriers.points = {p0, p1, p2, p3, p4, p5};
