@@ -1,0 +1,5 @@
+<library path="nav2_rrt_star_planner">
+  <class type="nav2_rrt_star_planner::RRTStarPlanner" base_class_type="nav2_core::GlobalPlanner">
+    <description>RRT* global planner with cost-aware progressive optimization</description>
+  </class>
+</library>
