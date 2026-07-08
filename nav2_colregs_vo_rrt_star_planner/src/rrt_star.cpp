@@ -41,6 +41,7 @@ bool RRTStar::planPath(
   double start_x, double start_y,
   double goal_x, double goal_y,
   const nav2_costmap_2d::Costmap2D * costmap,
+  const std::vector<geometry_msgs::msg::Point> & barriers,
   std::function<bool()> cancel_checker,
   std::vector<RRTStarNode> & path_nodes)
 {
@@ -103,7 +104,7 @@ bool RRTStar::planPath(
     steer(nearest, sx, sy, new_x, new_y);
 
     // 4) Collision check.
-    if (!collisionFree(tree_[nearest].x, tree_[nearest].y, new_x, new_y, costmap)) {
+    if (!collisionFree(tree_[nearest].x, tree_[nearest].y, new_x, new_y, costmap, barriers)) {
       continue;
     }
 
@@ -116,7 +117,7 @@ bool RRTStar::planPath(
       edgeCost(tree_[nearest].x, tree_[nearest].y, new_x, new_y, costmap);
 
     for (int idx : near) {
-      if (!collisionFree(tree_[idx].x, tree_[idx].y, new_x, new_y, costmap)) {
+      if (!collisionFree(tree_[idx].x, tree_[idx].y, new_x, new_y, costmap, barriers)) {
         continue;
       }
       double cost = tree_[idx].cost_from_root +
@@ -137,12 +138,12 @@ bool RRTStar::planPath(
     tree_.push_back(node);
 
     // 8) Rewire near nodes.
-    rewire(new_idx, near, costmap);
+    rewire(new_idx, near, costmap, barriers);
 
     // 9) Check goal.
     double dist_to_goal = std::hypot(new_x - goal_x, new_y - goal_y);
     if ((dist_to_goal <= goal_threshold_) &&
-        collisionFree(new_x, new_y, goal_x, goal_y, costmap))
+        collisionFree(new_x, new_y, goal_x, goal_y, costmap, barriers))
     {
       if (!goal_reached_ || best_cost < tree_[best_goal_node_idx_].cost_from_root) {
         best_goal_node_idx_ = new_idx;
@@ -157,7 +158,9 @@ bool RRTStar::planPath(
     double best_dist = std::numeric_limits<double>::max();
     for (int i = 0; i < static_cast<int>(tree_.size()); ++i) {
       double d = std::hypot(tree_[i].x - goal_x, tree_[i].y - goal_y);
-      if (d < best_dist && collisionFree(tree_[i].x, tree_[i].y, goal_x, goal_y, costmap)) {
+      if (d < best_dist &&
+        collisionFree(tree_[i].x, tree_[i].y, goal_x, goal_y, costmap, barriers))
+      {
         best_dist = d;
         best_goal_node_idx_ = i;
       }
@@ -181,7 +184,8 @@ bool RRTStar::planPath(
 
 void RRTStar::prunePath(
   std::vector<RRTStarNode> & path,
-  const nav2_costmap_2d::Costmap2D * costmap)
+  const nav2_costmap_2d::Costmap2D * costmap,
+  const std::vector<geometry_msgs::msg::Point> & barriers)
 {
   if (path.size() <= 2) {
     return;
@@ -194,7 +198,7 @@ void RRTStar::prunePath(
   while (i < path.size() - 1) {
     // Greedy: try to connect to the farthest collision-free node.
     for (size_t j = path.size() - 1; j > i; --j) {
-      if (collisionFree(path[i].x, path[i].y, path[j].x, path[j].y, costmap)) {
+      if (collisionFree(path[i].x, path[i].y, path[j].x, path[j].y, costmap, barriers)) {
         pruned.push_back(path[j]);
         i = j;
         break;
@@ -302,8 +306,17 @@ void RRTStar::steer(
 
 bool RRTStar::collisionFree(
   double x1, double y1, double x2, double y2,
-  const nav2_costmap_2d::Costmap2D * costmap)
+  const nav2_costmap_2d::Costmap2D * costmap,
+  const std::vector<geometry_msgs::msg::Point> & barriers)
 {
+  for (size_t i = 0; i + 1 < barriers.size(); i += 2) {
+    const auto & a = barriers[i];
+    const auto & b = barriers[i + 1];
+    if (segmentsIntersect(x1, y1, x2, y2, a.x, a.y, b.x, b.y)) {
+      return false;
+    }
+  }
+
   const double res = costmap->getResolution();
   const double seg_len = std::hypot(x2 - x1, y2 - y1);
   const double step = res * 0.5;  // oversample 2x for safety
@@ -345,6 +358,43 @@ bool RRTStar::collisionFree(
   return true;
 }
 
+bool RRTStar::segmentsIntersect(
+  double ax, double ay, double bx, double by,
+  double cx, double cy, double dx, double dy)
+{
+  constexpr double eps = 1e-9;
+
+  auto cross = [](double ux, double uy, double vx, double vy) {
+      return ux * vy - uy * vx;
+    };
+
+  auto orientation = [&](double px, double py, double qx, double qy, double rx, double ry) {
+      return cross(qx - px, qy - py, rx - px, ry - py);
+    };
+
+  auto onSegment = [&](double px, double py, double qx, double qy, double rx, double ry) {
+      return qx <= std::max(px, rx) + eps && qx + eps >= std::min(px, rx) &&
+             qy <= std::max(py, ry) + eps && qy + eps >= std::min(py, ry) &&
+             std::abs(orientation(px, py, qx, qy, rx, ry)) <= eps;
+    };
+
+  const double o1 = orientation(ax, ay, bx, by, cx, cy);
+  const double o2 = orientation(ax, ay, bx, by, dx, dy);
+  const double o3 = orientation(cx, cy, dx, dy, ax, ay);
+  const double o4 = orientation(cx, cy, dx, dy, bx, by);
+
+  if (((o1 > eps && o2 < -eps) || (o1 < -eps && o2 > eps)) &&
+      ((o3 > eps && o4 < -eps) || (o3 < -eps && o4 > eps)))
+  {
+    return true;
+  }
+
+  return onSegment(ax, ay, cx, cy, bx, by) ||
+         onSegment(ax, ay, dx, dy, bx, by) ||
+         onSegment(cx, cy, ax, ay, dx, dy) ||
+         onSegment(cx, cy, bx, by, dx, dy);
+}
+
 // ---------------------------------------------------------------------------
 // Cost function
 // ---------------------------------------------------------------------------
@@ -384,7 +434,8 @@ double RRTStar::edgeCost(
 
 void RRTStar::rewire(
   int new_idx, const std::vector<int> & near,
-  const nav2_costmap_2d::Costmap2D * costmap)
+  const nav2_costmap_2d::Costmap2D * costmap,
+  const std::vector<geometry_msgs::msg::Point> & barriers)
 {
   auto & node = tree_[new_idx];
 
@@ -400,7 +451,7 @@ void RRTStar::rewire(
       continue;
     }
 
-    if (!collisionFree(node.x, node.y, tree_[idx].x, tree_[idx].y, costmap)) {
+    if (!collisionFree(node.x, node.y, tree_[idx].x, tree_[idx].y, costmap, barriers)) {
       continue;
     }
 

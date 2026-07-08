@@ -5,6 +5,8 @@
 #include <random>
 #include <vector>
 
+#include "geometry_msgs/msg/point.hpp"
+
 namespace nav2_costmap_2d { class Costmap2D; }
 
 namespace nav2_colregs_vo_rrt_star_planner
@@ -36,12 +38,14 @@ public:
     double start_x, double start_y,
     double goal_x, double goal_y,
     const nav2_costmap_2d::Costmap2D * costmap,
+    const std::vector<geometry_msgs::msg::Point> & barriers,
     std::function<bool()> cancel_checker,
     std::vector<RRTStarNode> & path_nodes);
 
   void prunePath(
     std::vector<RRTStarNode> & path,
-    const nav2_costmap_2d::Costmap2D * costmap);
+    const nav2_costmap_2d::Costmap2D * costmap,
+    const std::vector<geometry_msgs::msg::Point> & barriers);
 
 private:
   void randomSample(
@@ -55,7 +59,12 @@ private:
 
   bool collisionFree(
     double x1, double y1, double x2, double y2,
-    const nav2_costmap_2d::Costmap2D * costmap);
+    const nav2_costmap_2d::Costmap2D * costmap,
+    const std::vector<geometry_msgs::msg::Point> & barriers);
+
+  static bool segmentsIntersect(
+    double ax, double ay, double bx, double by,
+    double cx, double cy, double dx, double dy);
 
   double edgeCost(
     double x1, double y1, double x2, double y2,
@@ -66,7 +75,8 @@ private:
 
   void rewire(
     int new_idx, const std::vector<int> & near,
-    const nav2_costmap_2d::Costmap2D * costmap);
+    const nav2_costmap_2d::Costmap2D * costmap,
+    const std::vector<geometry_msgs::msg::Point> & barriers);
 
   std::vector<RRTStarNode> tree_;
   double step_size_;

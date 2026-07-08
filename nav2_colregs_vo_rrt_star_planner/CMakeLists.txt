@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.5)
 project(nav2_colregs_vo_rrt_star_planner)
 
 find_package(ament_cmake REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(nav2_common REQUIRED)
 find_package(nav2_core REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
@@ -22,6 +23,7 @@ set(library_name nav2_colregs_vo_rrt_star_planner)
 
 set(dependencies
   nav2_colregs_msgs
+  geometry_msgs
   nav2_common
   nav2_core
   nav2_costmap_2d

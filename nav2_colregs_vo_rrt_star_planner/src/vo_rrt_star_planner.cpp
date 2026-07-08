@@ -139,6 +139,10 @@ nav_msgs::msg::Path VORRTStarPlanner::createPlan(
     throw nav2_core::GoalOccupied("Goal is occupied.");
   }
 
+  bool has_colregs_route = false;
+  geometry_msgs::msg::Point avoidance_point;
+  std::vector<geometry_msgs::msg::Point> barrier_points;
+
   // COLREGS: call Avoidance Point + Barrier.
   {
     auto request = std::make_shared<nav2_colregs_msgs::srv::GetAvoidancePoint::Request>();
@@ -150,10 +154,13 @@ nav_msgs::msg::Path VORRTStarPlanner::createPlan(
     if (result.wait_for(std::chrono::seconds(1)) == std::future_status::ready) {
       auto resp = result.get();
       RCLCPP_INFO(logger_,
-        "VORRTStarPlanner: /get_avoidance_point has_threat=%d safe_heading=%.2f point=(%.2f,%.2f)",
+        "VORRTStarPlanner: /get_avoidance_point has_threat=%d "
+        "safe_heading=%.2f point=(%.2f,%.2f)",
         resp->has_feasible_angle, resp->safe_heading, resp->point.x, resp->point.y);
 
       if (resp->has_feasible_angle) {
+        avoidance_point = resp->point;
+
         auto barrier_req = std::make_shared<nav2_colregs_msgs::srv::GetBarrierLines::Request>();
         barrier_req->os_pose = start.pose;
         barrier_req->target_id = resp->primary_target_id;
@@ -163,8 +170,10 @@ nav_msgs::msg::Path VORRTStarPlanner::createPlan(
         if (barrier_result.wait_for(std::chrono::seconds(1)) == std::future_status::ready) {
           auto br = barrier_result.get();
           RCLCPP_INFO(logger_,
-            "VORRTStarPlanner: /get_barrier_lines points=%ld",
+            "VORRTStarPlanner: /get_barrier_lines points=%zu",
             br->barriers.points.size());
+          barrier_points = br->barriers.points;
+          has_colregs_route = true;
         } else {
           RCLCPP_WARN(logger_, "VORRTStarPlanner: /get_barrier_lines timed out");
         }
@@ -174,24 +183,50 @@ nav_msgs::msg::Path VORRTStarPlanner::createPlan(
     }
   }
 
-  // RRT* plan.
+  // RRT* plan. In COLREGS mode, keep the first segment deterministic and
+  // only run RRT* from the avoidance point to the final goal.
   auto t_start = std::chrono::steady_clock::now();
   std::vector<RRTStarNode> raw_path;
-  bool success = rrt_star_->planPath(
-    start.pose.position.x, start.pose.position.y,
-    goal.pose.position.x, goal.pose.position.y,
-    costmap_, cancel_checker, raw_path);
+  bool success = false;
+
+  if (has_colregs_route) {
+    std::vector<RRTStarNode> segment_path;
+    success = rrt_star_->planPath(
+      avoidance_point.x, avoidance_point.y,
+      goal.pose.position.x, goal.pose.position.y,
+      costmap_, barrier_points, cancel_checker, segment_path);
+
+    if (success && prune_path_) {
+      rrt_star_->prunePath(segment_path, costmap_, barrier_points);
+    }
+
+    if (success && !segment_path.empty()) {
+      RRTStarNode start_node;
+      start_node.x = start.pose.position.x;
+      start_node.y = start.pose.position.y;
+      start_node.parent_idx = -1;
+      start_node.cost_from_root = 0.0;
+      raw_path.push_back(start_node);
+      raw_path.insert(raw_path.end(), segment_path.begin(), segment_path.end());
+    }
+  } else {
+    const std::vector<geometry_msgs::msg::Point> no_barriers;
+    success = rrt_star_->planPath(
+      start.pose.position.x, start.pose.position.y,
+      goal.pose.position.x, goal.pose.position.y,
+      costmap_, no_barriers, cancel_checker, raw_path);
+
+    if (success && prune_path_) {
+      rrt_star_->prunePath(raw_path, costmap_, no_barriers);
+    }
+  }
+
   auto t_end = std::chrono::steady_clock::now();
   double elapsed_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
 
   if (!success || raw_path.empty()) {
     throw nav2_core::NoValidPathCouldBeFound(
       "VORRTStarPlanner: no valid path found.");
-  }
-
-  // Optional prune.
-  if (prune_path_) {
-    rrt_star_->prunePath(raw_path, costmap_);
   }
 
   // Densify: linear interpolation at costmap resolution.
@@ -201,9 +236,10 @@ nav_msgs::msg::Path VORRTStarPlanner::createPlan(
   plan.header.stamp = clock_->now();
   plan.header.frame_id = global_frame_;
 
-  RCLCPP_INFO(logger_, "VORRTStarPlanner: found path with %ld points "
-    "(raw=%ld, prune=%d) plan=%.1f ms",
-    plan.poses.size(), raw_path.size(), prune_path_, elapsed_ms);
+  RCLCPP_INFO(logger_, "VORRTStarPlanner: found path with %zu points "
+    "(raw=%zu, prune=%d, colregs=%d, barriers=%zu) plan=%.1f ms",
+    plan.poses.size(), raw_path.size(), prune_path_, has_colregs_route,
+    barrier_points.size(), elapsed_ms);
 
   return plan;
 }
