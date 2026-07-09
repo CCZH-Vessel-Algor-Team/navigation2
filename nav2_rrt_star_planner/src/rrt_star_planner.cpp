@@ -110,28 +110,28 @@ void RRTStarPlanner::deactivate()
 
 nav_msgs::msg::Path RRTStarPlanner::createPlan(
   const geometry_msgs::msg::PoseStamped & start,
-  const geometry_msgs::msg::PoseStamped & goal,
-  std::function<bool()> cancel_checker)
+  const geometry_msgs::msg::PoseStamped & goal
+)
 {
   // Validate start/goal are within costmap bounds.
   unsigned int start_mx, start_my, goal_mx, goal_my;
   if (!costmap_->worldToMap(start.pose.position.x, start.pose.position.y,
                             start_mx, start_my))
   {
-    throw nav2_core::StartOutsideMapBounds("Start is outside the map bounds.");
+    throw nav2_core::PlannerException("Start is outside the map bounds.");
   }
   if (!costmap_->worldToMap(goal.pose.position.x, goal.pose.position.y,
                             goal_mx, goal_my))
   {
-    throw nav2_core::GoalOutsideMapBounds("Goal is outside the map bounds.");
+    throw nav2_core::PlannerException("Goal is outside the map bounds.");
   }
 
   // Start/goal occupied check.
   if (costmap_->getCost(start_mx, start_my) >= nav2_costmap_2d::LETHAL_OBSTACLE) {
-    throw nav2_core::StartOccupied("Start is occupied.");
+    throw nav2_core::PlannerException("Start is occupied.");
   }
   if (costmap_->getCost(goal_mx, goal_my) >= nav2_costmap_2d::LETHAL_OBSTACLE) {
-    throw nav2_core::GoalOccupied("Goal is occupied.");
+    throw nav2_core::PlannerException("Goal is occupied.");
   }
 
   // RRT* plan.
@@ -140,12 +140,12 @@ nav_msgs::msg::Path RRTStarPlanner::createPlan(
   bool success = rrt_star_->planPath(
     start.pose.position.x, start.pose.position.y,
     goal.pose.position.x, goal.pose.position.y,
-    costmap_, cancel_checker, raw_path);
+    costmap_, raw_path);
   auto t_end = std::chrono::steady_clock::now();
   double elapsed_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
 
   if (!success || raw_path.empty()) {
-    throw nav2_core::NoValidPathCouldBeFound(
+    throw nav2_core::PlannerException(
       "RRTStarPlanner: no valid path found.");
   }
 

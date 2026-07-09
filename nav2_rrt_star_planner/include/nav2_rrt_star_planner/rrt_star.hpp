@@ -36,7 +36,6 @@ public:
     double start_x, double start_y,
     double goal_x, double goal_y,
     const nav2_costmap_2d::Costmap2D * costmap,
-    std::function<bool()> cancel_checker,
     std::vector<RRTStarNode> & path_nodes);
 
   void prunePath(

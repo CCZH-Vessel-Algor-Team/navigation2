@@ -39,7 +39,6 @@ public:
     double goal_x, double goal_y,
     const nav2_costmap_2d::Costmap2D * costmap,
     const std::vector<geometry_msgs::msg::Point> & barriers,
-    std::function<bool()> cancel_checker,
     std::vector<RRTStarNode> & path_nodes);
 
   void prunePath(

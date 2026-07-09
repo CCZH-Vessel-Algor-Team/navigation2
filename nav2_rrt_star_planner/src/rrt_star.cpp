@@ -41,7 +41,6 @@ bool RRTStar::planPath(
   double start_x, double start_y,
   double goal_x, double goal_y,
   const nav2_costmap_2d::Costmap2D * costmap,
-  std::function<bool()> cancel_checker,
   std::vector<RRTStarNode> & path_nodes)
 {
   tree_.clear();
@@ -82,9 +81,7 @@ bool RRTStar::planPath(
 
   int total_iters = max_iterations_;
   for (int iter = 0; iter < total_iters; ++iter) {
-    if (cancel_checker && cancel_checker()) {
-      return false;
-    }
+    
 
     if (goal_reached_ && iter >= max_iterations_) {
       // reached early, continue optimizing up to max_optimize_iters_ more.
