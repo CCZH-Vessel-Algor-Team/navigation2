@@ -7,7 +7,7 @@
 #include <utility>
 
 #include "nav2_colregs_alos_controller/alos_controller.hpp"
-#include "nav2_core/controller_exceptions.hpp"
+#include "nav2_core/exceptions.hpp"
 #include "nav2_util/geometry_utils.hpp"
 #include "nav2_util/node_utils.hpp"
 #include "tf2/utils.h"
@@ -28,7 +28,7 @@ void ALOSController::configure(
 {
   auto node = parent.lock();
   if (!node) {
-    throw nav2_core::ControllerException("Unable to lock node!");
+    throw nav2_core::PlannerException("Unable to lock node!");
   }
 
   node_ = parent;
@@ -243,7 +243,7 @@ geometry_msgs::msg::TwistStamped ALOSController::computeVelocityCommands(
     costmap_ros_->getRobotFootprint());
 
   if (footprint_cost >= static_cast<double>(nav2_costmap_2d::LETHAL_OBSTACLE)) {
-    throw nav2_core::NoValidControl("ALOSController detected collision ahead!");
+    throw nav2_core::PlannerException("ALOSController detected collision ahead!");
   }
 
   // 8 — Optional CSV debug log.
@@ -304,12 +304,12 @@ nav_msgs::msg::Path ALOSController::transformGlobalPlan(
   const geometry_msgs::msg::PoseStamped & pose)
 {
   if (global_plan_.poses.empty()) {
-    throw nav2_core::ControllerException("Received plan with zero length");
+    throw nav2_core::PlannerException("Received plan with zero length");
   }
 
   geometry_msgs::msg::PoseStamped robot_pose;
   if (!transformPose(global_plan_.header.frame_id, pose, robot_pose)) {
-    throw nav2_core::ControllerException("Unable to transform robot pose into global plan frame");
+    throw nav2_core::PlannerException("Unable to transform robot pose into global plan frame");
   }
 
   const double max_costmap_extent =
@@ -351,7 +351,7 @@ nav_msgs::msg::Path ALOSController::transformGlobalPlan(
   global_plan_.poses.erase(global_plan_.poses.begin(), transformation_begin);
 
   if (transformed_plan.poses.empty()) {
-    throw nav2_core::ControllerException("Resulting transformed plan has zero poses");
+    throw nav2_core::PlannerException("Resulting transformed plan has zero poses");
   }
 
   return transformed_plan;
