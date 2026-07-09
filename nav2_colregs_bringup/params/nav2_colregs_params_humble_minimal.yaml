@@ -1,0 +1,124 @@
+# Minimal COLREGS plugin configuration for the Humble port.
+#
+# This file is intentionally not a full Nav2 bringup configuration. Merge these
+# sections into a working Humble Nav2 params file to load COLREGS plugins without
+# Gazebo, TS simulation launch files, keepout/vector-object servers, or custom
+# CreateLocalPath BT nodes.
+
+planner_server:
+  ros__parameters:
+    expected_planner_frequency: 20.0
+    planner_plugins: ["GridBased", "RRTStar", "VORRTStar"]
+    GridBased:
+      plugin: "nav2_navfn_planner::NavfnPlanner"
+      tolerance: 0.5
+      use_astar: false
+      allow_unknown: true
+    RRTStar:
+      plugin: "nav2_rrt_star_planner::RRTStarPlanner"
+      step_size: 1.0
+      max_iterations: 1000
+      goal_bias: 0.1
+      goal_threshold: 0.5
+      safety_dist: 0.3
+      cost_weight: 1.0
+      max_optimize_iters: 200
+      eta: 1.1
+      tolerance: 0.5
+      prune_path: true
+    VORRTStar:
+      plugin: "nav2_colregs_vo_rrt_star_planner::VORRTStarPlanner"
+      step_size: 1.0
+      max_iterations: 1000
+      goal_bias: 0.1
+      goal_threshold: 0.5
+      safety_dist: 0.3
+      cost_weight: 1.0
+      max_optimize_iters: 200
+      eta: 1.1
+      tolerance: 0.5
+      prune_path: true
+
+controller_server:
+  ros__parameters:
+    controller_frequency: 20.0
+    min_x_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
+    min_theta_velocity_threshold: 0.001
+    failure_tolerance: 0.3
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+    progress_checker:
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.5
+      movement_time_allowance: 10.0
+    general_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      stateful: true
+      xy_goal_tolerance: 0.25
+      yaw_goal_tolerance: 0.25
+    # Use ALOS by default. Switch plugin to nav2_colregs_los_controller::LOSController
+    # and replace forward_dist/gamma/beta parameters with lookahead_dist for basic LOS.
+    FollowPath:
+      plugin: "nav2_colregs_alos_controller::ALOSController"
+      desired_linear_vel: 0.5
+      max_linear_accel: 0.5
+      max_angular_vel: 0.5
+      max_angular_accel: 1.0
+      forward_dist: 2.0
+      gamma: 0.0006
+      beta_hat0: 0.0
+      reset_beta_on_new_path: true
+      max_angle_for_motion: 1.047
+      max_robot_pose_search_dist: 10.0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      plugins: ["voxel_layer", "ts_projection_layer", "inflation_layer"]
+      ts_projection_layer:
+        plugin: "nav2_colregs_costmap_layers::TSProjectionLayer"
+        enabled: true
+        track_timeout: 3.0
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      plugins: ["static_layer", "obstacle_layer", "ts_projection_layer", "inflation_layer"]
+      ts_projection_layer:
+        plugin: "nav2_colregs_costmap_layers::TSProjectionLayer"
+        enabled: true
+        track_timeout: 3.0
+
+bt_navigator:
+  ros__parameters:
+    # Keep the default Humble Nav2 BT XML/plugin set. The Jazzy CreateLocalPath
+    # diagnostic BT node is intentionally not part of the Humble MVP.
+    bt_search_directories:
+      - "$(find-pkg-share nav2_bt_navigator)/behavior_trees"
+
+behavior_server:
+  ros__parameters:
+    behavior_plugins: ["spin", "backup", "drive_on_heading", "assisted_teleop", "wait"]
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    assisted_teleop:
+      plugin: "nav2_behaviors::AssistedTeleop"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+
+ts_state_manager:
+  ros__parameters:
+    frequency: 10.0
+    ts_timeout: 3.0
+    tcpa_horizon: 10.0
+    safety_factor: 1.1
+    os_radius: 0.3
+    global_frame: "map"
+    robot_base_frame: "base_link"
+    odom_topic: "odom"
