@@ -1,111 +1,202 @@
-# Nav2
-[![GitHub Workflow Status](https://github.com/ros-planning/navigation2/actions/workflows/update_ci_image.yaml/badge.svg)](https://github.com/ros-planning/navigation2/actions/workflows/update_ci_image.yaml)
-[![codecov](https://codecov.io/gh/ros-planning/navigation2/branch/main/graph/badge.svg)](https://codecov.io/gh/ros-planning/navigation2)
+# navigation2（Humble + COLREGS 插件级移植）
 
-<p align="center">
-  <img height="300" src="doc/nav2_logo.png" />
-</p>
+本仓库基于官方 `humble` 分支，移植了 `feat/colregs` 中与 COLREGS 插件链路相关的核心功能包。
 
-For detailed instructions on how to:
-- [Getting Started](https://navigation.ros.org/getting_started/index.html)
-- [Concepts](https://navigation.ros.org/concepts/index.html)
-- [Build](https://navigation.ros.org/development_guides/build_docs/index.html#build)
-- [Install](https://navigation.ros.org/development_guides/build_docs/index.html#install)
-- [General Tutorials](https://navigation.ros.org/tutorials/index.html) and [Algorithm Developer Tutorials](https://navigation.ros.org/plugin_tutorials/index.html)
-- [Configure](https://navigation.ros.org/configuration/index.html)
-- [Navigation Plugins](https://navigation.ros.org/plugins/index.html)
-- [Migration Guides](https://navigation.ros.org/migration/index.html)
-- [Container Images for Building Nav2](https://github.com/orgs/ros-planning/packages/container/package/navigation2)
-- [Contribute](https://navigation.ros.org/development_guides/involvement_docs/index.html)
+当前 Humble 分支定位为 **COLREGS plugin MVP**：保留消息、规划器、控制器、TS 状态管理、TSProjectionLayer 代价图层，以及最小 bringup 参数/BT XML；不移植完整 Gazebo/目标船仿真链路。
 
-Please visit our [documentation site](https://navigation.ros.org/). [Please visit our community Slack here](https://join.slack.com/t/navigation2/shared_invite/zt-hu52lnnq-cKYjuhTY~sEMbZXL8p9tOw) (if this link does not work, please contact maintainers to reactivate).
+Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humble_colregs_port.md`。
 
-If you need professional services related to Nav2, please contact Open Navigation at info@opennav.org.
+## 一、相对官方新增的包
 
-## Our Sponsors
+### 1) `nav2_colregs_msgs`
+- 作用：定义 COLREGS 扩展消息与服务接口。
+- 消息：
+  - `TrackedShip.msg`：单条目标船（含 `target_id: UUID`、位姿、速度、半径）。
+  - `TrackedShipList.msg`：批量目标船列表（`Header` + `TrackedShip[]`），统一发布到 `/tracked_ship`。
+  - `ProcessedTS.msg`：经 TS State Manager 处理后的目标船快照（含 `target_id`、CPA/TCPA、威胁标识）。
+  - `CircleObject.msg`、`PolygonObject.msg`：矢量障碍物形状接口，保留给 vector-object/keepout 链路。
+- 服务：
+  - `AddShapes.srv`、`GetShapes.srv`、`RemoveShapes.srv`：矢量对象增删查接口。
 
-Please thank our amazing sponsors for their generous support of Nav2 on behalf of the community to allow the project to continue to be professionally maintained, developed, and supported for the long-haul! [Open Navigation LLC](https://www.opennav.org/) provides project leadership, maintenance, development, and support services to the Nav2 & ROS community. 
+### 2) `nav2_rrt_star_planner`
+- 作用：RRT* 全局规划器插件。
+- Humble 适配：使用 Humble `nav2_core::GlobalPlanner::createPlan(start, goal)` 接口，不使用 Jazzy `cancel_checker` 参数。
 
-<p align="center">
-  <img src="doc/sponsors_may_2023.png" />
-</p>
+### 3) `nav2_colregs_vo_rrt_star_planner`
+- 作用：COLREGS VO-RRT* 全局规划器插件。
+- 特点：在 RRT* 基础上接入目标船状态/速度障碍逻辑，用于生成符合 COLREGS 约束的候选路径。
+- Humble 适配：同样使用 Humble two-argument planner API，并使用 Humble `nav2_core::PlannerException`。
 
-### [Dexory](https://www.dexory.com/) develops robotics and AI logistics solutions to drive better business decisions using a digital twin of warehouses to provide inventory insights.
+### 4) `nav2_colregs_costmap_layers`
+- 作用：自定义 Costmap Layer 插件。
+- `TSProjectionLayer`：订阅 `/tracked_ship`（`TrackedShipList`），逐 `target_id` 维护状态，在 `master_grid` 上标注目标船 LETHAL 圆。
+- 特性：支持多船、超时清理（默认 3s）、移动目标尾迹 bounds 累积清除、TF 坐标变换。
+- 对标 `ObstacleLayer` 的 "topic -> 标记 master_grid" 模式，不通过 keepout mask 中转。
 
-### [Polymath Robotics](https://www.polymathrobotics.com/) creates safety-critical navigation systems for industrial vehicles that are radically simple to enable and deploy.
+### 5) `nav2_colregs_ts_manager`
+- 作用：TS 状态管理节点（LifecycleNode）。订阅 `/tracked_ship`（`TrackedShipList`）和 `/odom`，逐 `target_id` 维护多 TS 状态，计算 CPA/TCPA，发布 `/processed_ts_list` topic。
+- TS 位姿通过 TF 从消息 `frame_id` 变换到 `global_frame`（通常为 `map`），确保多坐标系兼容。
+- 与 `TSProjectionLayer` 配合：前者判断 TS 是否危险，后者将 TS 位姿画入 costmap。
+- 超时参数：`ts_timeout: 3.0`（自动清除失联船舶）。
 
-### [Stereolabs](https://www.stereolabs.com/) produces the high-quality ZED stereo cameras with a complete vision pipeline from neural depth to SLAM, 3D object tracking, AI and more.
+### 6) `nav2_colregs_los_controller`
+- 作用：最简 LOS 制导 Controller 插件。
+- 算法：沿路径找前视点，使用 `atan2` 计算目标艏向，再做角/线速度限制和 footprint 碰撞检测。
+- Humble 适配：移除 Jazzy RPP `PathHandler` 依赖，内部保存并变换/prune 全局路径。
+- 注意：`/lookahead_point` 发布的是原始全局路径上的前视点，仅做坐标变换，不包含 COLREGS 修正。
 
-### Confidential is just happy to support Nav2's mission!
+### 7) `nav2_colregs_alos_controller`
+- 作用：Adaptive LOS（ALOS）制导 Controller 插件，在 LOS 基础上加入侧滑角自适应估计。
+- 算法：基于 Fossen (2023)，找最近点和前推点，计算路径切线角、侧偏和自适应侧滑估计，输出目标航向和速度指令。
+- 关键参数：`forward_dist`, `gamma`, `beta_hat0`, `reset_beta_on_new_path`。
+- Humble 适配：移除 Jazzy RPP `PathHandler` 依赖，使用 Humble RPP 风格的路径变换逻辑。
+- 注意：`/lookahead_point` 和 `/closest_point` 是原始全局路径上的调试/可视化点。COLREGS/ALOS 修正只作用于速度指令输出。
 
+### 8) `nav2_colregs_bringup`
+- 作用：Humble 移植分支中仅保留参数和 Behavior Tree XML 资源。
+- 当前安装内容：
+  - `params/`
+  - `behavior_trees/`
+- 重点文件：
+  - `params/nav2_colregs_params_humble_minimal.yaml`：Humble 插件接线示例，供合并到已有 Humble Nav2 params 使用。
+- 注意：该包在 Humble 分支不是完整仿真 bringup 包，不包含 Gazebo worlds/models/scripts/launch/RViz 资源。
 
-## Citation
+## 二、Humble 移植状态
 
-If you use the navigation framework, an algorithm from this repository, or ideas from it
-please cite this work in your papers!
+### 已移植并在 Humble apt 环境 build 验证
+- `nav2_colregs_msgs`
+- `nav2_rrt_star_planner`
+- `nav2_colregs_ts_manager`
+- `nav2_colregs_vo_rrt_star_planner`
+- `nav2_colregs_costmap_layers`
+- `nav2_colregs_los_controller`
+- `nav2_colregs_alos_controller`
+- `nav2_colregs_bringup`（params + behavior tree XML only）
 
- - S. Macenski, F. Martín, R. White, J. Clavero. [**The Marathon 2: A Navigation System**](https://arxiv.org/abs/2003.00368). IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS), 2020.
- 
- ```bibtex
- @InProceedings{macenski2020marathon2,
-   title = {The Marathon 2: A Navigation System},
-   author = {Macenski, Steve and Martín, Francisco and White, Ruffin and Ginés Clavero, Jonatan},
-   year = {2020},
-   booktitle = {2020 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
-   url = {https://github.com/ros-planning/navigation2},
-   pdf = {https://arxiv.org/abs/2003.00368}
- }
+验证命令：
+
+```bash
+cd ~/navigation2
+source /opt/ros/humble/setup.sh
+colcon build --symlink-install --packages-select \
+  nav2_colregs_msgs \
+  nav2_rrt_star_planner \
+  nav2_colregs_ts_manager \
+  nav2_colregs_vo_rrt_star_planner \
+  nav2_colregs_costmap_layers \
+  nav2_colregs_los_controller \
+  nav2_colregs_alos_controller \
+  nav2_colregs_bringup
 ```
 
- If you use our work on VSLAM and formal comparisons for service robot needs, please cite the paper:
+最新验证结果：
 
- - A. Merzlyakov, S. Macenski. [**A Comparison of Modern General-Purpose Visual SLAM Approaches**](https://arxiv.org/abs/2107.07589). IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS), 2021.
-
- ```bibtex
- @InProceedings{vslamComparison2021,
-   title = {A Comparison of Modern General-Purpose Visual SLAM Approaches},
-   author = {Merzlyakov, Alexey and Macenski, Steven},
-   year = {2021},
-   booktitle = {2021 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
-   pdf = {https://arxiv.org/abs/2107.07589}
- }
+```text
+Summary: 8 packages finished [0.83s]
 ```
 
-## Build Status
+### 暂未移植
+- 完整 Gazebo / 目标船仿真 launch 文件。
+- Gazebo worlds、models、bridge config、RViz 配置、地图和仿真脚本。
+- `nav2_colregs_vector_object_server`。
+- keepout / vector-object validation chain。
+- `nav2_colregs_local_path_behavior`。
+- `nav2_colregs_local_path_bt_nodes`。
 
-| Service | Foxy  | Humble | Main |
-| :---: | :---: | :---: | :---: |
-| ROS Build Farm | [![Build Status](http://build.ros2.org/job/Fdev__navigation2__ubuntu_focal_amd64/badge/icon)](http://build.ros2.org/job/Fdev__navigation2__ubuntu_focal_amd64/) | [![Build Status](https://build.ros2.org/job/Hdev__navigation2__ubuntu_jammy_amd64/badge/icon)](https://build.ros2.org/job/Hdev__navigation2__ubuntu_jammy_amd64/) | N/A |
-| Circle CI | N/A | N/A | [![Build Status](https://circleci.com/gh/ros-planning/navigation2/tree/main.svg?style=svg)](https://circleci.com/gh/ros-planning/navigation2/tree/main) |
+其中 `nav2_colregs_local_path_bt_nodes` 在 Jazzy 分支中主要用于 behavior-validation：从 blackboard 读取 `{path}`，调用 `CreateLocalPath` action，打印路径信息后透传为 `{local_path}`。它不是 Humble plugin MVP 的必要组件。
 
+### Humble API 适配点
+- Humble `nav2_core::GlobalPlanner::createPlan()` 不包含 Jazzy 的 `cancel_checker` 参数。
+- Humble `nav2_core/exceptions.hpp` 使用 `PlannerException`，未使用 Jazzy-specific planner/controller exception subclasses。
+- Humble RPP 不暴露 Jazzy 分支使用的 `PathHandler` helper，LOS/ALOS 控制器改为内部保存、变换和裁剪路径。
 
-| Package | Foxy Source | Foxy Debian | Humble Source | Humble Debian |
-| :---: | :---: | :---: | :---: | :---: |
-| Navigation2 | [![Build Status](http://build.ros2.org/job/Fsrc_uF__navigation2__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__navigation2__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__navigation2__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__navigation2__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__navigation2__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__navigation2__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__navigation2__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__navigation2__ubuntu_jammy_amd64__binary/) | 
-| nav2_amcl | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_amcl__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_amcl__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_amcl__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_amcl__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_amcl__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_amcl__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_amcl__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_amcl__ubuntu_jammy_amd64__binary/) |
-| nav2_behavior_tree | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_behavior_tree__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_behavior_tree__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_behavior_tree__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_behavior_tree__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_behavior_tree__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_behavior_tree__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_behavior_tree__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_behavior_tree__ubuntu_jammy_amd64__binary/) | 
-| nav2_{recoveries, behaviors} | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_recoveries__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_recoveries__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_recoveries__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_recoveries__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_behaviors__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_behaviors__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_behaviors__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_behaviors__ubuntu_jammy_amd64__binary/) |
-| nav2_bringup | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_bringup__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_bringup__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_bringup__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_bringup__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_bringup__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_bringup__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_bringup__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_bringup__ubuntu_jammy_amd64__binary/) |
-| nav2_bt_navigator | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_bt_navigator__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_bt_navigator__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_bt_navigator__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_bt_navigator__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_bt_navigator__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_bt_navigator__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_bt_navigator__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_bt_navigator__ubuntu_jammy_amd64__binary/) |
-| nav2_common | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_common__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_common__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_common__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_common__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_common__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_common__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_common__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_common__ubuntu_jammy_amd64__binary/) |
-| nav2_constrained_smoother | N/A | N/A | N/A | N/A | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_constrained_smoother__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_constrained_smoother__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_constrained_smoother__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_constrained_smoother__ubuntu_jammy_amd64__binary/) |
-| nav2_controller | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_controller__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_controller__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_controller__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_controller__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_controller__ubuntu_jammy_amd64__binary/) |
-| nav2_core | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_core__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_core__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_core__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_core__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_core__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_core__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_core__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_core__ubuntu_jammy_amd64__binary/) |
-| nav2_costmap_2d | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_costmap_2d__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_costmap_2d__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_costmap_2d__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_costmap_2d__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_costmap_2d__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_costmap_2d__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_costmap_2d__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_costmap_2d__ubuntu_jammy_amd64__binary/) |
-| nav2_dwb_controller | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_dwb_controller__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_dwb_controller__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_dwb_controller__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_dwb_controller__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_dwb_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_dwb_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_dwb_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_dwb_controller__ubuntu_jammy_amd64__binary/) |
-| nav2_lifecycle_manager | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_lifecycle_manager__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_lifecycle_manager__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_lifecycle_manager__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_lifecycle_manager__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_lifecycle_manager__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_lifecycle_manager__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_lifecycle_manager__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_lifecycle_manager__ubuntu_jammy_amd64__binary/) |
-| nav2_map_server | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_map_server__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_map_server__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_map_server__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_map_server__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_map_server__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_map_server__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_map_server__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_map_server__ubuntu_jammy_amd64__binary/) |
-| nav2_msgs | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_msgs__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_msgs__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_msgs__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_msgs__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_msgs__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_msgs__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_msgs__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_msgs__ubuntu_jammy_amd64__binary/) |
-| nav2_navfn_planner | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_navfn_planner__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_navfn_planner__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_navfn_planner__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_navfn_planner__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_navfn_planner__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_navfn_planner__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_navfn_planner__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_navfn_planner__ubuntu_jammy_amd64__binary/) |
-| nav2_planner | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_planner__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_planner__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_planner__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_planner__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_planner__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_planner__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_planner__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_planner__ubuntu_jammy_amd64__binary/) |
-| nav2_regulated_pure_pursuit | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_regulated_pure_pursuit_controller__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_regulated_pure_pursuit_controller__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_regulated_pure_pursuit_controller__ubuntu_focal_amd64__binary/badge/icon)](https://build.ros2.org/job/Fbin_uF64__nav2_regulated_pure_pursuit_controller__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_regulated_pure_pursuit_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_regulated_pure_pursuit_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_regulated_pure_pursuit_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_regulated_pure_pursuit_controller__ubuntu_jammy_amd64__binary/) | 
-| nav2_rotation_shim_controller | N/A | N/A | N/A | N/A | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_rotation_shim_controller__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_rotation_shim_controller__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_rotation_shim_controller__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_rotation_shim_controller__ubuntu_jammy_amd64__binary/) |
-| nav2_rviz_plugins | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_rviz_plugins__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_rviz_plugins__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_rviz_plugins__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_rviz_plugins__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_rviz_plugins__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_rviz_plugins__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_rviz_plugins__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_rviz_plugins__ubuntu_jammy_amd64__binary/) |
-| nav2_simple_commander | N/A | N/A | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_simple_commander__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_simple_commander__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_simple_commander__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_simple_commander__ubuntu_jammy_amd64__binary/) |
-| nav2_smac_planner | [![Build Status](http://build.ros2.org/job/Fsrc_uF__smac_planner__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__smac_planner__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__smac_planner__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__smac_planner__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_smac_planner__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_smac_planner__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_smac_planner__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_smac_planner__ubuntu_jammy_amd64__binary/) | 
-| nav2_smoother | N/A | N/A | N/A | N/A | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_smoother__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_smoother__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_smoother__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_smoother__ubuntu_jammy_amd64__binary/) |
-| nav2_system_tests | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_system_tests__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_system_tests__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_system_tests__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_system_tests__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_system_tests__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_system_tests__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_system_tests__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_system_tests__ubuntu_jammy_amd64__binary/) |
-| nav2_theta_star_planner | N/A | N/A | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_theta_star_planner__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_theta_star_planner__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_theta_star_planner__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_theta_star_planner__ubuntu_jammy_amd64__binary/) |
-| nav2_util | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_util__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_util__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_util__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_util__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_util__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_util__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_util__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_util__ubuntu_jammy_amd64__binary/) |
-| nav2_voxel_grid | [![Build Status](https://build.ros2.org/job/Fsrc_uF__nav2_voxel_grid__ubuntu_focal__source/badge/icon)](https://build.ros2.org/job/Fsrc_uF__nav2_voxel_grid__ubuntu_focal__source/) | [![Build Status](https://build.ros2.org/job/Fbin_uF64__nav2_voxel_grid__ubuntu_focal_amd64__binary/badge/icon)](https://build.ros2.org/job/Fbin_uF64__nav2_voxel_grid__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_voxel_grid__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_voxel_grid__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_voxel_grid__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_voxel_grid__ubuntu_jammy_amd64__binary/) |
-| nav2_waypoint_follower | [![Build Status](http://build.ros2.org/job/Fsrc_uF__nav2_waypoint_follower__ubuntu_focal__source/badge/icon)](http://build.ros2.org/job/Fsrc_uF__nav2_waypoint_follower__ubuntu_focal__source/) | [![Build Status](http://build.ros2.org/job/Fbin_uF64__nav2_waypoint_follower__ubuntu_focal_amd64__binary/badge/icon)](http://build.ros2.org/job/Fbin_uF64__nav2_waypoint_follower__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Hsrc_uJ__nav2_waypoint_follower__ubuntu_jammy__source/badge/icon)](https://build.ros2.org/job/Hsrc_uJ__nav2_waypoint_follower__ubuntu_jammy__source/) | [![Build Status](https://build.ros2.org/job/Hbin_uJ64__nav2_waypoint_follower__ubuntu_jammy_amd64__binary/badge/icon)](https://build.ros2.org/job/Hbin_uJ64__nav2_waypoint_follower__ubuntu_jammy_amd64__binary/) |
+## 三、编译
+
+### 仅编译 COLREGS Humble MVP 包
+
+```bash
+colcon build --symlink-install \
+  --packages-select \
+  nav2_colregs_msgs \
+  nav2_rrt_star_planner \
+  nav2_colregs_ts_manager \
+  nav2_colregs_vo_rrt_star_planner \
+  nav2_colregs_costmap_layers \
+  nav2_colregs_los_controller \
+  nav2_colregs_alos_controller \
+  nav2_colregs_bringup
+```
+
+### 加载环境
+
+```bash
+source install/setup.bash
+```
+
+### 全量编译说明
+
+全 workspace build 可能在 `nav2_system_tests` 处因缺少 Gazebo 测试依赖（例如 `gazebo_ros_pkgs`）失败。该失败不代表 COLREGS Humble plugin MVP 构建失败。
+
+## 四、使用方式
+
+Humble 分支当前不提供完整 COLREGS 仿真 launch。推荐从已有 Humble Nav2 bringup/仿真配置开始，将 `nav2_colregs_bringup/params/nav2_colregs_params_humble_minimal.yaml` 中的片段合并到工作参数文件。
+
+最小接线包含：
+- `planner_server`：`RRTStar`、`VORRTStar` 插件配置。
+- `controller_server`：默认使用 `nav2_colregs_alos_controller::ALOSController`。
+- `local_costmap` / `global_costmap`：`nav2_colregs_costmap_layers::TSProjectionLayer`。
+- `ts_state_manager`：CPA/TCPA 和威胁状态参数。
+- `bt_navigator`：保留默认 Humble Nav2 BT XML/plugin set，不使用 Jazzy `CreateLocalPath` 诊断 BT 节点。
+
+## 五、关键参数
+
+### TS State Manager
+- `ts_timeout: 3.0`：目标船超时（秒），超时后移除。
+- `tcpa_horizon: 10.0`：TCPA 预测窗口（秒）。
+- `safety_factor: 1.1`：安全距离缩放因子。
+- `os_radius: 0.3`：本船半径。
+- `global_frame: "map"`：TS 状态统一坐标系。
+- `robot_base_frame: "base_link"`：本船 base frame。
+
+### TSProjectionLayer
+- `track_timeout: 3.0`：目标船超时（秒），超时后从 costmap 移除。
+- `enabled: true`
+
+### Controller
+- ALOS: `forward_dist: 2.0`, `gamma: 0.0006`, `beta_hat0: 0.0`, `max_angle_for_motion: 1.047`。
+- LOS: 使用 `lookahead_dist` 替代 ALOS 的 `forward_dist/gamma/beta_hat0` 参数。
+
+## 六、常用诊断命令
+
+```bash
+# 检查 /tracked_ship 消息格式
+ros2 topic echo /tracked_ship --once
+
+# 检查 costmap 中 TS LETHAL 标记
+ros2 topic echo /local_costmap/costmap --once
+
+# 检查 TS 处理列表
+ros2 topic echo /processed_ts_list --once
+
+# TF 检查
+ros2 run tf2_ros tf2_echo map odom
+ros2 run tf2_ros tf2_echo map ts_virtual_base_link
+```
+
+## 七、目录结构（新增/移植包）
+
+```text
+nav2_colregs_msgs/
+nav2_rrt_star_planner/
+nav2_colregs_vo_rrt_star_planner/
+nav2_colregs_costmap_layers/
+  include/ src/ plugins.xml
+nav2_colregs_ts_manager/
+  include/ src/
+nav2_colregs_los_controller/
+  include/ src/ los_controller_plugin.xml
+nav2_colregs_alos_controller/
+  include/ src/ alos_controller_plugin.xml
+nav2_colregs_bringup/
+  params/ behavior_trees/
+```
