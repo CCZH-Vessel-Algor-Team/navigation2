@@ -70,12 +70,6 @@ void LOSController::configure(
   node->get_parameter("controller_frequency", controller_frequency);
   control_duration_ = 1.0 / controller_frequency;
 
-  // PathHandler: owned locally, not a pluginlib-loaded plugin.
-  // Reuses RPP's implementation to transform/trim global plan to base_link.
-  path_handler_ = std::make_unique<nav2_regulated_pure_pursuit_controller::PathHandler>(
-    tf2::durationFromSec(costmap_ros_->getTransformTolerance()),
-    tf_, costmap_ros_);
-
   // FootprintCollisionChecker: checks robot footprint against costmap cells.
   collision_checker_ = std::make_unique<
     nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(
@@ -92,7 +86,7 @@ void LOSController::cleanup()
   RCLCPP_INFO(logger_, "Cleaning up LOSController: %s", plugin_name_.c_str());
   carrot_pub_.reset();
   plan_pub_.reset();
-  path_handler_.reset();
+  global_plan_.poses.clear();
   collision_checker_.reset();
 }
 
@@ -112,7 +106,7 @@ void LOSController::deactivate()
 
 void LOSController::setPlan(const nav_msgs::msg::Path & path)
 {
-  path_handler_->setPlan(path);
+  global_plan_ = path;
 }
 
 void LOSController::setSpeedLimit(const double & speed_limit, const bool & percentage)
@@ -149,8 +143,7 @@ geometry_msgs::msg::TwistStamped LOSController::computeVelocityCommands(
   }
 
   // 2 — Transform global plan (map frame) → robot local frame (base_link).
-  auto transformed_plan = path_handler_->transformGlobalPlan(
-    pose, max_robot_pose_search_dist_);
+  auto transformed_plan = transformGlobalPlan(pose);
   plan_pub_->publish(transformed_plan);
 
   // 3 — Find lookahead point: first point on transformed_plan whose distance
@@ -246,6 +239,89 @@ geometry_msgs::msg::TwistStamped LOSController::computeVelocityCommands(
   }
 
   return cmd_vel;
+}
+
+// ---------------------------------------------------------------------------
+// Plan transform — Humble RPP-style replacement for the Jazzy helper.
+// ---------------------------------------------------------------------------
+
+bool LOSController::transformPose(
+  const std::string & frame,
+  const geometry_msgs::msg::PoseStamped & in_pose,
+  geometry_msgs::msg::PoseStamped & out_pose) const
+{
+  if (in_pose.header.frame_id == frame) {
+    out_pose = in_pose;
+    return true;
+  }
+
+  try {
+    tf_->transform(
+      in_pose, out_pose, frame,
+      tf2::durationFromSec(costmap_ros_->getTransformTolerance()));
+    out_pose.header.frame_id = frame;
+    return true;
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_ERROR(logger_, "Exception in transformPose: %s", ex.what());
+  }
+  return false;
+}
+
+nav_msgs::msg::Path LOSController::transformGlobalPlan(
+  const geometry_msgs::msg::PoseStamped & pose)
+{
+  if (global_plan_.poses.empty()) {
+    throw nav2_core::ControllerException("Received plan with zero length");
+  }
+
+  geometry_msgs::msg::PoseStamped robot_pose;
+  if (!transformPose(global_plan_.header.frame_id, pose, robot_pose)) {
+    throw nav2_core::ControllerException("Unable to transform robot pose into global plan frame");
+  }
+
+  const double max_costmap_extent =
+    std::max(costmap_->getSizeInMetersX(), costmap_->getSizeInMetersY()) / 2.0;
+
+  auto closest_pose_upper_bound =
+    nav2_util::geometry_utils::first_after_integrated_distance(
+    global_plan_.poses.begin(), global_plan_.poses.end(), max_robot_pose_search_dist_);
+
+  auto transformation_begin = nav2_util::geometry_utils::min_by(
+    global_plan_.poses.begin(), closest_pose_upper_bound,
+    [&robot_pose](const geometry_msgs::msg::PoseStamped & ps) {
+      return nav2_util::geometry_utils::euclidean_distance(robot_pose, ps);
+    });
+
+  auto transformation_end = std::find_if(
+    transformation_begin, global_plan_.poses.end(),
+    [&](const auto & plan_pose) {
+      return nav2_util::geometry_utils::euclidean_distance(plan_pose, robot_pose) >
+             max_costmap_extent;
+    });
+
+  nav_msgs::msg::Path transformed_plan;
+  transformed_plan.header.frame_id = costmap_ros_->getBaseFrameID();
+  transformed_plan.header.stamp = robot_pose.header.stamp;
+
+  for (auto it = transformation_begin; it != transformation_end; ++it) {
+    geometry_msgs::msg::PoseStamped stamped_pose;
+    geometry_msgs::msg::PoseStamped transformed_pose;
+    stamped_pose.header.frame_id = global_plan_.header.frame_id;
+    stamped_pose.header.stamp = robot_pose.header.stamp;
+    stamped_pose.pose = it->pose;
+    if (transformPose(costmap_ros_->getBaseFrameID(), stamped_pose, transformed_pose)) {
+      transformed_pose.pose.position.z = 0.0;
+      transformed_plan.poses.push_back(transformed_pose);
+    }
+  }
+
+  global_plan_.poses.erase(global_plan_.poses.begin(), transformation_begin);
+
+  if (transformed_plan.poses.empty()) {
+    throw nav2_core::ControllerException("Resulting transformed plan has zero poses");
+  }
+
+  return transformed_plan;
 }
 
 // ---------------------------------------------------------------------------

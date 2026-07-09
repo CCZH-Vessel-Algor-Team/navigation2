@@ -9,7 +9,6 @@
 #include "nav2_core/controller.hpp"
 #include "nav2_costmap_2d/costmap_2d_ros.hpp"
 #include "nav2_costmap_2d/footprint_collision_checker.hpp"
-#include "nav2_regulated_pure_pursuit_controller/path_handler.hpp"
 #include "nav2_util/node_utils.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
@@ -23,7 +22,7 @@ namespace nav2_colregs_los_controller
  * @brief Minimal Line-of-Sight (LOS) guidance controller for marine USV COLREGS.
  *
  * This controller implements a basic LOS algorithm:
- *   1. Transforms the global plan to the robot's base_link frame via PathHandler.
+ *   1. Transforms the global plan to the robot's base_link frame.
  *   2. Finds a lookahead point along the path at configured distance.
  *   3. Computes target heading as atan2(lookahead_y, lookahead_x).
  *   4. Generates angular velocity with a trapezoidal acceleration profile
@@ -39,7 +38,7 @@ public:
   ~LOSController() = default;
 
   /**
-   * @brief Lifecycle configuration: load parameters, create PathHandler,
+   * @brief Lifecycle configuration: load parameters, create transform state,
    *        FootprintCollisionChecker, and debug publishers.
    */
   void configure(
@@ -52,7 +51,7 @@ public:
   void activate() override;
   void deactivate() override;
 
-  /** @brief Delegate the incoming global plan to internal PathHandler. */
+  /** @brief Store the incoming global plan for controller-loop transforms. */
   void setPlan(const nav_msgs::msg::Path & path) override;
 
   /**
@@ -80,6 +79,14 @@ protected:
   geometry_msgs::msg::PoseStamped findLookaheadPoint(
     const nav_msgs::msg::Path & transformed_plan,
     double lookahead_dist);
+
+  nav_msgs::msg::Path transformGlobalPlan(
+    const geometry_msgs::msg::PoseStamped & pose);
+
+  bool transformPose(
+    const std::string & frame,
+    const geometry_msgs::msg::PoseStamped & in_pose,
+    geometry_msgs::msg::PoseStamped & out_pose) const;
 
   /**
    * @brief Compute angular velocity with a trapezoidal acceleration profile.
@@ -115,7 +122,7 @@ protected:
   std::shared_ptr<tf2_ros::Buffer> tf_;
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
   nav2_costmap_2d::Costmap2D * costmap_{nullptr};
-  std::unique_ptr<nav2_regulated_pure_pursuit_controller::PathHandler> path_handler_;
+  nav_msgs::msg::Path global_plan_;
   std::unique_ptr<nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>
     collision_checker_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PointStamped>>
