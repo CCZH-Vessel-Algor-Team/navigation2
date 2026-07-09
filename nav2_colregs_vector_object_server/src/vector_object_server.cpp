@@ -31,7 +31,7 @@
 
 namespace nav2_util
 {
-template<typename NodeT, typename ParameterT>
+template<typename ParameterT, typename NodeT>
 ParameterT declare_or_get_parameter(
   NodeT node,
   const std::string & param_name,
