@@ -21,7 +21,8 @@ Verified on the Humble apt test machine at `192.168.1.54`:
 - `nav2_colregs_vector_object_server`
 - `nav2_colregs_los_controller`
 - `nav2_colregs_alos_controller`
-- `nav2_colregs_bringup` with params and behavior tree XML only
+- `nav2_colregs_bringup` with params, behavior tree XML, and
+  `ts_subsystem_launch.py`
 
 Focused build command:
 
@@ -57,6 +58,9 @@ plugin port scope.
 - `nav2_colregs_vector_object_server` replaces Jazzy-only
   `declare_or_get_parameter()` calls with a package-local Humble-compatible
   declaration/get helper, uses `create_wall_timer()`, and links `uuid` explicitly.
+- `ts_subsystem_launch.py` is installed as a non-Gazebo launch entrypoint for
+  `ts_state_manager`, `avoidance_point_node`, and `barrier_node`. Its default
+  params file is the Humble minimal snippet instead of a Jazzy validation YAML.
 
 ## Intentionally Not Ported
 
@@ -76,3 +80,9 @@ needed later.
 Use `nav2_colregs_bringup/params/nav2_colregs_params_humble_minimal.yaml` as a
 plugin wiring reference. It is a mergeable configuration snippet, not a complete
 standalone Nav2 bringup file.
+
+Other Jazzy scenario YAML files are still installed for reference, but only the
+parts whose packages were ported are Humble-ready. Files that reference
+`nav2_colregs_local_path_behavior` or `nav2_create_local_path_action_bt_node`
+still require those deferred packages before they can be used as complete
+runtime configurations.

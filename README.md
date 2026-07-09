@@ -2,7 +2,7 @@
 
 本仓库基于官方 `humble` 分支，移植了 `feat/colregs` 中与 COLREGS 插件链路相关的核心功能包。
 
-当前 Humble 分支定位为 **COLREGS plugin MVP**：保留消息、规划器、控制器、TS 状态管理、TSProjectionLayer 代价图层，以及最小 bringup 参数/BT XML；不移植完整 Gazebo/目标船仿真链路。
+当前 Humble 分支定位为 **COLREGS plugin MVP**：保留消息、规划器、控制器、TS 状态管理、TSProjectionLayer 代价图层、vector object server，以及最小 bringup 参数/BT XML/TS 子系统 launch；不移植完整 Gazebo/目标船仿真链路。
 
 Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humble_colregs_port.md`。
 
@@ -59,13 +59,15 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
 - 注意：`/lookahead_point` 和 `/closest_point` 是原始全局路径上的调试/可视化点。COLREGS/ALOS 修正只作用于速度指令输出。
 
 ### 9) `nav2_colregs_bringup`
-- 作用：Humble 移植分支中仅保留参数和 Behavior Tree XML 资源。
+- 作用：Humble 移植分支中保留参数、Behavior Tree XML 资源，以及不依赖 Gazebo 的 TS 子系统 launch。
 - 当前安装内容：
   - `params/`
   - `behavior_trees/`
+  - `launch/ts_subsystem_launch.py`
 - 重点文件：
   - `params/nav2_colregs_params_humble_minimal.yaml`：Humble 插件接线示例，供合并到已有 Humble Nav2 params 使用。
-- 注意：该包在 Humble 分支不是完整仿真 bringup 包，不包含 Gazebo worlds/models/scripts/launch/RViz 资源。
+  - `launch/ts_subsystem_launch.py`：启动 `ts_state_manager`、`avoidance_point_node`、`barrier_node`。
+- 注意：该包在 Humble 分支不是完整仿真 bringup 包，不包含 Gazebo worlds/models/scripts/RViz 资源。
 
 ## 二、Humble 移植状态
 
@@ -78,7 +80,7 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
 - `nav2_colregs_vector_object_server`
 - `nav2_colregs_los_controller`
 - `nav2_colregs_alos_controller`
-- `nav2_colregs_bringup`（params + behavior tree XML only）
+- `nav2_colregs_bringup`（params + behavior tree XML + TS subsystem launch）
 
 验证命令：
 
@@ -156,6 +158,25 @@ Humble 分支当前不提供完整 COLREGS 仿真 launch。推荐从已有 Humbl
 - `ts_state_manager`：CPA/TCPA 和威胁状态参数。
 - `bt_navigator`：保留默认 Humble Nav2 BT XML/plugin set，不使用 Jazzy `CreateLocalPath` 诊断 BT 节点。
 
+TS 子系统可单独启动：
+
+```bash
+ros2 launch nav2_colregs_bringup ts_subsystem_launch.py
+```
+
+该 launch 默认使用 `nav2_colregs_params_humble_minimal.yaml`，会启动：
+- `ts_state_manager`
+- `avoidance_point_node`
+- `barrier_node`
+
+### 参数文件状态
+
+- `nav2_colregs_params_humble_minimal.yaml`：Humble 当前推荐配置片段，引用的 COLREGS 插件均已移植并 build 验证。
+- `vector_object_server_params.yaml` / `vector_object_server_params_behavior_validation.yaml`：vector object server 参数；对应包已移植并 build 验证。
+- `nav2_colregs_params_ts_projection_validation.yaml`：Jazzy 主开发配置。ALOS、VO-RRT*、TSProjectionLayer、`ts_state_manager` 对应组件已移植；但文件仍引用未移植的 `CreateLocalPath` Behavior/BT 节点，不能作为完整 Humble runtime 配置直接使用。
+- `nav2_colregs_params_behavior_validation.yaml`：Jazzy behavior/keepout 验证配置。ALOS、keepout filter、vector object server 相关组件已移植；但完整 validation launch 与 `CreateLocalPath` Behavior/BT 节点未移植。
+- `nav2_colregs_params.yaml` / `nav2_colregs_params_with_keepout.yaml`：Jazzy 基础/keepout 场景配置，保留作参考；未作为 Humble MVP runtime 配置验证。
+
 ## 五、关键参数
 
 ### TS State Manager
@@ -208,5 +229,5 @@ nav2_colregs_los_controller/
 nav2_colregs_alos_controller/
   include/ src/ alos_controller_plugin.xml
 nav2_colregs_bringup/
-  params/ behavior_trees/
+  params/ behavior_trees/ launch/
 ```

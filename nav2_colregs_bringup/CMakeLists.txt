@@ -8,7 +8,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY params behavior_trees
+  DIRECTORY params behavior_trees launch
   DESTINATION share/${PROJECT_NAME}
 )
 
