@@ -18,6 +18,7 @@ Verified on the Humble apt test machine at `192.168.1.54`:
 - `nav2_colregs_ts_manager`
 - `nav2_colregs_vo_rrt_star_planner`
 - `nav2_colregs_costmap_layers`
+- `nav2_colregs_vector_object_server`
 - `nav2_colregs_los_controller`
 - `nav2_colregs_alos_controller`
 - `nav2_colregs_bringup` with params and behavior tree XML only
@@ -33,6 +34,7 @@ colcon build --symlink-install --packages-select \
   nav2_colregs_ts_manager \
   nav2_colregs_vo_rrt_star_planner \
   nav2_colregs_costmap_layers \
+  nav2_colregs_vector_object_server \
   nav2_colregs_los_controller \
   nav2_colregs_alos_controller \
   nav2_colregs_bringup
@@ -52,12 +54,15 @@ plugin port scope.
 - Humble RPP does not expose the Jazzy `PathHandler` helper header used by the
   COLREGS LOS/ALOS controllers. The Humble controllers now store the global plan
   internally and transform/prune it using the Humble RPP transform pattern.
+- `nav2_colregs_vector_object_server` replaces Jazzy-only
+  `declare_or_get_parameter()` calls with a package-local Humble-compatible
+  declaration/get helper, uses `create_wall_timer()`, and links `uuid` explicitly.
 
 ## Intentionally Not Ported
 
 - Full Gazebo / TS simulation launch files, worlds, models, scripts, bridge
   configs, maps, and RViz assets.
-- `nav2_colregs_vector_object_server` and keepout/vector-object validation chain.
+- Full keepout/vector-object validation launch chain.
 - `nav2_colregs_local_path_bt_nodes` and `nav2_colregs_local_path_behavior`.
 
 `nav2_colregs_local_path_bt_nodes` was a behavior-validation bridge for a

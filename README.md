@@ -33,26 +33,32 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
 - 特性：支持多船、超时清理（默认 3s）、移动目标尾迹 bounds 累积清除、TF 坐标变换。
 - 对标 `ObstacleLayer` 的 "topic -> 标记 master_grid" 模式，不通过 keepout mask 中转。
 
-### 5) `nav2_colregs_ts_manager`
+### 5) `nav2_colregs_vector_object_server`
+- 作用：发布矢量对象栅格化后的 keepout mask（默认 `/keepout_filter_mask`）。
+- 特点：LifecycleNode，支持 `circle` / `polygon`，内置指数梯度膨胀，可通过 `AddShapes` / `GetShapes` / `RemoveShapes` 服务动态维护矢量对象。
+- Humble 适配：替换 Jazzy 参数 helper，使用 Humble timer API，补充 `uuid` 链接和 component 注册。
+- 注意：包已移植并可 build，但 Humble 分支尚未恢复 Jazzy 的完整 keepout/vector-object validation launch 链路。
+
+### 6) `nav2_colregs_ts_manager`
 - 作用：TS 状态管理节点（LifecycleNode）。订阅 `/tracked_ship`（`TrackedShipList`）和 `/odom`，逐 `target_id` 维护多 TS 状态，计算 CPA/TCPA，发布 `/processed_ts_list` topic。
 - TS 位姿通过 TF 从消息 `frame_id` 变换到 `global_frame`（通常为 `map`），确保多坐标系兼容。
 - 与 `TSProjectionLayer` 配合：前者判断 TS 是否危险，后者将 TS 位姿画入 costmap。
 - 超时参数：`ts_timeout: 3.0`（自动清除失联船舶）。
 
-### 6) `nav2_colregs_los_controller`
+### 7) `nav2_colregs_los_controller`
 - 作用：最简 LOS 制导 Controller 插件。
 - 算法：沿路径找前视点，使用 `atan2` 计算目标艏向，再做角/线速度限制和 footprint 碰撞检测。
 - Humble 适配：移除 Jazzy RPP `PathHandler` 依赖，内部保存并变换/prune 全局路径。
 - 注意：`/lookahead_point` 发布的是原始全局路径上的前视点，仅做坐标变换，不包含 COLREGS 修正。
 
-### 7) `nav2_colregs_alos_controller`
+### 8) `nav2_colregs_alos_controller`
 - 作用：Adaptive LOS（ALOS）制导 Controller 插件，在 LOS 基础上加入侧滑角自适应估计。
 - 算法：基于 Fossen (2023)，找最近点和前推点，计算路径切线角、侧偏和自适应侧滑估计，输出目标航向和速度指令。
 - 关键参数：`forward_dist`, `gamma`, `beta_hat0`, `reset_beta_on_new_path`。
 - Humble 适配：移除 Jazzy RPP `PathHandler` 依赖，使用 Humble RPP 风格的路径变换逻辑。
 - 注意：`/lookahead_point` 和 `/closest_point` 是原始全局路径上的调试/可视化点。COLREGS/ALOS 修正只作用于速度指令输出。
 
-### 8) `nav2_colregs_bringup`
+### 9) `nav2_colregs_bringup`
 - 作用：Humble 移植分支中仅保留参数和 Behavior Tree XML 资源。
 - 当前安装内容：
   - `params/`
@@ -69,6 +75,7 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
 - `nav2_colregs_ts_manager`
 - `nav2_colregs_vo_rrt_star_planner`
 - `nav2_colregs_costmap_layers`
+- `nav2_colregs_vector_object_server`
 - `nav2_colregs_los_controller`
 - `nav2_colregs_alos_controller`
 - `nav2_colregs_bringup`（params + behavior tree XML only）
@@ -84,6 +91,7 @@ colcon build --symlink-install --packages-select \
   nav2_colregs_ts_manager \
   nav2_colregs_vo_rrt_star_planner \
   nav2_colregs_costmap_layers \
+  nav2_colregs_vector_object_server \
   nav2_colregs_los_controller \
   nav2_colregs_alos_controller \
   nav2_colregs_bringup
@@ -92,14 +100,13 @@ colcon build --symlink-install --packages-select \
 最新验证结果：
 
 ```text
-Summary: 8 packages finished [0.83s]
+Summary: 9 packages finished
 ```
 
 ### 暂未移植
 - 完整 Gazebo / 目标船仿真 launch 文件。
 - Gazebo worlds、models、bridge config、RViz 配置、地图和仿真脚本。
-- `nav2_colregs_vector_object_server`。
-- keepout / vector-object validation chain。
+- keepout / vector-object validation launch chain。
 - `nav2_colregs_local_path_behavior`。
 - `nav2_colregs_local_path_bt_nodes`。
 
@@ -122,6 +129,7 @@ colcon build --symlink-install \
   nav2_colregs_ts_manager \
   nav2_colregs_vo_rrt_star_planner \
   nav2_colregs_costmap_layers \
+  nav2_colregs_vector_object_server \
   nav2_colregs_los_controller \
   nav2_colregs_alos_controller \
   nav2_colregs_bringup
@@ -191,6 +199,8 @@ nav2_rrt_star_planner/
 nav2_colregs_vo_rrt_star_planner/
 nav2_colregs_costmap_layers/
   include/ src/ plugins.xml
+nav2_colregs_vector_object_server/
+  include/ src/ launch/ params/
 nav2_colregs_ts_manager/
   include/ src/
 nav2_colregs_los_controller/
