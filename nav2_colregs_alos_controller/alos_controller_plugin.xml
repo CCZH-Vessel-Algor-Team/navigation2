@@ -1,0 +1,6 @@
+<library path="nav2_colregs_alos_controller">
+  <class type="nav2_colregs_alos_controller::ALOSController"
+         base_class_type="nav2_core::Controller">
+    <description>Adaptive Line-of-Sight guidance with sideslip compensation</description>
+  </class>
+</library>

@@ -1,0 +1,6 @@
+<library path="nav2_colregs_los_controller">
+  <class type="nav2_colregs_los_controller::LOSController"
+         base_class_type="nav2_core::Controller">
+    <description>Minimal LOS guidance controller for COLREGS</description>
+  </class>
+</library>
