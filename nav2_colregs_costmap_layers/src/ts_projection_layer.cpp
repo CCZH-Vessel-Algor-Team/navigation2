@@ -28,14 +28,17 @@ void TSProjectionLayer::onInitialize()
   declareParameter("track_timeout", rclcpp::ParameterValue(3.0));
   track_timeout_ = node->get_parameter(name_ + "." + "track_timeout").as_double();
 
+  declareParameter("tracked_ship_topic", rclcpp::ParameterValue(tracked_ship_topic_));
+  node->get_parameter(name_ + "." + "tracked_ship_topic", tracked_ship_topic_);
+
   sub_ = node->create_subscription<nav2_colregs_msgs::msg::TrackedShipList>(
-    "/tracked_ship", rclcpp::SystemDefaultsQoS(),
+    tracked_ship_topic_, rclcpp::SystemDefaultsQoS(),
     std::bind(&TSProjectionLayer::trackedShipCallback, this, std::placeholders::_1));
 
   global_frame_ = layered_costmap_->getGlobalFrameID();
   current_ = true;
-  RCLCPP_INFO(logger_, "TSProjectionLayer initialized, subscribed to /tracked_ship "
-    "(track_timeout=%.1fs)", track_timeout_);
+  RCLCPP_INFO(logger_, "TSProjectionLayer initialized, subscribed to %s "
+    "(track_timeout=%.1fs)", tracked_ship_topic_.c_str(), track_timeout_);
 }
 
 void TSProjectionLayer::trackedShipCallback(
