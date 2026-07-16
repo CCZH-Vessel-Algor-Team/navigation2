@@ -29,7 +29,7 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
 
 ### 4) `nav2_colregs_costmap_layers`
 - 作用：自定义 Costmap Layer 插件。
-- `TSProjectionLayer`：订阅 `/tracked_ship`（`TrackedShipList`），逐 `target_id` 维护状态，在 `master_grid` 上标注目标船 LETHAL 圆。
+- `TSProjectionLayer`：订阅 `tracked_ship_topic`（默认 `/dynamic_ship/tracked_ships`，消息类型 `TrackedShipList`），逐 `target_id` 维护状态，在 `master_grid` 上标注目标船 LETHAL 圆。
 - 特性：支持多船、超时清理（默认 3s）、移动目标尾迹 bounds 累积清除、TF 坐标变换。
 - 对标 `ObstacleLayer` 的 "topic -> 标记 master_grid" 模式，不通过 keepout mask 中转。
 
@@ -154,8 +154,8 @@ Humble 分支当前不提供完整 COLREGS 仿真 launch。推荐从已有 Humbl
 最小接线包含：
 - `planner_server`：`RRTStar`、`VORRTStar` 插件配置。
 - `controller_server`：默认使用 `nav2_colregs_alos_controller::ALOSController`。
-- `local_costmap` / `global_costmap`：`nav2_colregs_costmap_layers::TSProjectionLayer`。
-- `ts_state_manager`：CPA/TCPA 和威胁状态参数。
+- `local_costmap` / `global_costmap`：`nav2_colregs_costmap_layers::TSProjectionLayer`，显式配置 `tracked_ship_topic`。
+- `ts_state_manager`：CPA/TCPA 和威胁状态参数，显式配置 `tracked_ship_topic`、`robot_base_frame`、`odom_topic`。
 - `bt_navigator`：保留默认 Humble Nav2 BT XML/plugin set，不使用 Jazzy `CreateLocalPath` 诊断 BT 节点。
 
 TS 子系统可单独启动：
@@ -168,6 +168,8 @@ ros2 launch nav2_colregs_bringup ts_subsystem_launch.py
 - `ts_state_manager`
 - `avoidance_point_node`
 - `barrier_node`
+
+`ts_subsystem_launch.py` 暴露 `tracked_ship_topic`、`robot_base_frame`、`odom_topic` 作为便捷参数，只作用于 TS subsystem 进程。TSProjectionLayer 是 Nav2 costmap 插件，不由该 launch 启动；如果需要改目标船 topic，必须同步修改传给 Nav2 的 params 文件中 local/global `ts_projection_layer.tracked_ship_topic`。
 
 ### 参数文件状态
 

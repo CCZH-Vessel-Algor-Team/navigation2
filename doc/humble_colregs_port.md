@@ -79,7 +79,9 @@ needed later.
 
 Use `nav2_colregs_bringup/params/nav2_colregs_params_humble_minimal.yaml` as a
 plugin wiring reference. It is a mergeable configuration snippet, not a complete
-standalone Nav2 bringup file.
+standalone Nav2 bringup file. The snippet explicitly aligns
+`tracked_ship_topic` between `ts_state_manager` and both local/global
+`ts_projection_layer` instances.
 
 Other Jazzy scenario YAML files are still installed for reference, but only the
 parts whose packages were ported are Humble-ready. Files that reference
