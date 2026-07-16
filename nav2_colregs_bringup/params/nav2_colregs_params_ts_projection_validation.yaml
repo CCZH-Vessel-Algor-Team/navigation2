@@ -157,6 +157,7 @@ local_costmap:
       ts_projection_layer:
         plugin: "nav2_colregs_costmap_layers::TSProjectionLayer"
         enabled: True
+        tracked_ship_topic: "/tracked_ship"
         track_timeout: 3.0
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -201,6 +202,7 @@ global_costmap:
       ts_projection_layer:
         plugin: "nav2_colregs_costmap_layers::TSProjectionLayer"
         enabled: True
+        tracked_ship_topic: "/tracked_ship"
         track_timeout: 3.0
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -469,3 +471,4 @@ ts_state_manager:
     global_frame: "map"
     robot_base_frame: "base_link"
     odom_topic: "odom"
+    tracked_ship_topic: "/tracked_ship"

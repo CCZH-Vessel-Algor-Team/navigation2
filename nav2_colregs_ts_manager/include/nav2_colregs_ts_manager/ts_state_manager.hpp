@@ -76,6 +76,7 @@ private:
   std::string global_frame_{"map"};
   std::string robot_base_frame_{"base_link"};
   std::string odom_topic_{"odom"};
+  std::string tracked_ship_topic_{"/tracked_ship"};
 };
 
 }  // namespace nav2_colregs_ts_manager

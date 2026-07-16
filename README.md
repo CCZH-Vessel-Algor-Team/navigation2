@@ -31,7 +31,7 @@
 
 ### 4) `nav2_colregs_costmap_layers`
 - 作用：自定义 Costmap Layer 插件。
-- `TSProjectionLayer`：订阅 `/tracked_ship`（`TrackedShipList`），逐 `target_id` 维护状态，在 `master_grid` 上标注目标船 LETHAL 圆。含超时清理（3s）、尾迹累积 bounds 清除。支持多船。
+- `TSProjectionLayer`：订阅 `tracked_ship_topic`（默认 `/tracked_ship`，消息类型 `TrackedShipList`），逐 `target_id` 维护状态，在 `master_grid` 上标注目标船 LETHAL 圆。含超时清理（3s）、尾迹累积 bounds 清除。支持多船。
 - 对标 `ObstacleLayer` 的 "topic → 标记 master_grid" 模式，不通过 keepout mask 中转。
 
 ### 5) `nav2_colregs_local_path_behavior`
@@ -131,12 +131,14 @@ ros2 launch nav2_colregs_bringup colregs_simulation_launch.py
 - `enable_ts_motion`：是否启用目标船运动控制。
 
 ### TS State Manager
+- `tracked_ship_topic: "/tracked_ship"`：目标船输入 topic。若修改 TS 发布源，需同步修改 TS State Manager 与 TSProjectionLayer 的该参数。
 - `ts_timeout: 3.0`：目标船超时（秒），超时后移除。
 - `tcpa_horizon: 10.0`：TCPA 预测窗口（秒）。
 - `safety_factor: 1.1`：安全距离缩放因子。
 - `os_radius: 0.3`：本船半径。
 
 ### TSProjectionLayer
+- `tracked_ship_topic: "/tracked_ship"`：目标船输入 topic，应与 TS State Manager 保持一致。
 - `track_timeout: 3.0`：目标船超时（秒），超时后从 costmap 移除。
 - `enabled: True`
 

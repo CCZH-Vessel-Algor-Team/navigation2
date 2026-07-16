@@ -19,6 +19,7 @@ TSStateManager::TSStateManager()
   declare_parameter("global_frame", "map");
   declare_parameter("robot_base_frame", "base_link");
   declare_parameter("odom_topic", "odom");
+  declare_parameter("tracked_ship_topic", tracked_ship_topic_);
 
   frequency_ = get_parameter("frequency").as_double();
   ts_timeout_ = get_parameter("ts_timeout").as_double();
@@ -28,11 +29,12 @@ TSStateManager::TSStateManager()
   global_frame_ = get_parameter("global_frame").as_string();
   robot_base_frame_ = get_parameter("robot_base_frame").as_string();
   odom_topic_ = get_parameter("odom_topic").as_string();
+  tracked_ship_topic_ = get_parameter("tracked_ship_topic").as_string();
 
   tf_ = std::make_shared<tf2_ros::Buffer>(get_clock());
 
   ts_sub_ = create_subscription<nav2_colregs_msgs::msg::TrackedShipList>(
-    "tracked_ship", rclcpp::SystemDefaultsQoS(),
+    tracked_ship_topic_, rclcpp::SystemDefaultsQoS(),
     std::bind(&TSStateManager::trackedShipCallback, this, std::placeholders::_1));
 
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
@@ -53,7 +55,8 @@ TSStateManager::TSStateManager()
   tf_->setUsingDedicatedThread(true);
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_, true);
 
-  RCLCPP_INFO(get_logger(), "TSStateManager started (ts_timeout=%.1fs)", ts_timeout_);
+  RCLCPP_INFO(get_logger(), "TSStateManager started (ts_timeout=%.1fs, topic=%s)",
+    ts_timeout_, tracked_ship_topic_.c_str());
 }
 
 // ---------------------------------------------------------------------------
