@@ -47,7 +47,7 @@ def generate_launch_description():
                 'tracked_ship_topic': tracked_ship_topic,
                 'robot_base_frame': robot_base_frame,
                 'odom_topic': odom_topic,
-                'tcpa_horizon': 15.0,
+                'tcpa_horizon': 20.0,
                 'safety_factor': 1.5,
                 'os_radius': 5.0,
             }],
@@ -57,7 +57,11 @@ def generate_launch_description():
             executable='avoidance_point_node',
             name='avoidance_point_node',
             output='screen',
-            parameters=[params_file, {'use_sim_time': use_sim_time}],
+            parameters=[params_file, {
+                'use_sim_time': use_sim_time,
+                'os_radius': 5.0,
+                'safety_factor': 1.5,
+            }],
         ),
         Node(
             package='nav2_colregs_ts_manager',
