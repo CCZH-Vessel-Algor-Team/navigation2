@@ -131,10 +131,19 @@ void TSStateManager::timerCallback()
     return;
   }
 
+  double ox = os_pose.pose.orientation.x;
+  double oy = os_pose.pose.orientation.y;
+  double oz = os_pose.pose.orientation.z;
+  double ow = os_pose.pose.orientation.w;
+  double os_yaw = std::atan2(2.0 * (ow * oz + ox * oy),
+                             1.0 - 2.0 * (oy * oy + oz * oz));
+
   double os_vx = 0.0, os_vy = 0.0;
   if (last_odom_) {
-    os_vx = last_odom_->twist.twist.linear.x;
-    os_vy = last_odom_->twist.twist.linear.y;
+    double body_vx = last_odom_->twist.twist.linear.x;
+    double body_vy = last_odom_->twist.twist.linear.y;
+    os_vx = std::cos(os_yaw) * body_vx - std::sin(os_yaw) * body_vy;
+    os_vy = std::sin(os_yaw) * body_vx + std::cos(os_yaw) * body_vy;
   }
   const double os_speed = std::hypot(os_vx, os_vy);
 
@@ -225,6 +234,19 @@ void TSStateManager::timerCallback()
 
     double cpa_x = ts.x + ts.vx * tcpa;
     double cpa_y = ts.y + ts.vy * tcpa;
+
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+      "CPA[%d] OS=(%.1f,%.1f) v_os=(%+.1f,%+.1f) yaw=%.1fdeg "
+      "TS=(%.1f,%.1f) v_ts=(%+.1f,%+.1f) "
+      "TCPA=%.1fs DCPA=%.1fm cp=(%.1f,%.1f) t=%d",
+      id,
+      os_pose.pose.position.x, os_pose.pose.position.y,
+      os_vx, os_vy,
+      os_yaw * 180.0 / M_PI,
+      ts.x, ts.y, ts.vx, ts.vy,
+      tcpa,
+      std::hypot(rel_x + rel_vx * tcpa, rel_y + rel_vy * tcpa),
+      cpa_x, cpa_y, (int)is_threat);
 
     visualization_msgs::msg::Marker m;
     m.header.stamp = now;
