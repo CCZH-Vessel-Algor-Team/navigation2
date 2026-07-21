@@ -47,6 +47,9 @@ def generate_launch_description():
                 'tracked_ship_topic': tracked_ship_topic,
                 'robot_base_frame': robot_base_frame,
                 'odom_topic': odom_topic,
+                'tcpa_horizon': 15.0,
+                'safety_factor': 1.5,
+                'os_radius': 5.0,
             }],
         ),
         Node(
