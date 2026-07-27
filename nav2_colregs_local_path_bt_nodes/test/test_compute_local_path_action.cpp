@@ -20,6 +20,7 @@ namespace
 
 using Action = nav2_colregs_msgs::action::ComputeLocalPath;
 using GoalHandle = rclcpp_action::ServerGoalHandle<Action>;
+constexpr char kTestNamespace[] = "/compute_local_path_bt_test";
 
 class ComputeLocalPathActionServer : public rclcpp::Node
 {
@@ -27,7 +28,7 @@ public:
   enum class ResultMode {SUCCEED, ABORT, CANCEL};
 
   ComputeLocalPathActionServer()
-  : Node("compute_local_path_bt_test_server")
+  : Node("compute_local_path_bt_test_server", kTestNamespace)
   {
     using namespace std::placeholders;  // NOLINT
 
@@ -159,8 +160,10 @@ protected:
     server_executor_->add_node(action_server_);
     server_thread_ = std::thread([this]() {server_executor_->spin();});
     action_server_->reset(ComputeLocalPathActionServer::ResultMode::SUCCEED);
-    node_ = std::make_shared<rclcpp::Node>("compute_local_path_bt_test_client");
-    cancel_node_ = std::make_shared<rclcpp::Node>("compute_local_path_bt_cancel_client");
+    node_ = std::make_shared<rclcpp::Node>(
+      "compute_local_path_bt_test_client", kTestNamespace);
+    cancel_node_ = std::make_shared<rclcpp::Node>(
+      "compute_local_path_bt_cancel_client", kTestNamespace);
     cancel_client_ = rclcpp_action::create_client<Action>(cancel_node_, "compute_local_path");
 
     blackboard_ = BT::Blackboard::create();

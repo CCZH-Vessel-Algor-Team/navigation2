@@ -14,6 +14,7 @@
 
 #include <chrono>
 #include <memory>
+#include <string>
 #include <thread>
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
@@ -28,6 +29,8 @@ using namespace std::chrono_literals;
 
 namespace nav2_colregs_local_planner_server
 {
+
+constexpr char kTestNamespace[] = "/local_planner_server_test";
 
 class LocalPlannerServerTest : public ::testing::Test
 {
@@ -47,8 +50,11 @@ protected:
 
   void SetUp() override
   {
-    server_ = std::make_shared<ColregsLocalPlannerServer>();
-    client_node_ = std::make_shared<rclcpp::Node>("local_planner_server_test_client");
+    auto server_options = rclcpp::NodeOptions();
+    server_options.arguments({"--ros-args", "-r", "__ns:=" + std::string(kTestNamespace)});
+    server_ = std::make_shared<ColregsLocalPlannerServer>(server_options);
+    client_node_ = std::make_shared<rclcpp::Node>(
+      "local_planner_server_test_client", kTestNamespace);
     client_ = rclcpp_action::create_client<Action>(client_node_, "compute_local_path");
     path_subscription_ = client_node_->create_subscription<nav_msgs::msg::Path>(
       "local_path", 1,
