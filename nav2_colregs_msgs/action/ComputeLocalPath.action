@@ -1,0 +1,15 @@
+# Goal
+nav_msgs/Path reference_path
+---
+# Result
+uint16 NONE=0
+uint16 EMPTY_PATH=31001
+uint16 INVALID_PATH=31002
+uint16 CANCELED=31003
+
+nav_msgs/Path local_path
+builtin_interfaces/Duration planning_time
+uint16 error_code
+string error_msg
+---
+# Feedback intentionally empty for the pass-through demo.

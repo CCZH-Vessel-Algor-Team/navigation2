@@ -3,9 +3,15 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    RegisterEventHandler,
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import LifecycleNode, Node
+from launch_ros.event_handlers import OnStateTransition
 
 
 def generate_launch_description():
@@ -47,11 +53,43 @@ def generate_launch_description():
         }.items(),
     )
 
+    local_planner_server = LifecycleNode(
+        package='nav2_colregs_local_planner_server',
+        executable='colregs_local_planner_server',
+        name='colregs_local_planner_server',
+        namespace='',
+        output='screen',
+        parameters=[params_file, {'use_sim_time': use_sim_time}],
+    )
+
+    lifecycle_manager_colregs_local_planner = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_colregs_local_planner',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'autostart': autostart,
+            'node_names': ['colregs_local_planner_server'],
+        }],
+    )
+
+    start_base_on_local_planner_active = RegisterEventHandler(
+        OnStateTransition(
+            target_lifecycle_node=local_planner_server,
+            goal_state='active',
+            entities=[base_launch],
+            handle_once=True,
+        )
+    )
+
     ld = LaunchDescription()
     ld.add_action(declare_params_file)
     ld.add_action(declare_use_sim_time)
     ld.add_action(declare_autostart)
     ld.add_action(declare_headless)
-    ld.add_action(base_launch)
     ld.add_action(ts_subsystem)
+    ld.add_action(local_planner_server)
+    ld.add_action(start_base_on_local_planner_active)
+    ld.add_action(lifecycle_manager_colregs_local_planner)
     return ld

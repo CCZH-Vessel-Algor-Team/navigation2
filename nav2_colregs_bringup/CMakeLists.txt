@@ -20,7 +20,14 @@ install(
 )
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
+  ament_add_pytest_test(test_local_planner_server_launch
+    test/test_local_planner_server_launch.py
+  )
+  ament_add_pytest_test(test_local_planner_server_configuration
+    test/test_local_planner_server_configuration.py
+  )
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()

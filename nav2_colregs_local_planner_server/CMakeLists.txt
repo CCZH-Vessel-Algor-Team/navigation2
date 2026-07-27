@@ -1,0 +1,61 @@
+cmake_minimum_required(VERSION 3.5)
+project(nav2_colregs_local_planner_server)
+
+find_package(ament_cmake REQUIRED)
+find_package(nav2_common REQUIRED)
+find_package(nav2_colregs_msgs REQUIRED)
+find_package(nav2_util REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
+find_package(rcl_action REQUIRED)
+
+nav2_package()
+
+set(library_name ${PROJECT_NAME}_core)
+set(dependencies
+  rcl_action
+  nav2_colregs_msgs
+  nav2_util
+  nav_msgs
+  rclcpp
+  rclcpp_action
+  rclcpp_lifecycle
+)
+
+add_library(${library_name} SHARED src/local_planner_server.cpp)
+target_include_directories(${library_name} PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(${library_name} ${dependencies})
+
+add_executable(colregs_local_planner_server src/main.cpp)
+target_link_libraries(colregs_local_planner_server ${library_name})
+ament_target_dependencies(colregs_local_planner_server ${dependencies})
+
+install(TARGETS ${library_name}
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin)
+install(TARGETS colregs_local_planner_server
+  RUNTIME DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY include/ DESTINATION include/)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_lint_auto REQUIRED)
+  find_package(geometry_msgs REQUIRED)
+  find_package(lifecycle_msgs REQUIRED)
+  ament_lint_auto_find_test_dependencies()
+
+  ament_add_gtest(test_local_planner_server test/test_local_planner_server.cpp)
+  target_link_libraries(test_local_planner_server ${library_name})
+  ament_target_dependencies(
+    test_local_planner_server ${dependencies} geometry_msgs lifecycle_msgs)
+endif()
+
+ament_export_include_directories(include)
+ament_export_libraries(${library_name})
+ament_export_dependencies(${dependencies})
+ament_package()

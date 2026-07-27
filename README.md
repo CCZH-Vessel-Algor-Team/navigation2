@@ -60,6 +60,14 @@
 - 已知限制：原地转向期间 β̂ 仍会更新。详见代码注释。
 - **注意：`/lookahead_point` 和 `/closest_point` 是原始全局路径上未经 COLREGS 修正的点（仅 map→base_link 变换），仅用于制导可视化。COLREGS 修正（β̂）只作用于速度指令输出。**
 
+### 10) `nav2_colregs_local_planner_server`
+- 作用：生命周期管理的本地路径规划 Action Server Demo，用于验证 `BT → Action Server → BT → Controller` 接线。
+- 生命周期节点：`/colregs_local_planner_server`。
+- Action：`/compute_local_path`（`nav2_colregs_msgs/action/ComputeLocalPath`）。
+- 发布 topic：`/local_path`（`nav_msgs/msg/Path`）。
+- 当前实现仅将 `reference_path` 透传为 `local_path`，保留 frame 和全部 poses，仅刷新路径时间戳；尚不读取 TS 上下文，也不改变路径几何。
+- 当前执行模型为串行且不支持抢占。取消采用 group cancellation：执行过程在关键边界检查取消请求，观察到请求后以 `CANCELED` 和 `Local path computation canceled` 终止该 server 的全部 goals，不提供逐 goal 独立取消语义。受 `SimpleActionServer` 非原子检查/完成 API 限制，最终取消检查与发布/成功完成之间仍存在极小竞态窗口。
+
 ## 二、编译
 
 ### 全量编译
@@ -74,6 +82,7 @@ colcon build --symlink-install \
   nav2_colregs_msgs \
   nav2_colregs_vector_object_server \
   nav2_colregs_costmap_layers \
+  nav2_colregs_local_planner_server \
   nav2_colregs_local_path_bt_nodes \
   nav2_colregs_local_path_behavior \
   nav2_colregs_ts_manager \
@@ -105,10 +114,12 @@ ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py
 ```
 作用：COLREGS 全套开发 launch。组件链：
 - **TSProjectionLayer**（costmap 内标记 TS 障碍物）
-  - **TS State Manager**（CPA/TCPA 计算，`/processed_ts_list` topic）
-- **CreateLocalPath BT 节点**（透传路径）
+- **TS State Manager**（CPA/TCPA 计算，`/processed_ts_list` topic）
+- **ComputeLocalPath BT 节点**调用 `/compute_local_path`，将 Action result `{local_path}` 交给 `FollowPath`
 - **ALOS Controller**（制导）
 - 不含 vector_object_server / keepout 链路。
+
+本入口中的 Local Planner Server 是 plumbing Demo，不是 COLREGS 路径规划算法。它只验证生命周期启动、Action 调用、BT result 传递和 Controller 接线；当前不消费 TS 数据，也不修改全局路径几何。
 
 ### 3) `colregs_ts_behavior_validation_launch.py`
 ```bash
@@ -163,6 +174,61 @@ ros2 run tf2_ros tf2_echo map odom
 ros2 run tf2_ros tf2_echo map ts_virtual_base_link
 ```
 
+### Local Planner Server Demo 验证边界
+
+当前开发主机为 Conda/RoboStack 环境，只执行静态检查，不在该环境运行 `colcon`、`ros2` 或 launch。以下构建、测试和运行命令必须在 apt ROS 2 Jazzy 环境执行。
+
+以下 focused build 是增量命令，假定当前 `feat/colregs` 基线及已有自定义运行依赖已在 workspace 中构建并可被 source。它只构建本 Demo 的五个功能包，不会从干净 workspace 构建完整仿真栈：
+
+```bash
+colcon build --symlink-install --packages-select \
+  nav2_colregs_msgs \
+  nav2_colregs_local_planner_server \
+  nav2_colregs_local_path_behavior \
+  nav2_colregs_local_path_bt_nodes \
+  nav2_colregs_bringup
+source install/setup.bash
+```
+
+主 launch 还使用基线中的 `nav2_colregs_ts_manager`、`nav2_colregs_costmap_layers`、`nav2_colregs_alos_controller`、`nav2_colregs_vo_rrt_star_planner`，以及 Nav2、Gazebo 和 `nav2_minimal_tb3_sim`。若从干净的源码 workspace 构建，应使用 dependency-resolving 的较大范围命令（并确保 apt/system dependencies 已安装）：
+
+```bash
+colcon build --symlink-install --packages-up-to \
+  nav2_colregs_bringup \
+  nav2_colregs_ts_manager \
+  nav2_colregs_costmap_layers \
+  nav2_colregs_alos_controller \
+  nav2_colregs_vo_rrt_star_planner
+source install/setup.bash
+```
+
+`--packages-up-to` 会构建上述目标及其声明的递归依赖，因此范围显著大于五包 focused build；它用于准备完整 launch 所需的源码依赖，而不是 focused feature rebuild。
+
+```bash
+# focused tests
+colcon test --packages-select \
+  nav2_colregs_local_planner_server \
+  nav2_colregs_local_path_bt_nodes \
+  --event-handlers console_direct+
+colcon test-result --verbose
+
+# launch; retain this terminal output for BT plugin and runtime-error evidence
+ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py
+```
+
+发送 NavigateToPose goal 后，在其他已 source workspace 的终端采集：
+
+```bash
+ros2 lifecycle get /colregs_local_planner_server
+ros2 action list -t | grep '/compute_local_path'
+ros2 action info /compute_local_path
+ros2 topic echo /local_path --once
+ros2 action info /follow_path
+ros2 topic echo /cmd_vel --once
+```
+
+需要记录实际结果，而不是预先声明通过：focused build/test 结果、生命周期是否为 `active`、`/compute_local_path` 的 action server 数量、`nav2_compute_local_path_action_bt_node` 是否成功加载、是否发布 `/local_path`、`FollowPath`/Controller 是否消费结果，以及所有 launch/runtime errors。由于 Demo 输出与输入路径几何相同，Controller 消费的运行证据应结合成功的 NavigateToPose 执行、`/local_path` 消息及 Controller 输出判断；BT XML 的接线本身仅属于静态证据。
+
 ## 六、目录结构（新增包）
 
 ```text
@@ -172,6 +238,8 @@ nav2_colregs_costmap_layers/
   include/ src/ plugins.xml
 nav2_colregs_ts_manager/
   include/ src/
+nav2_colregs_local_planner_server/
+  include/ src/ test/
 nav2_colregs_local_path_bt_nodes/
   include/ src/
 nav2_colregs_local_path_behavior/
