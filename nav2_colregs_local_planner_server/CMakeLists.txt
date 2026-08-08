@@ -4,6 +4,7 @@ project(nav2_colregs_local_planner_server)
 find_package(ament_cmake REQUIRED)
 find_package(nav2_common REQUIRED)
 find_package(nav2_colregs_msgs REQUIRED)
+find_package(nav2_costmap_2d REQUIRED)
 find_package(nav2_util REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -17,6 +18,7 @@ set(library_name ${PROJECT_NAME}_core)
 set(dependencies
   rcl_action
   nav2_colregs_msgs
+  nav2_costmap_2d
   nav2_util
   nav_msgs
   rclcpp
@@ -24,7 +26,7 @@ set(dependencies
   rclcpp_lifecycle
 )
 
-add_library(${library_name} SHARED src/local_planner_server.cpp)
+add_library(${library_name} SHARED src/local_planner_server.cpp src/rrt_star.cpp)
 target_include_directories(${library_name} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -53,6 +55,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_local_planner_server ${library_name})
   ament_target_dependencies(
     test_local_planner_server ${dependencies} geometry_msgs lifecycle_msgs)
+
+  ament_add_gtest(test_rrt_star test/test_rrt_star.cpp)
+  target_link_libraries(test_rrt_star ${library_name})
+  ament_target_dependencies(test_rrt_star nav2_costmap_2d)
 endif()
 
 ament_export_include_directories(include)
