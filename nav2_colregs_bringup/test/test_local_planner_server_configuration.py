@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -8,10 +9,78 @@ PACKAGE_DIR = Path(__file__).parents[1]
 PARAMS_FILE = (
     PACKAGE_DIR / 'params' / 'nav2_colregs_params_ts_projection_validation.yaml'
 )
+DEFAULT_RVIZ_FILE = PACKAGE_DIR / 'rviz' / 'nav2_default_view.rviz'
+DEMO_RVIZ_FILE = PACKAGE_DIR / 'rviz' / 'colregs_local_planner_demo.rviz'
 
 
 def load_params():
     return yaml.safe_load(PARAMS_FILE.read_text())
+
+
+def topic_value(display, topic_name='Topic'):
+    return display[topic_name]['Value']
+
+
+def test_default_rviz_profile_is_preserved_byte_for_byte():
+    assert hashlib.sha256(DEFAULT_RVIZ_FILE.read_bytes()).hexdigest() == (
+        '17a331f5878bde3a5f0c7f13692871f79552ec3cd053f670c1efccb9673ddcfc'
+    )
+
+
+def test_demo_rviz_profile_is_the_dedicated_colregs_derivative():
+    default_config = yaml.safe_load(DEFAULT_RVIZ_FILE.read_text())
+    demo_text = DEMO_RVIZ_FILE.read_text()
+    demo_config = yaml.safe_load(demo_text)
+
+    default_displays = default_config['Visualization Manager']['Displays']
+    planner = next(
+        display for display in default_displays
+        if display.get('Name') == 'Global Planner'
+    )
+    planner['Name'] = 'COLREGS Planner'
+    costmap = next(
+        display for display in planner['Displays']
+        if display.get('Name') == 'Global Costmap'
+    )
+    costmap['Name'] = 'COLREGS Costmap'
+    costmap['Topic']['Value'] = 'colregs_costmap/costmap'
+    costmap['Update Topic']['Value'] = 'colregs_costmap/costmap_updates'
+    footprint = next(
+        display for display in planner['Displays']
+        if topic_value(display) == 'global_costmap/published_footprint'
+    )
+    footprint['Topic']['Value'] = 'colregs_costmap/published_footprint'
+    planner['Displays'] = [
+        display for display in planner['Displays']
+        if topic_value(display) != 'global_costmap/voxel_layer'
+    ]
+
+    assert demo_config == default_config
+    assert 'global_costmap/' not in demo_text
+
+    demo_displays = demo_config['Visualization Manager']['Displays']
+    assert not any(
+        display.get('Name') == 'Global Planner' for display in demo_displays
+    )
+    planner = next(
+        display for display in demo_displays
+        if display.get('Name') == 'COLREGS Planner'
+    )
+    assert not any(
+        display.get('Class') == 'rviz_default_plugins/PointCloud2'
+        for display in planner['Displays']
+    )
+    assert topic_value(next(
+        display for display in planner['Displays']
+        if display.get('Name') == 'Path'
+    )) == 'plan'
+
+    panels = demo_config['Panels']
+    assert any(
+        panel.get('Class') == 'nav2_rviz_plugins/Navigation 2'
+        and panel.get('Name') == 'Navigation 2'
+        for panel in panels
+    )
 
 
 def test_demo_tree_computes_and_follows_standard_path():

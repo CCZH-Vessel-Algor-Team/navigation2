@@ -25,7 +25,7 @@ RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值�
 - 作用：COLREGS 场景的 launch、参数、地图、世界、模型、脚本。
 - 主要 launch：
   - `colregs_ts_simulation_launch.py`：基础 TS 仿真（不含 Nav2 定制）。
-  - `colregs_ts_projection_validation_launch.py`：**主开发 launch**（TSProjectionLayer + TS State Manager + ALOS + CreateLocalPath BT 节点）。
+  - `colregs_ts_projection_validation_launch.py`：**主开发 launch**（自定义 RRT* Server + `colregs_costmap` + TSProjectionLayer + ALOS）。
   - `colregs_ts_behavior_validation_launch.py`：Behavior plugin 独立验证。
 - 脚本：
   - `target_ship_state_publisher.py`：从 Gazebo 位姿生成 `TrackedShipList`，`target_id` 用 UUID5 确定性推导，广播 `map → ts_virtual_base_link`。
@@ -63,12 +63,12 @@ RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值�
 - **注意：`/lookahead_point` 和 `/closest_point` 是原始全局路径上未经 COLREGS 修正的点（仅 map→base_link 变换），仅用于制导可视化。COLREGS 修正（β̂）只作用于速度指令输出。**
 
 ### 10) `nav2_colregs_local_planner_server`
-- 作用：生命周期管理的本地路径规划 Action Server Demo，用于验证 `BT → Action Server → BT → Controller` 接线。
+- 作用：生命周期管理的 RRT* 路径规划 Server，替代主开发入口中的标准 PlannerServer。
 - 生命周期节点：`/colregs_local_planner_server`。
-- Action：`/compute_local_path`（`nav2_colregs_msgs/action/ComputeLocalPath`）。
-- 发布 topic：`/local_path`（`nav_msgs/msg/Path`）。
-- 当前实现仅将 `reference_path` 透传为 `local_path`，保留 frame 和全部 poses，仅刷新路径时间戳；尚不读取 TS 上下文，也不改变路径几何。
-- 当前执行模型为串行且不支持抢占。取消采用 group cancellation：执行过程在关键边界检查取消请求，观察到请求后以 `CANCELED` 和 `Local path computation canceled` 终止该 server 的全部 goals，不提供逐 goal 独立取消语义。受 `SimpleActionServer` 非原子检查/完成 API 限制，最终取消检查与发布/成功完成之间仍存在极小竞态窗口。
+- 标准 Action：`/compute_path_to_pose`（`nav2_msgs/action/ComputePathToPose`）；成功路径发布到 `/plan`。
+- Server 内部持有固定 `map` 坐标系、非滚动的 `/colregs_costmap`，不由 Lifecycle Manager 单独管理。
+- 每次请求在 costmap mutex 内深拷贝快照，释放锁后对静态快照执行确定性基础 RRT*；接受空 `planner_id` 或 `RRTStar`。
+- BT 以 `1 Hz` 重新规划，`FollowPath` 直接消费 `{path}`。移动 TS 只通过 TSProjectionLayer 进入每次快照；当前算法没有 CPA/TCPA、相遇类型、VO 或 COLREGS 规则约束，因此不能宣称动态 COLREGS 合规。
 
 ### 11) `nav2_maritime_situation_msgs`
 - 作用：定义独立的海事态势接口 `SituationReport` 和 `SituationReportArray`。
@@ -78,6 +78,10 @@ RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值�
 - 作用：订阅 `/tracked_ship`（`nav2_colregs_msgs/TrackedShipList`）和 `/odom`（`nav_msgs/Odometry`），在 ENU 平面评估所有有效目标，并发布 `/maritime_situation`（`nav2_maritime_situation_msgs/SituationReportArray`）。
 - 组成：ROS 边界节点调用独立的 ENU 算法与报告构造模块；该包仅发布信息性态势报告，不发送速度或路径命令，也不接入主开发 launch 或 Nav2 lifecycle manager。
 - 提供独立参数文件与 standalone launch，不 include Nav2 bringup 或 TS 子系统。
+
+#### Stage 1 历史接口
+
+2026-07 的 Stage 1 曾使用 `/compute_local_path`、`/local_path` 和 `ComputeLocalPath` BT 节点完成 pass-through 接线验证。该自定义 Action 与 BT 节点已在 Stage 2 删除；`CreateLocalPath` Behavior 仍供其他验证入口使用，不能把 Stage 1 命令当作当前接口。
 
 ## 二、编译
 
@@ -126,13 +130,16 @@ ros2 launch nav2_colregs_bringup colregs_ts_simulation_launch.py
 ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py
 ```
 作用：COLREGS 全套开发 launch。组件链：
-- **TSProjectionLayer**（costmap 内标记 TS 障碍物）
+- **COLREGS Local Planner Server**（标准 `/compute_path_to_pose`，发布 `/plan`）
+- Server 自有 **`/colregs_costmap`**（map-fixed，Static/Obstacle/TSProjection/Inflation 四层）
+- **TSProjectionLayer**（在规划与控制 costmap 内标记 TS 障碍物）
 - **TS State Manager**（CPA/TCPA 计算，`/processed_ts_list` topic）
-- **ComputeLocalPath BT 节点**调用 `/compute_local_path`，将 Action result `{local_path}` 交给 `FollowPath`
+- BT 以 **1 Hz** 调用 `ComputePathToPose`，将 `{path}` 直接交给 `FollowPath`
 - **ALOS Controller**（制导）
+- 使用专用 RViz：`colregs_local_planner_demo.rviz`
 - 不含 vector_object_server / keepout 链路。
 
-本入口中的 Local Planner Server 是 plumbing Demo，不是 COLREGS 路径规划算法。它只验证生命周期启动、Action 调用、BT result 传递和 Controller 接线；当前不消费 TS 数据，也不修改全局路径几何。
+本入口不启动 `/planner_server` 或 `/global_costmap`。RRT* 仅依据请求时的静态 costmap 快照做栅格碰撞规划；虽然快照可含 TS 投影，但当前仍不是基于航行规则的动态 COLREGS 规划器。
 
 ### 3) `colregs_ts_behavior_validation_launch.py`
 ```bash
@@ -197,60 +204,58 @@ ros2 run tf2_ros tf2_echo map odom
 ros2 run tf2_ros tf2_echo map ts_virtual_base_link
 ```
 
-### Local Planner Server Demo 验证边界
+### RRT* Local Planner Server 验证边界
 
 当前开发主机为 Conda/RoboStack 环境，只执行静态检查，不在该环境运行 `colcon`、`ros2` 或 launch。以下构建、测试和运行命令必须在 apt ROS 2 Jazzy 环境执行。
-
-以下 focused build 是增量命令，假定当前 `feat/colregs` 基线及已有自定义运行依赖已在 workspace 中构建并可被 source。它只构建本 Demo 的五个功能包，不会从干净 workspace 构建完整仿真栈：
 
 ```bash
 colcon build --symlink-install --packages-select \
   nav2_colregs_msgs \
-  nav2_colregs_local_planner_server \
-  nav2_colregs_local_path_behavior \
   nav2_colregs_local_path_bt_nodes \
+  nav2_colregs_local_planner_server \
   nav2_colregs_bringup
 source install/setup.bash
-```
 
-主 launch 还使用基线中的 `nav2_colregs_ts_manager`、`nav2_colregs_costmap_layers`、`nav2_colregs_alos_controller`、`nav2_colregs_vo_rrt_star_planner`，以及 Nav2、Gazebo 和 `nav2_minimal_tb3_sim`。若从干净的源码 workspace 构建，应使用 dependency-resolving 的较大范围命令（并确保 apt/system dependencies 已安装）：
-
-```bash
-colcon build --symlink-install --packages-up-to \
-  nav2_colregs_bringup \
-  nav2_colregs_ts_manager \
-  nav2_colregs_costmap_layers \
-  nav2_colregs_alos_controller \
-  nav2_colregs_vo_rrt_star_planner
-source install/setup.bash
-```
-
-`--packages-up-to` 会构建上述目标及其声明的递归依赖，因此范围显著大于五包 focused build；它用于准备完整 launch 所需的源码依赖，而不是 focused feature rebuild。
-
-```bash
-# focused tests
 colcon test --packages-select \
-  nav2_colregs_local_planner_server \
+  nav2_colregs_msgs \
   nav2_colregs_local_path_bt_nodes \
+  nav2_colregs_local_planner_server \
+  nav2_colregs_bringup \
   --event-handlers console_direct+
 colcon test-result --verbose
-
-# launch; retain this terminal output for BT plugin and runtime-error evidence
-ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py
 ```
 
-发送 NavigateToPose goal 后，在其他已 source workspace 的终端采集：
+分别验证 composed 与 non-composed 模式：
 
 ```bash
+ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py use_composition:=True
+ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py use_composition:=False
+```
+
+发送 NavigateToPose goal 后，在其他已 source workspace 的终端采集。以下命令应有输出，并且四个 lifecycle 节点均应为 `active`：
+
+```bash
+ros2 lifecycle get /controller_server
 ros2 lifecycle get /colregs_local_planner_server
-ros2 action list -t | grep '/compute_local_path'
-ros2 action info /compute_local_path
-ros2 topic echo /local_path --once
+ros2 lifecycle get /behavior_server
+ros2 lifecycle get /bt_navigator
+ros2 action list -t | grep -Fx '/compute_path_to_pose [nav2_msgs/action/ComputePathToPose]'
+ros2 topic echo /colregs_costmap/costmap --once
+ros2 topic echo /plan --once
 ros2 action info /follow_path
 ros2 topic echo /cmd_vel --once
 ```
 
-需要记录实际结果，而不是预先声明通过：focused build/test 结果、生命周期是否为 `active`、`/compute_local_path` 的 action server 数量、`nav2_compute_local_path_action_bt_node` 是否成功加载、是否发布 `/local_path`、`FollowPath`/Controller 是否消费结果，以及所有 launch/runtime errors。由于 Demo 输出与输入路径几何相同，Controller 消费的运行证据应结合成功的 NavigateToPose 执行、`/local_path` 消息及 Controller 输出判断；BT XML 的接线本身仅属于静态证据。
+以下命令预期**无输出**；任一输出都表示 obsolete 拓扑仍然存在：
+
+```bash
+ros2 node list | grep -E '(^|/)planner_server($|/)' || true
+ros2 node list | grep -F '/global_costmap' || true
+ros2 topic list | grep -E '^/global_costmap(/|$)' || true
+ros2 action list | grep -Fx '/compute_local_path' || true
+```
+
+验收需记录两种模式下四个 lifecycle 节点均为 `active`、`/compute_path_to_pose` 类型严格为 `nav2_msgs/action/ComputePathToPose`、`/colregs_costmap/costmap` 与 `/plan` 有输出、Controller 发布速度，并确认不存在任何 PlannerServer 节点、名称含 `/global_costmap` 的嵌套节点、`/global_costmap` topic 树和 `/compute_local_path`。当前 Conda 主机只完成静态验证，apt Jazzy 构建与运行证据仍待用户采集。
 
 ## 六、目录结构（新增包）
 

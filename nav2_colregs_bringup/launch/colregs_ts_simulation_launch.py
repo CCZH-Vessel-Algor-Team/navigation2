@@ -51,6 +51,8 @@ def generate_launch_description():
     autostart = LaunchConfiguration('autostart')
     use_composition = LaunchConfiguration('use_composition')
     use_respawn = LaunchConfiguration('use_respawn')
+    bringup_launch_file = LaunchConfiguration('bringup_launch_file')
+    log_level = LaunchConfiguration('log_level')
 
     # Simulation parameters
     rviz_config_file = LaunchConfiguration('rviz_config_file')
@@ -112,6 +114,12 @@ def generate_launch_description():
         'use_composition', default_value='True')
     declare_use_respawn_cmd = DeclareLaunchArgument(
         'use_respawn', default_value='False')
+    declare_bringup_launch_file_cmd = DeclareLaunchArgument(
+        'bringup_launch_file',
+        default_value=os.path.join(nav2_launch_dir, 'bringup_launch.py'),
+        description='Full path to the navigation bringup launch file')
+    declare_log_level_cmd = DeclareLaunchArgument(
+        'log_level', default_value='info')
     declare_rviz_config_file_cmd = DeclareLaunchArgument(
         'rviz_config_file',
         default_value=os.path.join(bringup_dir, 'rviz',
@@ -188,8 +196,7 @@ def generate_launch_description():
     )
 
     bringup_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(nav2_launch_dir, 'bringup_launch.py')),
+        PythonLaunchDescriptionSource(bringup_launch_file),
         launch_arguments={
             'namespace': namespace,
             'use_namespace': use_namespace,
@@ -200,6 +207,7 @@ def generate_launch_description():
             'autostart': autostart,
             'use_composition': use_composition,
             'use_respawn': use_respawn,
+            'log_level': log_level,
         }.items(),
     )
 
@@ -333,6 +341,8 @@ def generate_launch_description():
     ld.add_action(declare_autostart_cmd)
     ld.add_action(declare_use_composition_cmd)
     ld.add_action(declare_use_respawn_cmd)
+    ld.add_action(declare_bringup_launch_file_cmd)
+    ld.add_action(declare_log_level_cmd)
     ld.add_action(declare_rviz_config_file_cmd)
     ld.add_action(declare_use_simulator_cmd)
     ld.add_action(declare_use_robot_state_pub_cmd)
