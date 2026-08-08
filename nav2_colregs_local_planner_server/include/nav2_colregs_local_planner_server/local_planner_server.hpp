@@ -15,10 +15,17 @@
 #ifndef NAV2_COLREGS_LOCAL_PLANNER_SERVER__LOCAL_PLANNER_SERVER_HPP_
 #define NAV2_COLREGS_LOCAL_PLANNER_SERVER__LOCAL_PLANNER_SERVER_HPP_
 
+#include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
 
-#include "nav2_colregs_msgs/action/compute_local_path.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include "nav2_colregs_local_planner_server/rrt_star.hpp"
+#include "nav2_costmap_2d/costmap_2d_ros.hpp"
+#include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "nav2_util/lifecycle_node.hpp"
+#include "nav2_util/node_thread.hpp"
 #include "nav2_util/simple_action_server.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -27,13 +34,12 @@
 namespace nav2_colregs_local_planner_server
 {
 
-/// Serialized pass-through server; cancellation terminates all goals and preemption is unsupported.
 class ColregsLocalPlannerServer : public nav2_util::LifecycleNode
 {
 public:
   explicit ColregsLocalPlannerServer(
     const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
-  ~ColregsLocalPlannerServer() override = default;
+  ~ColregsLocalPlannerServer() override;
 
 protected:
   nav2_util::CallbackReturn on_configure(
@@ -47,15 +53,36 @@ protected:
   nav2_util::CallbackReturn on_shutdown(
     const rclcpp_lifecycle::State & state) override;
 
+  virtual bool isCostmapCurrent() const;
+  virtual bool getRobotPose(geometry_msgs::msg::PoseStamped & pose) const;
+  virtual bool transformPoseToGlobalFrame(
+    const geometry_msgs::msg::PoseStamped & input,
+    geometry_msgs::msg::PoseStamped & output) const;
+
+  std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
+  nav2_costmap_2d::Costmap2D * costmap_{nullptr};
+
 private:
-  using Action = nav2_colregs_msgs::action::ComputeLocalPath;
+  using Action = nav2_msgs::action::ComputePathToPose;
   using ActionServer = nav2_util::SimpleActionServer<Action>;
 
-  bool finalize_cancellation();
-  void execute();
+  bool loadAndValidateParameters();
+  void computePlan();
+  void abortGoal(
+    const std::shared_ptr<Action::Result> & result, uint16_t error_code,
+    const std::string & message);
+  nav_msgs::msg::Path makePath(
+    const std::vector<RRTStarNode> & nodes,
+    const geometry_msgs::msg::PoseStamped & start,
+    const geometry_msgs::msg::PoseStamped & goal);
 
+  std::unique_ptr<nav2_util::NodeThread> costmap_thread_;
   std::unique_ptr<ActionServer> action_server_;
-  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr path_publisher_;
+  rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr plan_publisher_;
+  RRTStarParameters planner_parameters_{};
+  double action_server_result_timeout_{10.0};
+  double costmap_update_timeout_{1.0};
+  double max_planning_time_{0.8};
 };
 
 }  // namespace nav2_colregs_local_planner_server

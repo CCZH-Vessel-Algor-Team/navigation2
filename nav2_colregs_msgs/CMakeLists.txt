@@ -8,13 +8,11 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(unique_identifier_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "action/ComputeLocalPath.action"
   "msg/TrackedShip.msg"
   "msg/TrackedShipList.msg"
   "msg/ProcessedTS.msg"
@@ -27,7 +25,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/AddShapes.srv"
   "srv/RemoveShapes.srv"
   "srv/GetShapes.srv"
-  DEPENDENCIES builtin_interfaces geometry_msgs nav_msgs std_msgs unique_identifier_msgs
+  DEPENDENCIES builtin_interfaces geometry_msgs std_msgs unique_identifier_msgs
 )
 
 if(BUILD_TESTING)

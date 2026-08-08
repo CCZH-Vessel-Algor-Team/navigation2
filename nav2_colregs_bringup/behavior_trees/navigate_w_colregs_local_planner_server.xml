@@ -1,38 +1,20 @@
 <!--
-  Local planner server demo: ComputeLocalPath sends the global {path} to the
-  lifecycle action server and writes the action result to {local_path}.
-  FollowPath consumes that result while the existing recovery structure stays
-  unchanged.
+  Local planner server demo: ComputePathToPose sends each goal to the dedicated
+  RRT star server and FollowPath consumes the resulting path.
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="6" name="NavigateRecovery">
       <PipelineSequence>
         <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
-        <PlannerSelector selected_planner="{selected_planner}" default_planner="VORRTStar" topic_name="planner_selector"/>
         <RateController hz="1.0" name="RateControllerComputePathToPose">
           <RecoveryNode number_of_retries="1" name="RecoveryComputePathToPose">
-            <Fallback name="FallbackComputePathToPose">
-              <ReactiveSequence name="CheckIfNewPathNeeded">
-                <Inverter>
-                  <GlobalUpdatedGoal/>
-                </Inverter>
-                <IsPathValid path="{path}"/>
-              </ReactiveSequence>
-              <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
-            </Fallback>
-            <ClearEntireCostmap name="ClearGlobalCostmap-Context" service_name="global_costmap/clear_entirely_global_costmap"/>
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="RRTStar" error_code_id="{compute_path_error_code}"/>
+            <ClearEntireCostmap name="ClearColregsCostmap-Context" service_name="colregs_costmap/clear_entirely_colregs_costmap"/>
           </RecoveryNode>
         </RateController>
-        <RateController hz="1.0" name="RateControllerComputeLocalPath">
-          <ComputeLocalPath
-            reference_path="{path}"
-            local_path="{local_path}"
-            error_code_id="{compute_local_path_error_code}"
-            error_msg="{compute_local_path_error_msg}"/>
-        </RateController>
         <RecoveryNode number_of_retries="1" name="RecoveryFollowPath">
-          <FollowPath path="{local_path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
+          <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
           <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
         </RecoveryNode>
       </PipelineSequence>
@@ -41,7 +23,7 @@
         <RoundRobin name="RecoveryActions">
           <Sequence name="ClearingActions">
             <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
-            <ClearEntireCostmap name="ClearGlobalCostmap-Subtree" service_name="global_costmap/clear_entirely_global_costmap"/>
+            <ClearEntireCostmap name="ClearColregsCostmap-Subtree" service_name="colregs_costmap/clear_entirely_colregs_costmap"/>
           </Sequence>
           <Spin name="SpinRecovery" spin_dist="1.57"/>
           <Wait name="WaitRecovery" wait_duration="5.0"/>

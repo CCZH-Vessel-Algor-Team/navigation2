@@ -13,15 +13,17 @@
 // limitations under the License.
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 
-#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "gtest/gtest.h"
 #include "lifecycle_msgs/msg/state.hpp"
 #include "nav2_colregs_local_planner_server/local_planner_server.hpp"
-#include "nav2_colregs_msgs/action/compute_local_path.hpp"
+#include "nav2_costmap_2d/cost_values.hpp"
+#include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 
@@ -30,42 +32,89 @@ using namespace std::chrono_literals;
 namespace nav2_colregs_local_planner_server
 {
 
-constexpr char kTestNamespace[] = "/local_planner_server_test";
+class TestPlannerServer : public ColregsLocalPlannerServer
+{
+public:
+  explicit TestPlannerServer(const rclcpp::NodeOptions & options)
+  : ColregsLocalPlannerServer(options) {}
+
+  nav2_costmap_2d::Costmap2D * costmap() {return costmap_;}
+  std::string costmapName() const {return costmap_ros_->getName();}
+  void setCurrent(bool current) {current_ = current;}
+  void setRobotPoseAvailable(bool available) {robot_pose_available_ = available;}
+  void setTransformAvailable(bool available) {transform_available_ = available;}
+
+protected:
+  bool isCostmapCurrent() const override {return current_;}
+
+  bool getRobotPose(geometry_msgs::msg::PoseStamped & pose) const override
+  {
+    if (!robot_pose_available_) {
+      return false;
+    }
+    pose.header.frame_id = "map";
+    pose.pose.position.x = 1.0;
+    pose.pose.position.y = 1.0;
+    pose.pose.orientation.w = 1.0;
+    return true;
+  }
+
+  bool transformPoseToGlobalFrame(
+    const geometry_msgs::msg::PoseStamped & input,
+    geometry_msgs::msg::PoseStamped & output) const override
+  {
+    if (!transform_available_) {
+      return false;
+    }
+    output = input;
+    if (input.header.frame_id == "translated") {
+      output.pose.position.x += 1.0;
+      output.pose.position.y += 2.0;
+    }
+    output.header.frame_id = "map";
+    return true;
+  }
+
+private:
+  bool current_{true};
+  bool robot_pose_available_{true};
+  bool transform_available_{true};
+};
 
 class LocalPlannerServerTest : public ::testing::Test
 {
 protected:
-  using Action = nav2_colregs_msgs::action::ComputeLocalPath;
-  using ClientGoalHandle = rclcpp_action::ClientGoalHandle<Action>;
+  using Action = nav2_msgs::action::ComputePathToPose;
+  using GoalHandle = rclcpp_action::ClientGoalHandle<Action>;
 
   static void SetUpTestSuite()
   {
-    rclcpp::init(0, nullptr);
+    char executable[] = "test";
+    char ros_args[] = "--ros-args";
+    char params_flag[] = "--params-file";
+    char params_file[] = TEST_PARAMS_FILE;
+    char * argv[] = {executable, ros_args, params_flag, params_file};
+    rclcpp::init(4, argv);
   }
-
-  static void TearDownTestSuite()
-  {
-    rclcpp::shutdown();
-  }
+  static void TearDownTestSuite() {rclcpp::shutdown();}
 
   void SetUp() override
   {
-    auto server_options = rclcpp::NodeOptions();
-    server_options.arguments({"--ros-args", "-r", "__ns:=" + std::string(kTestNamespace)});
-    server_ = std::make_shared<ColregsLocalPlannerServer>(server_options);
-    client_node_ = std::make_shared<rclcpp::Node>(
-      "local_planner_server_test_client", kTestNamespace);
-    client_ = rclcpp_action::create_client<Action>(client_node_, "compute_local_path");
-    path_subscription_ = client_node_->create_subscription<nav_msgs::msg::Path>(
-      "local_path", 1,
-      [this](const nav_msgs::msg::Path::SharedPtr path) {published_path_ = path;});
+    rclcpp::NodeOptions options;
+    options.arguments({"--ros-args", "-r", "__ns:=/colregs_planner_test"});
+    server_ = std::make_shared<TestPlannerServer>(options);
+    client_node_ = std::make_shared<rclcpp::Node>("client", "/colregs_planner_test");
+    client_ = rclcpp_action::create_client<Action>(client_node_, "compute_path_to_pose");
+    plan_subscription_ = client_node_->create_subscription<nav_msgs::msg::Path>(
+      "plan", 1, [this](nav_msgs::msg::Path::SharedPtr message) {published_plan_ = message;});
   }
 
   void TearDown() override
   {
     if (server_) {
-      const auto state = server_->get_current_state().id();
-      if (state == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+      if (server_->get_current_state().id() ==
+        lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE)
+      {
         server_->deactivate();
       }
       if (server_->get_current_state().id() ==
@@ -76,7 +125,6 @@ protected:
       server_->shutdown();
     }
     client_.reset();
-    path_subscription_.reset();
     client_node_.reset();
     server_.reset();
   }
@@ -84,205 +132,269 @@ protected:
   void configure()
   {
     ASSERT_EQ(
-      server_->configure().id(),
-      lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+      server_->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
     ASSERT_TRUE(client_->wait_for_action_server(1s));
   }
 
   void activate()
   {
     configure();
-    ASSERT_EQ(
-      server_->activate().id(),
-      lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+    ASSERT_EQ(server_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
   }
 
-  ClientGoalHandle::SharedPtr sendGoal(const Action::Goal & goal)
-  {
-    auto future = client_->async_send_goal(goal);
-    const auto status = rclcpp::spin_until_future_complete(client_node_, future, 2s);
-    EXPECT_EQ(status, rclcpp::FutureReturnCode::SUCCESS);
-    if (status != rclcpp::FutureReturnCode::SUCCESS) {
-      return nullptr;
-    }
-    return future.get();
-  }
-
-  ClientGoalHandle::WrappedResult getResult(const ClientGoalHandle::SharedPtr & goal_handle)
-  {
-    auto future = client_->async_get_result(goal_handle);
-    const auto status = rclcpp::spin_until_future_complete(client_node_, future, 2s);
-    EXPECT_EQ(status, rclcpp::FutureReturnCode::SUCCESS);
-    if (status != rclcpp::FutureReturnCode::SUCCESS) {
-      return ClientGoalHandle::WrappedResult();
-    }
-    return future.get();
-  }
-
-  bool waitForPublishedPath()
-  {
-    const auto deadline = std::chrono::steady_clock::now() + 2s;
-    while (!published_path_ && std::chrono::steady_clock::now() < deadline) {
-      rclcpp::spin_some(client_node_);
-      std::this_thread::sleep_for(10ms);
-    }
-    return published_path_ != nullptr;
-  }
-
-  static Action::Goal makeGoal()
+  static Action::Goal makeGoal(double start_x = 1.0, double goal_x = 8.0)
   {
     Action::Goal goal;
-    goal.reference_path.header.frame_id = "map";
-    goal.reference_path.header.stamp.sec = 7;
-    goal.reference_path.header.stamp.nanosec = 8;
-
-    geometry_msgs::msg::PoseStamped first;
-    first.header.frame_id = "map";
-    first.pose.position.x = 1.25;
-    first.pose.position.y = -2.5;
-    first.pose.position.z = 0.1;
-    first.pose.orientation.w = 1.0;
-
-    geometry_msgs::msg::PoseStamped second;
-    second.header.frame_id = "map";
-    second.pose.position.x = -4.5;
-    second.pose.position.y = 6.75;
-    second.pose.position.z = 0.2;
-    second.pose.orientation.z = 0.5;
-    second.pose.orientation.w = 0.5;
-
-    goal.reference_path.poses = {first, second};
+    goal.use_start = true;
+    goal.planner_id = "RRTStar";
+    goal.start.header.frame_id = "map";
+    goal.start.pose.position.x = start_x;
+    goal.start.pose.position.y = 1.0;
+    goal.start.pose.orientation.w = 1.0;
+    goal.goal.header.frame_id = "map";
+    goal.goal.pose.position.x = goal_x;
+    goal.goal.pose.position.y = 1.0;
+    goal.goal.pose.orientation.z = 0.25;
+    goal.goal.pose.orientation.w = 0.9682458365518543;
     return goal;
   }
 
-  std::shared_ptr<ColregsLocalPlannerServer> server_;
+  GoalHandle::WrappedResult runGoal(const Action::Goal & goal)
+  {
+    auto goal_future = client_->async_send_goal(goal);
+    const auto goal_status = rclcpp::spin_until_future_complete(client_node_, goal_future, 2s);
+    EXPECT_EQ(goal_status, rclcpp::FutureReturnCode::SUCCESS);
+    if (goal_status != rclcpp::FutureReturnCode::SUCCESS) {
+      return {};
+    }
+    auto handle = goal_future.get();
+    EXPECT_NE(handle, nullptr);
+    if (!handle) {
+      return {};
+    }
+    auto result_future = client_->async_get_result(handle);
+    const auto result_status = rclcpp::spin_until_future_complete(
+      client_node_, result_future, 3s);
+    EXPECT_EQ(result_status, rclcpp::FutureReturnCode::SUCCESS);
+    if (result_status != rclcpp::FutureReturnCode::SUCCESS) {
+      return {};
+    }
+    return result_future.get();
+  }
+
+  GoalHandle::WrappedResult runResult(const GoalHandle::SharedPtr & handle)
+  {
+    auto result_future = client_->async_get_result(handle);
+    const auto result_status = rclcpp::spin_until_future_complete(
+      client_node_, result_future, 3s);
+    EXPECT_EQ(result_status, rclcpp::FutureReturnCode::SUCCESS);
+    if (result_status != rclcpp::FutureReturnCode::SUCCESS) {
+      return {};
+    }
+    return result_future.get();
+  }
+
+  void expectError(const Action::Goal & goal, uint16_t error_code)
+  {
+    const auto result = runGoal(goal);
+    ASSERT_EQ(result.code, rclcpp_action::ResultCode::ABORTED);
+    ASSERT_NE(result.result, nullptr);
+    EXPECT_EQ(result.result->error_code, error_code);
+    EXPECT_FALSE(result.result->error_msg.empty());
+  }
+
+  void occupy(double x, double y)
+  {
+    std::lock_guard<nav2_costmap_2d::Costmap2D::mutex_t> lock(
+      *server_->costmap()->getMutex());
+    unsigned int mx;
+    unsigned int my;
+    ASSERT_TRUE(server_->costmap()->worldToMap(x, y, mx, my));
+    server_->costmap()->setCost(mx, my, nav2_costmap_2d::LETHAL_OBSTACLE);
+  }
+
+  void addSolidWall()
+  {
+    std::lock_guard<nav2_costmap_2d::Costmap2D::mutex_t> lock(
+      *server_->costmap()->getMutex());
+    for (unsigned int y = 0; y < server_->costmap()->getSizeInCellsY(); ++y) {
+      server_->costmap()->setCost(50, y, nav2_costmap_2d::LETHAL_OBSTACLE);
+    }
+  }
+
+  std::shared_ptr<TestPlannerServer> server_;
   rclcpp::Node::SharedPtr client_node_;
   rclcpp_action::Client<Action>::SharedPtr client_;
-  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr path_subscription_;
-  nav_msgs::msg::Path::SharedPtr published_path_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr plan_subscription_;
+  nav_msgs::msg::Path::SharedPtr published_plan_;
 };
 
-TEST_F(LocalPlannerServerTest, actionAbsentBeforeConfigure)
+TEST_F(LocalPlannerServerTest, lifecycleOwnsActionAndCostmap)
 {
-  EXPECT_FALSE(client_->wait_for_action_server(200ms));
-}
-
-TEST_F(LocalPlannerServerTest, rejectsGoalWhileInactive)
-{
+  EXPECT_FALSE(client_->wait_for_action_server(100ms));
   configure();
-  EXPECT_EQ(sendGoal(makeGoal()), nullptr);
+  EXPECT_EQ(server_->costmapName(), "colregs_costmap");
+  EXPECT_EQ(server_->costmap()->getSizeInCellsX(), 100u);
+  ASSERT_EQ(server_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  ASSERT_EQ(server_->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(server_->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_EQ(server_->costmap(), nullptr);
 }
 
-TEST_F(LocalPlannerServerTest, returnsActionResultPathAfterActivation)
+TEST_F(LocalPlannerServerTest, acceptsEmptyAndRrtStarPlannerIds)
 {
   activate();
-  const auto goal = makeGoal();
-  const auto goal_handle = sendGoal(goal);
-  ASSERT_NE(goal_handle, nullptr);
-
-  const auto wrapped_result = getResult(goal_handle);
-  ASSERT_EQ(wrapped_result.code, rclcpp_action::ResultCode::SUCCEEDED);
-  ASSERT_NE(wrapped_result.result, nullptr);
-  EXPECT_EQ(wrapped_result.result->error_code, Action::Result::NONE);
-  EXPECT_TRUE(wrapped_result.result->error_msg.empty());
-  EXPECT_EQ(wrapped_result.result->local_path.header.frame_id, "map");
-  ASSERT_EQ(wrapped_result.result->local_path.poses.size(), 2u);
-  EXPECT_DOUBLE_EQ(wrapped_result.result->local_path.poses[0].pose.position.x, 1.25);
-  EXPECT_DOUBLE_EQ(wrapped_result.result->local_path.poses[0].pose.position.y, -2.5);
-  EXPECT_DOUBLE_EQ(wrapped_result.result->local_path.poses[0].pose.position.z, 0.1);
-  EXPECT_DOUBLE_EQ(wrapped_result.result->local_path.poses[1].pose.position.x, -4.5);
-  EXPECT_DOUBLE_EQ(wrapped_result.result->local_path.poses[1].pose.position.y, 6.75);
-  EXPECT_DOUBLE_EQ(wrapped_result.result->local_path.poses[1].pose.position.z, 0.2);
-  EXPECT_LT(wrapped_result.result->planning_time.nanosec, 1000000000u);
-  ASSERT_TRUE(waitForPublishedPath());
-  EXPECT_EQ(*published_path_, wrapped_result.result->local_path);
+  auto empty_id = makeGoal();
+  empty_id.planner_id.clear();
+  EXPECT_EQ(runGoal(empty_id).code, rclcpp_action::ResultCode::SUCCEEDED);
+  EXPECT_EQ(runGoal(makeGoal()).code, rclcpp_action::ResultCode::SUCCEEDED);
 }
 
-TEST_F(LocalPlannerServerTest, rejectsEmptyReferencePath)
+TEST_F(LocalPlannerServerTest, rejectsUnknownPlannerId)
 {
   activate();
   auto goal = makeGoal();
-  goal.reference_path.poses.clear();
-  const auto goal_handle = sendGoal(goal);
-  ASSERT_NE(goal_handle, nullptr);
-
-  const auto wrapped_result = getResult(goal_handle);
-  ASSERT_EQ(wrapped_result.code, rclcpp_action::ResultCode::ABORTED);
-  ASSERT_NE(wrapped_result.result, nullptr);
-  EXPECT_EQ(wrapped_result.result->error_code, Action::Result::EMPTY_PATH);
-  EXPECT_EQ(wrapped_result.result->error_msg, "Reference path is empty");
+  goal.planner_id = "GridBased";
+  expectError(goal, Action::Result::INVALID_PLANNER);
 }
 
-TEST_F(LocalPlannerServerTest, preservesFrameAndPoses)
+TEST_F(LocalPlannerServerTest, usesRobotPoseWhenUseStartIsFalse)
 {
   activate();
-  const auto goal = makeGoal();
-  const auto goal_handle = sendGoal(goal);
-  ASSERT_NE(goal_handle, nullptr);
+  auto goal = makeGoal(7.0, 2.0);
+  goal.use_start = false;
+  const auto result = runGoal(goal);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_NE(result.result, nullptr);
+  ASSERT_FALSE(result.result->path.poses.empty());
+  EXPECT_DOUBLE_EQ(result.result->path.poses.front().pose.position.x, 1.0);
+}
 
-  const auto wrapped_result = getResult(goal_handle);
-  ASSERT_EQ(wrapped_result.code, rclcpp_action::ResultCode::SUCCEEDED);
-  ASSERT_NE(wrapped_result.result, nullptr);
-  const auto & path = wrapped_result.result->local_path;
-  EXPECT_EQ(path.header.frame_id, goal.reference_path.header.frame_id);
-  EXPECT_NE(path.header.stamp, goal.reference_path.header.stamp);
-  ASSERT_EQ(path.poses.size(), goal.reference_path.poses.size());
-  for (std::size_t i = 0; i < path.poses.size(); ++i) {
-    EXPECT_EQ(path.poses[i], goal.reference_path.poses[i]);
+TEST_F(LocalPlannerServerTest, reportsTfErrorForMissingRobotPoseOrTransform)
+{
+  activate();
+  auto robot_goal = makeGoal();
+  robot_goal.use_start = false;
+  server_->setRobotPoseAvailable(false);
+  expectError(robot_goal, Action::Result::TF_ERROR);
+  server_->setRobotPoseAvailable(true);
+  server_->setTransformAvailable(false);
+  expectError(makeGoal(), Action::Result::TF_ERROR);
+}
+
+TEST_F(LocalPlannerServerTest, transformsStartAndGoalIntoMap)
+{
+  activate();
+  auto goal = makeGoal(0.0, 7.0);
+  goal.start.header.frame_id = "translated";
+  goal.goal.header.frame_id = "translated";
+  goal.start.pose.position.y = -1.0;
+  goal.goal.pose.position.y = -1.0;
+  const auto result = runGoal(goal);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_NE(result.result, nullptr);
+  EXPECT_EQ(result.result->path.header.frame_id, "map");
+  EXPECT_DOUBLE_EQ(result.result->path.poses.front().pose.position.x, 1.0);
+  EXPECT_DOUBLE_EQ(result.result->path.poses.back().pose.position.x, 8.0);
+}
+
+TEST_F(LocalPlannerServerTest, reportsEndpointsOutsideMap)
+{
+  activate();
+  expectError(makeGoal(-0.1, 2.0), Action::Result::START_OUTSIDE_MAP);
+  expectError(makeGoal(1.0, 10.0), Action::Result::GOAL_OUTSIDE_MAP);
+}
+
+TEST_F(LocalPlannerServerTest, reportsOccupiedEndpoints)
+{
+  activate();
+  occupy(1.0, 1.0);
+  expectError(makeGoal(), Action::Result::START_OCCUPIED);
+  {
+    std::lock_guard<nav2_costmap_2d::Costmap2D::mutex_t> lock(
+      *server_->costmap()->getMutex());
+    server_->costmap()->resetMap(0, 0, 100, 100);
   }
+  occupy(8.0, 1.0);
+  expectError(makeGoal(), Action::Result::GOAL_OCCUPIED);
 }
 
-TEST_F(LocalPlannerServerTest, rejectsEmptyReferenceFrame)
+TEST_F(LocalPlannerServerTest, reportsCostmapUpdateTimeout)
 {
+  server_->set_parameter(rclcpp::Parameter("costmap_update_timeout", 0.02));
   activate();
-  auto goal = makeGoal();
-  goal.reference_path.header.frame_id.clear();
-  const auto goal_handle = sendGoal(goal);
-  ASSERT_NE(goal_handle, nullptr);
-
-  const auto wrapped_result = getResult(goal_handle);
-  ASSERT_EQ(wrapped_result.code, rclcpp_action::ResultCode::ABORTED);
-  ASSERT_NE(wrapped_result.result, nullptr);
-  EXPECT_EQ(wrapped_result.result->error_code, Action::Result::INVALID_PATH);
-  EXPECT_EQ(wrapped_result.result->error_msg, "Reference path frame_id is empty");
+  server_->setCurrent(false);
+  expectError(makeGoal(), Action::Result::TIMEOUT);
 }
 
-TEST_F(LocalPlannerServerTest, acceptedCancellationNeverSucceeds)
+TEST_F(LocalPlannerServerTest, reportsNoPathThroughSolidWall)
 {
   activate();
-  const auto goal_handle = sendGoal(makeGoal());
-  ASSERT_NE(goal_handle, nullptr);
+  addSolidWall();
+  expectError(makeGoal(1.0, 8.0), Action::Result::NO_VALID_PATH);
+}
 
-  auto cancel_future = client_->async_cancel_goal(goal_handle);
+TEST_F(LocalPlannerServerTest, cancellationTerminatesAsCanceled)
+{
+  server_->set_parameter(rclcpp::Parameter("max_iterations", 1000000));
+  server_->set_parameter(rclcpp::Parameter("max_planning_time", 5.0));
+  activate();
+  addSolidWall();
+  auto goal_future = client_->async_send_goal(makeGoal());
+  ASSERT_EQ(
+    rclcpp::spin_until_future_complete(client_node_, goal_future, 2s),
+    rclcpp::FutureReturnCode::SUCCESS);
+  const auto handle = goal_future.get();
+  ASSERT_NE(handle, nullptr);
+  auto cancel_future = client_->async_cancel_goal(handle);
   ASSERT_EQ(
     rclcpp::spin_until_future_complete(client_node_, cancel_future, 2s),
     rclcpp::FutureReturnCode::SUCCESS);
-  const bool cancellation_accepted = !cancel_future.get()->goals_canceling.empty();
-  const auto wrapped_result = getResult(goal_handle);
-  ASSERT_NE(wrapped_result.result, nullptr);
-
-  if (cancellation_accepted) {
-    EXPECT_NE(wrapped_result.code, rclcpp_action::ResultCode::SUCCEEDED);
-    EXPECT_TRUE(
-      wrapped_result.code == rclcpp_action::ResultCode::CANCELED ||
-      wrapped_result.code == rclcpp_action::ResultCode::ABORTED);
-    if (wrapped_result.code == rclcpp_action::ResultCode::CANCELED) {
-      EXPECT_EQ(wrapped_result.result->error_code, Action::Result::CANCELED);
-      EXPECT_EQ(wrapped_result.result->error_msg, "Local path computation canceled");
-    }
-  } else {
-    EXPECT_EQ(wrapped_result.code, rclcpp_action::ResultCode::SUCCEEDED);
-    EXPECT_EQ(wrapped_result.result->error_code, Action::Result::NONE);
-  }
+  ASSERT_FALSE(cancel_future.get()->goals_canceling.empty());
+  const auto result = runResult(handle);
+  EXPECT_EQ(result.code, rclcpp_action::ResultCode::CANCELED);
+  ASSERT_NE(result.result, nullptr);
+  EXPECT_NE(result.result->error_code, Action::Result::NO_VALID_PATH);
 }
 
-TEST_F(LocalPlannerServerTest, rejectsGoalAfterDeactivation)
+TEST_F(LocalPlannerServerTest, preservesExactEndpointsAndPublishesSuccessfulPlan)
 {
   activate();
-  ASSERT_EQ(
-    server_->deactivate().id(),
-    lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
-  EXPECT_EQ(sendGoal(makeGoal()), nullptr);
+  const auto goal = makeGoal();
+  const auto result = runGoal(goal);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_NE(result.result, nullptr);
+  ASSERT_GE(result.result->path.poses.size(), 2u);
+  EXPECT_EQ(result.result->path.poses.front().pose, goal.start.pose);
+  EXPECT_EQ(result.result->path.poses.back().pose, goal.goal.pose);
+  EXPECT_EQ(result.result->error_code, Action::Result::NONE);
+  EXPECT_LT(result.result->planning_time.nanosec, 1000000000u);
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (!published_plan_ && std::chrono::steady_clock::now() < deadline) {
+    rclcpp::spin_some(client_node_);
+    std::this_thread::sleep_for(5ms);
+  }
+  ASSERT_NE(published_plan_, nullptr);
+  EXPECT_EQ(*published_plan_, result.result->path);
+}
+
+TEST_F(LocalPlannerServerTest, invalidParametersFailConfigurationAtomically)
+{
+  server_->set_parameter(rclcpp::Parameter("goal_bias", 1.1));
+  EXPECT_EQ(server_->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_FALSE(client_->wait_for_action_server(100ms));
+  EXPECT_EQ(server_->costmap(), nullptr);
+}
+
+TEST_F(LocalPlannerServerTest, nonMapCostmapFrameFailsConfiguration)
+{
+  rclcpp::NodeOptions options;
+  options.arguments({"--ros-args", "-r", "__ns:=/colregs_non_map_test"});
+  auto server = std::make_shared<TestPlannerServer>(options);
+
+  EXPECT_EQ(server->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_EQ(server->costmap(), nullptr);
+  server->shutdown();
 }
 
 }  // namespace nav2_colregs_local_planner_server
