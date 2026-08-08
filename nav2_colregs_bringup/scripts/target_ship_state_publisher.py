@@ -7,9 +7,9 @@ import subprocess
 import threading
 import uuid
 
-import rclpy
 from geometry_msgs.msg import TransformStamped
 from nav2_colregs_msgs.msg import TrackedShip, TrackedShipList
+import rclpy
 from rclpy.node import Node
 from tf2_ros import TransformBroadcaster
 
@@ -63,8 +63,9 @@ class TargetShipStatePublisher(Node):
         self._w_regex = re.compile(r'^\s*w:\s+([-+0-9.eE]+)\s*$')
 
         self.get_logger().info(
-            f'Listening Gazebo pose topic: {self.gz_pose_topic} for model={self.target_model_name}; '
-            f'publishing {self.tracked_topic} and TF {self.tracked_frame_id}->{self.tf_child_frame_id}'
+            f'Listening Gazebo pose topic: {self.gz_pose_topic} for '
+            f'model={self.target_model_name}; publishing {self.tracked_topic} and '
+            f'TF {self.tracked_frame_id}->{self.tf_child_frame_id}'
             f' (UUID: {self._uuid})')
 
     def _reader_main(self):

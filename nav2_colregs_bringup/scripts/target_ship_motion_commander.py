@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Drive target ship with ping-pong linear motion commands.
+"""
+Drive target ship with ping-pong linear motion commands.
 
 Switching logic is closed-loop on Gazebo world absolute pose, not /tracked_ship.
 """
@@ -10,8 +11,8 @@ import re
 import subprocess
 import threading
 
-import rclpy
 from geometry_msgs.msg import Twist
+import rclpy
 from rclpy.node import Node
 
 
@@ -201,7 +202,11 @@ class TargetShipMotionCommander(Node):
                 self.leg_start_pose = (latest[0], latest[1])
                 self._init_axis_if_needed(latest)
 
-        if self.latest_pose is not None and self.leg_start_pose is not None and self.axis_world is not None:
+        if (
+            self.latest_pose is not None and
+            self.leg_start_pose is not None and
+            self.axis_world is not None
+        ):
             dx = self.latest_pose[0] - self.leg_start_pose[0]
             dy = self.latest_pose[1] - self.leg_start_pose[1]
             projected = dx * self.axis_world[0] + dy * self.axis_world[1]

@@ -361,20 +361,30 @@ bool RRTStar::pointCollisionFree(
   if (!boundedCeil(parameters_.safety_dist / resolution, radius)) {
     return false;
   }
-  for (int offset_x = -radius; offset_x <= radius; ++offset_x) {
-    for (int offset_y = -radius; offset_y <= radius; ++offset_y) {
+  const int64_t min_cell_x = std::max<int64_t>(
+    -1, static_cast<int64_t>(map_x) - radius);
+  const int64_t max_cell_x = std::min<int64_t>(
+    costmap.getSizeInCellsX(), static_cast<int64_t>(map_x) + radius);
+  const int64_t min_cell_y = std::max<int64_t>(
+    -1, static_cast<int64_t>(map_y) - radius);
+  const int64_t max_cell_y = std::min<int64_t>(
+    costmap.getSizeInCellsY(), static_cast<int64_t>(map_y) + radius);
+  const double squared_safety_distance = parameters_.safety_dist * parameters_.safety_dist;
+  for (int64_t cell_x = min_cell_x; cell_x <= max_cell_x; ++cell_x) {
+    for (int64_t cell_y = min_cell_y; cell_y <= max_cell_y; ++cell_y) {
       if (checkInterrupted()) {
         return false;
       }
-      const int64_t squared_distance =
-        static_cast<int64_t>(offset_x) * offset_x +
-        static_cast<int64_t>(offset_y) * offset_y;
-      const int64_t squared_radius = static_cast<int64_t>(radius) * radius;
-      if (squared_distance > squared_radius) {
+      const double cell_min_x = costmap.getOriginX() + cell_x * resolution;
+      const double cell_max_x = cell_min_x + resolution;
+      const double cell_min_y = costmap.getOriginY() + cell_y * resolution;
+      const double cell_max_y = cell_min_y + resolution;
+      const double distance_x = std::max({cell_min_x - x, 0.0, x - cell_max_x});
+      const double distance_y = std::max({cell_min_y - y, 0.0, y - cell_max_y});
+      const double squared_distance = distance_x * distance_x + distance_y * distance_y;
+      if (squared_distance > squared_safety_distance) {
         continue;
       }
-      const int64_t cell_x = static_cast<int64_t>(map_x) + offset_x;
-      const int64_t cell_y = static_cast<int64_t>(map_y) + offset_y;
       if (cell_x < 0 || cell_y < 0 ||
         cell_x >= static_cast<int64_t>(costmap.getSizeInCellsX()) ||
         cell_y >= static_cast<int64_t>(costmap.getSizeInCellsY()) ||

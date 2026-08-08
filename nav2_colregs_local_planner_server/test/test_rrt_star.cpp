@@ -61,6 +61,14 @@ public:
     return planner.collisionFree(x1, y1, x2, y2, costmap);
   }
 
+  static bool pointCollisionFree(
+    RRTStar & planner, double x, double y,
+    const nav2_costmap_2d::Costmap2D & costmap)
+  {
+    prepareOperation(planner);
+    return planner.pointCollisionFree(x, y, costmap);
+  }
+
   static bool invalidGeometry(const RRTStar & planner)
   {
     return planner.invalid_geometry_;
@@ -442,6 +450,17 @@ TEST(RRTStar, ReportsNoPathWhenGoalIsBlocked)
   RRTStar planner(parameters());
   std::vector<RRTStarNode> path;
   EXPECT_EQ(plan(planner, map, path), PlanStatus::NO_PATH);
+}
+
+TEST(RRTStar, SafetyDistanceUsesQueryToCellRectangleDistance)
+{
+  auto map = freeMap();
+  map.setCost(1, 1, nav2_costmap_2d::LETHAL_OBSTACLE);
+  auto params = parameters();
+  params.safety_dist = 0.05;
+  RRTStar planner(params);
+
+  EXPECT_FALSE(RRTStarTestPeer::pointCollisionFree(planner, 0.99, 0.99, map));
 }
 
 TEST(RRTStar, PruningPreservesExactEndpoints)

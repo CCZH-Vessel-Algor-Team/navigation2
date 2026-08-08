@@ -59,6 +59,9 @@ RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值�
 - 作用：Adaptive LOS（ALOS）制导 Controller 插件，在 LOS 基础上加入侧滑角自适应估计。
 - 算法：基于 Fossen (2023) — 找最近点 + 前推点 → 路径切线角 π_h + 侧偏 y_e → 自适应侧滑估计 β̂ → 目标角度 ψ_d = π_h - β̂ - atan(y_e/Δ)。
 - 关键参数：`forward_dist`, `gamma`, `beta_hat0`, `reset_beta_on_new_goal`, `beta_reset_goal_dist_tolerance`。
+- β̂ 估计在重规划间保留，仅当 goal 位移超过 `beta_reset_goal_dist_tolerance` 或 frame 变化时复位。
+- 线程安全：`setPlan()` 与控制周期共享 controller mutex；控制周期按上游 RPP 模式持有 local costmap mutex，并在路径索引前校验状态、frame、pose 数量与有限坐标。
+- 稀疏路径：forward point 按路径弧长插值，重复 segment 被跳过；退化终点仅在机器人已进入 goal tolerance 时返回零速度。
 - 已知限制：原地转向期间 β̂ 仍会更新。详见代码注释。
 - **注意：`/lookahead_point` 和 `/closest_point` 是原始全局路径上未经 COLREGS 修正的点（仅 map→base_link 变换），仅用于制导可视化。COLREGS 修正（β̂）只作用于速度指令输出。**
 
@@ -68,6 +71,7 @@ RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值�
 - 标准 Action：`/compute_path_to_pose`（`nav2_msgs/action/ComputePathToPose`）；成功路径发布到 `/plan`。
 - Server 内部持有固定 `map` 坐标系、非滚动的 `/colregs_costmap`，不由 Lifecycle Manager 单独管理。
 - 每次请求在 costmap mutex 内深拷贝快照，释放锁后对静态快照执行确定性基础 RRT*；接受空 `planner_id` 或 `RRTStar`。
+- pruning 后的 RRT* raw nodes 按 `colregs_costmap` resolution 稠密插值，再保留精确 start/goal pose 后发布，避免 Controller 直接消费稀疏树节点。
 - BT 以 `1 Hz` 重新规划，`FollowPath` 直接消费 `{path}`。移动 TS 只通过 TSProjectionLayer 进入每次快照；当前算法没有 CPA/TCPA、相遇类型、VO 或 COLREGS 规则约束，因此不能宣称动态 COLREGS 合规。
 
 ### 11) `nav2_maritime_situation_msgs`

@@ -13,7 +13,9 @@
 // limitations under the License.
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -43,6 +45,28 @@ public:
   void setCurrent(bool current) {current_ = current;}
   void setRobotPoseAvailable(bool available) {robot_pose_available_ = available;}
   void setTransformAvailable(bool available) {transform_available_ = available;}
+  void blockNextTransform()
+  {
+    std::lock_guard<std::mutex> lock(transform_mutex_);
+    block_transform_ = true;
+    transform_entered_ = false;
+  }
+  bool waitForBlockedTransform()
+  {
+    std::unique_lock<std::mutex> lock(transform_mutex_);
+    return transform_condition_.wait_for(lock, 1s, [this]() {return transform_entered_;});
+  }
+  void releaseTransform()
+  {
+    std::lock_guard<std::mutex> lock(transform_mutex_);
+    block_transform_ = false;
+    transform_condition_.notify_all();
+  }
+  int transformCallCount() const
+  {
+    std::lock_guard<std::mutex> lock(transform_mutex_);
+    return transform_call_count_;
+  }
 
 protected:
   bool isCostmapCurrent() const override {return current_;}
@@ -66,7 +90,21 @@ protected:
     if (!transform_available_) {
       return false;
     }
+    {
+      std::unique_lock<std::mutex> lock(transform_mutex_);
+      ++transform_call_count_;
+      if (block_transform_) {
+        transform_entered_ = true;
+        transform_condition_.notify_all();
+        transform_condition_.wait(lock, [this]() {return !block_transform_;});
+      }
+    }
     output = input;
+    if (input.header.frame_id == "nan_transform") {
+      output.pose.position.x = std::numeric_limits<double>::quiet_NaN();
+    } else if (input.header.frame_id == "inf_transform") {
+      output.pose.position.y = std::numeric_limits<double>::infinity();
+    }
     if (input.header.frame_id == "translated") {
       output.pose.position.x += 1.0;
       output.pose.position.y += 2.0;
@@ -79,6 +117,11 @@ private:
   bool current_{true};
   bool robot_pose_available_{true};
   bool transform_available_{true};
+  mutable std::mutex transform_mutex_;
+  mutable std::condition_variable transform_condition_;
+  mutable bool block_transform_{false};
+  mutable bool transform_entered_{false};
+  mutable int transform_call_count_{0};
 };
 
 class LocalPlannerServerTest : public ::testing::Test
@@ -194,6 +237,15 @@ protected:
     return result_future.get();
   }
 
+  GoalHandle::SharedPtr sendGoal(const Action::Goal & goal)
+  {
+    auto goal_future = client_->async_send_goal(goal);
+    EXPECT_EQ(
+      rclcpp::spin_until_future_complete(client_node_, goal_future, 2s),
+      rclcpp::FutureReturnCode::SUCCESS);
+    return goal_future.get();
+  }
+
   void expectError(const Action::Goal & goal, uint16_t error_code)
   {
     const auto result = runGoal(goal);
@@ -282,6 +334,18 @@ TEST_F(LocalPlannerServerTest, reportsTfErrorForMissingRobotPoseOrTransform)
   expectError(makeGoal(), Action::Result::TF_ERROR);
 }
 
+TEST_F(LocalPlannerServerTest, rejectsNonFiniteTransformedStartAndGoal)
+{
+  activate();
+  auto nan_start = makeGoal();
+  nan_start.start.header.frame_id = "nan_transform";
+  expectError(nan_start, Action::Result::TF_ERROR);
+
+  auto infinite_goal = makeGoal();
+  infinite_goal.goal.header.frame_id = "inf_transform";
+  expectError(infinite_goal, Action::Result::TF_ERROR);
+}
+
 TEST_F(LocalPlannerServerTest, transformsStartAndGoalIntoMap)
 {
   activate();
@@ -357,6 +421,117 @@ TEST_F(LocalPlannerServerTest, cancellationTerminatesAsCanceled)
   EXPECT_NE(result.result->error_code, Action::Result::NO_VALID_PATH);
 }
 
+TEST_F(LocalPlannerServerTest, preemptsLongPlanAndPublishesOnlyPendingGoalResult)
+{
+  server_->set_parameter(rclcpp::Parameter("max_iterations", 1000000));
+  server_->set_parameter(rclcpp::Parameter("max_planning_time", 5.0));
+  activate();
+  addSolidWall();
+
+  const auto first_handle = sendGoal(makeGoal(1.0, 8.0));
+  ASSERT_NE(first_handle, nullptr);
+  std::this_thread::sleep_for(20ms);
+  const auto second_goal = makeGoal(1.0, 3.25);
+  const auto second_handle = sendGoal(second_goal);
+  ASSERT_NE(second_handle, nullptr);
+
+  const auto first_result = runResult(first_handle);
+  const auto second_result = runResult(second_handle);
+  EXPECT_EQ(first_result.code, rclcpp_action::ResultCode::ABORTED);
+  ASSERT_NE(first_result.result, nullptr);
+  EXPECT_NE(first_result.result->error_code, Action::Result::NO_VALID_PATH);
+  ASSERT_EQ(second_result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_NE(second_result.result, nullptr);
+  ASSERT_FALSE(second_result.result->path.poses.empty());
+  EXPECT_DOUBLE_EQ(second_result.result->path.poses.back().pose.position.x, 3.25);
+
+  const auto deadline = std::chrono::steady_clock::now() + 1s;
+  while (!published_plan_ && std::chrono::steady_clock::now() < deadline) {
+    rclcpp::spin_some(client_node_);
+    std::this_thread::sleep_for(5ms);
+  }
+  ASSERT_NE(published_plan_, nullptr);
+  ASSERT_FALSE(published_plan_->poses.empty());
+  EXPECT_DOUBLE_EQ(published_plan_->poses.back().pose.position.x, 3.25);
+}
+
+TEST_F(LocalPlannerServerTest, currentCancellationDoesNotDiscardPendingGoal)
+{
+  activate();
+  server_->blockNextTransform();
+
+  const auto first_handle = sendGoal(makeGoal(1.0, 8.0));
+  EXPECT_NE(first_handle, nullptr);
+  EXPECT_TRUE(server_->waitForBlockedTransform());
+  const auto second_handle = sendGoal(makeGoal(1.0, 3.5));
+  EXPECT_NE(second_handle, nullptr);
+  auto cancel_future = client_->async_cancel_goal(first_handle);
+  EXPECT_EQ(
+    rclcpp::spin_until_future_complete(client_node_, cancel_future, 2s),
+    rclcpp::FutureReturnCode::SUCCESS);
+  EXPECT_FALSE(cancel_future.get()->goals_canceling.empty());
+  server_->releaseTransform();
+
+  EXPECT_EQ(runResult(first_handle).code, rclcpp_action::ResultCode::CANCELED);
+  const auto second_result = runResult(second_handle);
+  ASSERT_EQ(second_result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_NE(second_result.result, nullptr);
+  ASSERT_FALSE(second_result.result->path.poses.empty());
+  EXPECT_DOUBLE_EQ(second_result.result->path.poses.back().pose.position.x, 3.5);
+}
+
+TEST_F(LocalPlannerServerTest, pendingCancellationDoesNotRestartCurrentGoal)
+{
+  activate();
+  server_->blockNextTransform();
+
+  const auto current_handle = sendGoal(makeGoal(1.0, 4.0));
+  EXPECT_NE(current_handle, nullptr);
+  EXPECT_TRUE(server_->waitForBlockedTransform());
+  const auto pending_handle = sendGoal(makeGoal(1.0, 3.0));
+  EXPECT_NE(pending_handle, nullptr);
+  auto cancel_future = client_->async_cancel_goal(pending_handle);
+  EXPECT_EQ(
+    rclcpp::spin_until_future_complete(client_node_, cancel_future, 2s),
+    rclcpp::FutureReturnCode::SUCCESS);
+  EXPECT_FALSE(cancel_future.get()->goals_canceling.empty());
+  server_->releaseTransform();
+
+  EXPECT_EQ(runResult(pending_handle).code, rclcpp_action::ResultCode::CANCELED);
+  const auto current_result = runResult(current_handle);
+  ASSERT_EQ(current_result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  EXPECT_EQ(server_->transformCallCount(), 2);
+}
+
+TEST_F(LocalPlannerServerTest, canceledPendingReplacementPreservesNewestGoal)
+{
+  activate();
+  server_->blockNextTransform();
+
+  const auto current_handle = sendGoal(makeGoal(1.0, 4.0));
+  EXPECT_NE(current_handle, nullptr);
+  EXPECT_TRUE(server_->waitForBlockedTransform());
+  const auto canceled_pending_handle = sendGoal(makeGoal(1.0, 3.0));
+  EXPECT_NE(canceled_pending_handle, nullptr);
+  auto cancel_future = client_->async_cancel_goal(canceled_pending_handle);
+  EXPECT_EQ(
+    rclcpp::spin_until_future_complete(client_node_, cancel_future, 2s),
+    rclcpp::FutureReturnCode::SUCCESS);
+  EXPECT_FALSE(cancel_future.get()->goals_canceling.empty());
+  const auto newest_goal = makeGoal(1.0, 3.75);
+  const auto newest_handle = sendGoal(newest_goal);
+  EXPECT_NE(newest_handle, nullptr);
+  server_->releaseTransform();
+
+  EXPECT_EQ(runResult(canceled_pending_handle).code, rclcpp_action::ResultCode::CANCELED);
+  EXPECT_EQ(runResult(current_handle).code, rclcpp_action::ResultCode::ABORTED);
+  const auto newest_result = runResult(newest_handle);
+  ASSERT_EQ(newest_result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_NE(newest_result.result, nullptr);
+  ASSERT_FALSE(newest_result.result->path.poses.empty());
+  EXPECT_DOUBLE_EQ(newest_result.result->path.poses.back().pose.position.x, 3.75);
+}
+
 TEST_F(LocalPlannerServerTest, preservesExactEndpointsAndPublishesSuccessfulPlan)
 {
   activate();
@@ -364,9 +539,16 @@ TEST_F(LocalPlannerServerTest, preservesExactEndpointsAndPublishesSuccessfulPlan
   const auto result = runGoal(goal);
   ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
   ASSERT_NE(result.result, nullptr);
-  ASSERT_GE(result.result->path.poses.size(), 2u);
+  ASSERT_GT(result.result->path.poses.size(), 2u);
   EXPECT_EQ(result.result->path.poses.front().pose, goal.start.pose);
   EXPECT_EQ(result.result->path.poses.back().pose, goal.goal.pose);
+  for (size_t index = 1; index < result.result->path.poses.size(); ++index) {
+    const auto & previous = result.result->path.poses[index - 1].pose.position;
+    const auto & current = result.result->path.poses[index].pose.position;
+    const double spacing = std::hypot(current.x - previous.x, current.y - previous.y);
+    EXPECT_GT(spacing, 1e-9);
+    EXPECT_LE(spacing, 0.101);
+  }
   EXPECT_EQ(result.result->error_code, Action::Result::NONE);
   EXPECT_LT(result.result->planning_time.nanosec, 1000000000u);
   const auto deadline = std::chrono::steady_clock::now() + 1s;

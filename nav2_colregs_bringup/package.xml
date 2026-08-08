@@ -21,6 +21,10 @@
   <exec_depend>nav2_minimal_tb3_sim</exec_depend>
   <exec_depend>ros_gz_sim</exec_depend>
   <exec_depend>nav2_colregs_msgs</exec_depend>
+  <exec_depend>nav2_colregs_ts_manager</exec_depend>
+  <exec_depend>nav2_colregs_costmap_layers</exec_depend>
+  <exec_depend>nav2_colregs_alos_controller</exec_depend>
+  <exec_depend>nav2_colregs_local_path_behavior</exec_depend>
   <exec_depend>nav2_colregs_local_planner_server</exec_depend>
   <exec_depend>nav2_colregs_local_path_bt_nodes</exec_depend>
   <exec_depend>nav2_colregs_vector_object_server</exec_depend>

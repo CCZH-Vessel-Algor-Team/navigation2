@@ -402,6 +402,23 @@ public:
   }
 
   /**
+   * @brief Terminate the pending goal only if that same pending goal is canceling
+   * @return true when a canceled pending goal was terminated
+   */
+  bool terminate_pending_goal_if_cancel_requested()
+  {
+    std::lock_guard<std::recursive_mutex> lock(update_mutex_);
+    if (!is_active(pending_handle_) || !pending_handle_->is_canceling()) {
+      return false;
+    }
+
+    terminate(pending_handle_);
+    preempt_requested_ = false;
+    debug_msg("Canceled pending goal terminated");
+    return true;
+  }
+
+  /**
    * @brief Get the current goal object
    * @return Goal Ptr to the  goal that's being processed currently
    */
@@ -467,6 +484,20 @@ public:
     return current_handle_->is_canceling();
   }
 
+  /** @brief Whether the current goal has been canceled by its client. */
+  bool is_current_goal_cancel_requested() const
+  {
+    std::lock_guard<std::recursive_mutex> lock(update_mutex_);
+    return current_handle_ && current_handle_->is_canceling();
+  }
+
+  /** @brief Whether the pending goal has been canceled by its client. */
+  bool is_pending_goal_cancel_requested() const
+  {
+    std::lock_guard<std::recursive_mutex> lock(update_mutex_);
+    return pending_handle_ && pending_handle_->is_canceling();
+  }
+
   /**
    * @brief Terminate all pending and active actions
    * @param result A result object to send to the terminated actions
@@ -508,6 +539,27 @@ public:
       current_handle_->succeed(result);
       current_handle_.reset();
     }
+  }
+
+  /**
+   * @brief Run a completion callback and succeed the current goal unless it was interrupted
+   * @param result Result to return to the current goal
+   * @param before_success Callback run while goal-state updates are blocked
+   * @return true when the current goal was completed, false when cancel or preemption won
+   */
+  bool succeed_current_if_not_interrupted(
+    typename std::shared_ptr<typename ActionT::Result> result,
+    const std::function<void()> & before_success)
+  {
+    std::lock_guard<std::recursive_mutex> lock(update_mutex_);
+    if (!is_active(current_handle_) || current_handle_->is_canceling() || preempt_requested_) {
+      return false;
+    }
+
+    before_success();
+    current_handle_->succeed(result);
+    current_handle_.reset();
+    return true;
   }
 
   /**

@@ -1,3 +1,5 @@
+// Copyright (c) 2026 Vector Wang
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -74,8 +76,9 @@ void ALOSController::configure(
   node->get_parameter(
     plugin_name_ + ".beta_reset_goal_dist_tolerance", beta_reset_goal_dist_tolerance_);
   node->get_parameter(plugin_name_ + ".max_angle_for_motion", max_angle_for_motion_);
-  node->get_parameter(plugin_name_ + ".max_robot_pose_search_dist",
-                      max_robot_pose_search_dist_);
+  node->get_parameter(
+    plugin_name_ + ".max_robot_pose_search_dist",
+    max_robot_pose_search_dist_);
   node->get_parameter(plugin_name_ + ".debug_log_enabled", debug_log_enabled_);
 
   beta_hat_ = beta_hat0_;
@@ -133,9 +136,16 @@ void ALOSController::deactivate()
 void ALOSController::setPlan(const nav_msgs::msg::Path & path)
 {
   std::lock_guard<std::mutex> lock(mutex_);
-
-  if (path.poses.empty()) {
-    return;
+  if (!path_handler_) {
+    throw nav2_core::ControllerException("ALOSController is not configured");
+  }
+  if (path.header.frame_id.empty() || path.poses.size() < 2u) {
+    throw nav2_core::InvalidPath("ALOSController requires at least two framed path poses");
+  }
+  for (const auto & pose : path.poses) {
+    if (!std::isfinite(pose.pose.position.x) || !std::isfinite(pose.pose.position.y)) {
+      throw nav2_core::InvalidPath("ALOSController path contains non-finite coordinates");
+    }
   }
 
   const bool is_new_goal = updateGoalAndCheckIfNew(path);
@@ -197,6 +207,11 @@ geometry_msgs::msg::TwistStamped ALOSController::computeVelocityCommands(
   nav2_core::GoalChecker * goal_checker)
 {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (!goal_checker || !costmap_ros_ || !costmap_ || !path_handler_ || !collision_checker_) {
+    throw nav2_core::ControllerException("ALOSController is not fully configured");
+  }
+  std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> costmap_lock(
+    *costmap_->getMutex());
 
   // 1 — Obtain goal tolerances from goal checker plugin.
   geometry_msgs::msg::Pose pose_tol;
@@ -208,6 +223,17 @@ geometry_msgs::msg::TwistStamped ALOSController::computeVelocityCommands(
   // 2 — Transform global plan (map frame) → robot local frame (base_link).
   auto transformed_plan = path_handler_->transformGlobalPlan(
     pose, max_robot_pose_search_dist_);
+  if (transformed_plan.poses.size() < 2u) {
+    throw nav2_core::InvalidPath("ALOSController transformed plan has fewer than two poses");
+  }
+  for (const auto & transformed_pose : transformed_plan.poses) {
+    if (!std::isfinite(transformed_pose.pose.position.x) ||
+      !std::isfinite(transformed_pose.pose.position.y))
+    {
+      throw nav2_core::InvalidPath(
+              "ALOSController transformed plan contains non-finite coordinates");
+    }
+  }
   plan_pub_->publish(transformed_plan);
 
   // 3 — ALOS: find closest point and forward point on the dense path.
@@ -242,7 +268,27 @@ geometry_msgs::msg::TwistStamped ALOSController::computeVelocityCommands(
   //     y_e = -sin(pi_h)*dx + cos(pi_h)*dy
   //         = -sin(pi_h)*(-P_c.x) + cos(pi_h)*(-P_c.y)
   //         = sin(pi_h)*P_c.x - cos(pi_h)*P_c.y
-  double pi_h = std::atan2(P_f.y - P_c.y, P_f.x - P_c.x);
+  double tangent_x = P_f.x - P_c.x;
+  double tangent_y = P_f.y - P_c.y;
+  if (std::hypot(tangent_x, tangent_y) <= 1e-9) {
+    for (size_t index = closest_idx; index > 0; --index) {
+      const auto & previous = transformed_plan.poses[index - 1].pose.position;
+      tangent_x = P_c.x - previous.x;
+      tangent_y = P_c.y - previous.y;
+      if (std::hypot(tangent_x, tangent_y) > 1e-9) {
+        break;
+      }
+    }
+  }
+  if (std::hypot(tangent_x, tangent_y) <= 1e-9) {
+    if (std::hypot(P_c.x, P_c.y) <= goal_dist_tol_) {
+      geometry_msgs::msg::TwistStamped stopped;
+      stopped.header = pose.header;
+      return stopped;
+    }
+    throw nav2_core::InvalidPath("ALOSController path has no nonzero tangent");
+  }
+  double pi_h = std::atan2(tangent_y, tangent_x);
   double y_e = std::sin(pi_h) * P_c.x - std::cos(pi_h) * P_c.y;
   double target_angle = pi_h - beta_hat_ - std::atan(y_e / forward_dist_);
   double angle_error = target_angle;   // robot yaw = 0 in base_link frame
@@ -261,15 +307,15 @@ geometry_msgs::msg::TwistStamped ALOSController::computeVelocityCommands(
   beta_hat_ += gamma_ * forward_dist_ * y_e / denom * control_duration_;
 
   // 5 — Angular velocity with trapezoidal profile.
-	//   !!! potential issue: beta hat accumulates even when turning-in-place
-	//   which is against the hypothesis of the ALOS algor
+  //   !!! potential issue: beta hat accumulates even when turning-in-place
+  //   which is against the hypothesis of the ALOS algor
   geometry_msgs::msg::TwistStamped cmd_vel;
   cmd_vel.header = pose.header;
   cmd_vel.twist.angular.z = computeAngularVelocity(angle_error, speed);
 
   // 5b — Turn-in-place gate.
   if (max_angle_for_motion_ > 0.0 &&
-      std::fabs(angle_error) > max_angle_for_motion_)
+    std::fabs(angle_error) > max_angle_for_motion_)
   {
     return cmd_vel;
   }
@@ -279,7 +325,7 @@ geometry_msgs::msg::TwistStamped ALOSController::computeVelocityCommands(
   //     (either closest_idx is already at end of plan, or forward search
   //     fell back to the last point).
   bool is_goal_point = (closest_idx >= transformed_plan.poses.size() - 1 ||
-                        P_f == transformed_plan.poses.back().pose.position);
+    P_f == transformed_plan.poses.back().pose.position);
   double dist_to_goal = std::hypot(P_f.x, P_f.y);
   cmd_vel.twist.linear.x = computeLinearVelocity(speed, is_goal_point, dist_to_goal);
 
@@ -329,6 +375,14 @@ size_t ALOSController::findClosestPointIndex(
   const nav_msgs::msg::Path & transformed_plan)
 {
   const auto & poses = transformed_plan.poses;
+  if (poses.empty()) {
+    throw nav2_core::InvalidPath("Cannot find closest point on an empty path");
+  }
+  for (const auto & pose : poses) {
+    if (!std::isfinite(pose.pose.position.x) || !std::isfinite(pose.pose.position.y)) {
+      throw nav2_core::InvalidPath("Path contains non-finite coordinates");
+    }
+  }
   auto nearest = std::min_element(
     poses.begin(), poses.end(),
     [](const auto & a, const auto & b) {
@@ -344,16 +398,34 @@ geometry_msgs::msg::Point ALOSController::findForwardPoint(
   double forward_dist)
 {
   const auto & poses = transformed_plan.poses;
-  double accumulated = 0.0;
+  if (poses.empty() || start_idx >= poses.size() || !std::isfinite(forward_dist) ||
+    forward_dist <= 0.0)
+  {
+    throw nav2_core::InvalidPath("Invalid path or forward distance for ALOS guidance");
+  }
+  double remaining = forward_dist;
   geometry_msgs::msg::Point prev = poses[start_idx].pose.position;
+  if (!std::isfinite(prev.x) || !std::isfinite(prev.y)) {
+    throw nav2_core::InvalidPath("Path contains non-finite coordinates");
+  }
 
   for (size_t i = start_idx + 1; i < poses.size(); i++) {
     const auto & pt = poses[i].pose.position;
-    double seg_len = std::hypot(pt.x - prev.x, pt.y - prev.y);
-    accumulated += seg_len;
-    if (accumulated >= forward_dist) {
-      return pt;
+    if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) {
+      throw nav2_core::InvalidPath("Path contains non-finite coordinates");
     }
+    double seg_len = std::hypot(pt.x - prev.x, pt.y - prev.y);
+    if (seg_len <= 1e-12) {
+      continue;
+    }
+    if (remaining <= seg_len) {
+      const double ratio = remaining / seg_len;
+      geometry_msgs::msg::Point interpolated;
+      interpolated.x = prev.x + ratio * (pt.x - prev.x);
+      interpolated.y = prev.y + ratio * (pt.y - prev.y);
+      return interpolated;
+    }
+    remaining -= seg_len;
     prev = pt;
   }
   // Fallback: path too short for forward_dist — return the goal point.
@@ -412,13 +484,15 @@ double ALOSController::computeLinearVelocity(
     }
 
     double sign = (current_vel >= 0.0) ? 1.0 : -1.0;
-    double v_cmd = std::clamp(sign * v_target,
+    double v_cmd = std::clamp(
+      sign * v_target,
       current_vel - max_linear_accel_ * dt,
       current_vel + max_linear_accel_ * dt);
     return v_cmd;
   }
 
-  double v_cmd = std::clamp(desired_linear_vel_,
+  double v_cmd = std::clamp(
+    desired_linear_vel_,
     current_vel - max_linear_accel_ * dt,
     current_vel + max_linear_accel_ * dt);
   return v_cmd;

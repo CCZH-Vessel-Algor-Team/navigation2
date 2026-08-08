@@ -242,7 +242,6 @@ def test_controller_and_local_costmap_configuration_is_unchanged():
         'progress_checker_plugins': ['progress_checker'],
         'goal_checker_plugins': ['general_goal_checker'],
         'controller_plugins': ['FollowPath'],
-        'path_handler_plugins': ['PathHandler'],
         'use_realtime_priority': False,
         'speed_limit_topic': 'speed_limit',
         'progress_checker': {
@@ -255,16 +254,6 @@ def test_controller_and_local_costmap_configuration_is_unchanged():
             'xy_goal_tolerance': 0.25,
             'stateful': True,
         },
-        'PathHandler': {
-            'plugin': 'nav2_controller::FeasiblePathHandler',
-            'prune_distance': 2.0,
-            'enforce_path_inversion': False,
-            'enforce_path_rotation': False,
-            'inversion_xy_tolerance': 0.2,
-            'inversion_yaw_tolerance': 0.4,
-            'minimum_rotation_angle': 0.785,
-            'reject_unit_path': False,
-        },
         'FollowPath': {
             'plugin': 'nav2_colregs_alos_controller::ALOSController',
             'desired_linear_vel': 0.5,
@@ -274,7 +263,8 @@ def test_controller_and_local_costmap_configuration_is_unchanged():
             'forward_dist': 2.0,
             'gamma': 0.0006,
             'beta_hat0': 0.0,
-            'reset_beta_on_new_path': True,
+            'reset_beta_on_new_goal': True,
+            'beta_reset_goal_dist_tolerance': 0.05,
             'max_angle_for_motion': 1.047,
             'max_robot_pose_search_dist': 10.0,
         },
@@ -338,8 +328,12 @@ def test_bringup_declares_demo_runtime_dependencies():
         'ament_index_python',
         'launch',
         'launch_ros',
+        'nav2_colregs_alos_controller',
+        'nav2_colregs_costmap_layers',
+        'nav2_colregs_local_path_behavior',
         'nav2_colregs_local_path_bt_nodes',
         'nav2_colregs_local_planner_server',
+        'nav2_colregs_ts_manager',
         'nav2_lifecycle_manager',
     }.issubset(dependencies)
 
@@ -395,7 +389,7 @@ def test_obsolete_compute_local_path_contract_is_removed():
     assert (bt_dir / 'src/create_local_path_action.cpp').is_file()
 
 
-def test_local_planner_server_cancels_before_planning_and_publication():
+def test_local_planner_server_interrupts_for_cancel_or_preemption_before_publication():
     source = (
         PACKAGE_DIR.parent
         / 'nav2_colregs_local_planner_server'
@@ -406,20 +400,71 @@ def test_local_planner_server_cancels_before_planning_and_publication():
     assert 'create_publisher<nav_msgs::msg::Path>("plan", 1)' in source
 
     compute_plan = source[source.index('void ColregsLocalPlannerServer::computePlan()'):]
-    first_cancel = compute_plan.index('if (canceled())')
+    first_cancel = compute_plan.index('if (current_canceled())')
     plan = compute_plan.index('const auto status = planner.planPath(')
-    cancellation_callback = compute_plan.index(
-        'snapshot, canceled, planning_deadline, nodes);', plan
+    interruption_callback = compute_plan.index(
+        'snapshot, interrupted, planning_deadline, nodes);', plan
     )
     success_gate = compute_plan.index(
         'if (status != PlanStatus::SUCCESS || nodes.empty())', plan
     )
     failure_return = compute_plan.index('return;', success_gate)
-    final_cancel = compute_plan.index('if (canceled())', failure_return)
-    publish = compute_plan.index('plan_publisher_->publish', final_cancel)
-    succeed = compute_plan.index('action_server_->succeeded_current', publish)
+    atomic_success = compute_plan.index(
+        'action_server_->succeed_current_if_not_interrupted(', failure_return
+    )
+    publish = compute_plan.index('plan_publisher_->publish', atomic_success)
 
-    assert first_cancel < plan < cancellation_callback
-    assert cancellation_callback < success_gate < failure_return
-    assert failure_return < final_cancel < publish
-    assert publish < succeed
+    assert first_cancel < plan < interruption_callback
+    assert interruption_callback < success_gate < failure_return
+    assert failure_return < atomic_success < publish
+
+
+def test_pending_goal_cancellation_is_handled_atomically():
+    source_dir = PACKAGE_DIR.parent
+    action_server = (
+        source_dir / 'nav2_util' / 'include' / 'nav2_util'
+        / 'simple_action_server.hpp'
+    ).read_text()
+    planner_server = (
+        source_dir / 'nav2_colregs_local_planner_server' / 'src'
+        / 'local_planner_server.cpp'
+    ).read_text()
+
+    assert 'bool terminate_pending_goal_if_cancel_requested()' in action_server
+    assert 'terminate_pending_goal_if_cancel_requested()' in planner_server
+    assert not (
+        'is_pending_goal_cancel_requested()) {' in planner_server
+        and 'terminate_pending_goal();' in planner_server
+    )
+
+    compute_plan = planner_server[
+        planner_server.index('void ColregsLocalPlannerServer::computePlan()'):
+    ]
+    interruption_callback = compute_plan[
+        compute_plan.index('auto interrupted = [this]() {'):
+        compute_plan.index('};', compute_plan.index('auto interrupted = [this]() {'))
+    ]
+    dispose = interruption_callback.index(
+        'terminate_pending_goal_if_cancel_requested()'
+    )
+    current_cancel = interruption_callback.index(
+        'is_current_goal_cancel_requested()'
+    )
+    preempt = interruption_callback.index('is_preempt_requested()')
+    assert dispose < current_cancel < preempt
+
+
+def test_transformed_coordinates_are_checked_before_world_to_map():
+    source = (
+        PACKAGE_DIR.parent
+        / 'nav2_colregs_local_planner_server'
+        / 'src'
+        / 'local_planner_server.cpp'
+    ).read_text()
+    compute_plan = source[source.index('void ColregsLocalPlannerServer::computePlan()'):]
+
+    finite_check = compute_plan.index('std::isfinite(transformed_start.pose.position.x)')
+    start_conversion = compute_plan.index('snapshot.worldToMap(')
+    goal_conversion = compute_plan.index('snapshot.worldToMap(', start_conversion + 1)
+
+    assert finite_check < start_conversion < goal_conversion

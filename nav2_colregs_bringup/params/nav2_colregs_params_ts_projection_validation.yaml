@@ -107,7 +107,6 @@ controller_server:
     progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["general_goal_checker"]
     controller_plugins: ["FollowPath"]
-    path_handler_plugins: ["PathHandler"]
     use_realtime_priority: false
     speed_limit_topic: "speed_limit"
     progress_checker:
@@ -118,15 +117,6 @@ controller_server:
       plugin: "nav2_controller::PositionGoalChecker"
       xy_goal_tolerance: 0.25
       stateful: true
-    PathHandler:
-      plugin: "nav2_controller::FeasiblePathHandler"
-      prune_distance: 2.0
-      enforce_path_inversion: false
-      enforce_path_rotation: false
-      inversion_xy_tolerance: 0.2
-      inversion_yaw_tolerance: 0.4
-      minimum_rotation_angle: 0.785
-      reject_unit_path: false
     # LOS (basic, no sideslip compensation):
     # FollowPath:
     #   plugin: "nav2_colregs_los_controller::LOSController"

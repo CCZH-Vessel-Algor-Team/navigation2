@@ -2,8 +2,6 @@ import ast
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
-import pytest
-
 from launch import LaunchContext
 from launch.actions import (
     DeclareLaunchArgument,
@@ -13,6 +11,7 @@ from launch.actions import (
 from launch.utilities import normalize_to_list_of_substitutions
 from launch.utilities import perform_substitutions
 from launch_ros.actions import Node
+import pytest
 
 
 PACKAGE_DIR = Path(__file__).parents[1]

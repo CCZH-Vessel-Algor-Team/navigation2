@@ -21,6 +21,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -116,16 +117,17 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_configure(
   }
 
   try {
+    const auto configured_global_frame =
+      costmap_ros_->get_parameter("global_frame").as_string();
+    if (configured_global_frame != "map") {
+      RCLCPP_ERROR(
+        get_logger(), "COLREGS planner costmap global_frame must be exactly 'map', got '%s'",
+        configured_global_frame.c_str());
+      return nav2_util::CallbackReturn::FAILURE;
+    }
     if (costmap_ros_->configure().id() !=
       lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE)
     {
-      on_cleanup(state);
-      return nav2_util::CallbackReturn::FAILURE;
-    }
-    if (costmap_ros_->getGlobalFrameID() != "map") {
-      RCLCPP_ERROR(
-        get_logger(), "COLREGS planner costmap global_frame must be exactly 'map', got '%s'",
-        costmap_ros_->getGlobalFrameID().c_str());
       on_cleanup(state);
       return nav2_util::CallbackReturn::FAILURE;
     }
@@ -226,17 +228,58 @@ nav_msgs::msg::Path ColregsLocalPlannerServer::makePath(
   nav_msgs::msg::Path path;
   path.header.frame_id = costmap_ros_->getGlobalFrameID();
   path.header.stamp = now();
-  path.poses.resize(nodes.size());
-  for (size_t index = 0; index < nodes.size(); ++index) {
+  if (nodes.empty()) {
+    return path;
+  }
+
+  std::vector<geometry_msgs::msg::Point> points;
+  points.reserve(nodes.size());
+  geometry_msgs::msg::Point first;
+  first.x = nodes.front().x;
+  first.y = nodes.front().y;
+  points.push_back(first);
+
+  const double resolution = costmap_->getResolution();
+  if (!std::isfinite(resolution) || resolution <= 0.0) {
+    throw std::runtime_error("COLREGS costmap resolution must be finite and positive");
+  }
+  for (size_t index = 1; index < nodes.size(); ++index) {
+    const auto & previous = nodes[index - 1];
+    const auto & current = nodes[index];
+    const double distance = std::hypot(current.x - previous.x, current.y - previous.y);
+    if (distance <= 1e-12) {
+      continue;
+    }
+    const long double step_count = std::ceil(
+      static_cast<long double>(distance) / static_cast<long double>(resolution));
+    if (!std::isfinite(step_count) ||
+      step_count > static_cast<long double>(std::numeric_limits<size_t>::max() - 1u))
+    {
+      throw std::runtime_error("COLREGS path interpolation step count is invalid");
+    }
+    const auto steps = static_cast<size_t>(step_count);
+    for (size_t step = 1; step <= steps; ++step) {
+      const double ratio = static_cast<double>(step) / static_cast<double>(steps);
+      geometry_msgs::msg::Point point;
+      point.x = previous.x + ratio * (current.x - previous.x);
+      point.y = previous.y + ratio * (current.y - previous.y);
+      points.push_back(point);
+    }
+  }
+  if (points.size() == 1u) {
+    points.push_back(points.front());
+  }
+
+  path.poses.resize(points.size());
+  for (size_t index = 0; index < points.size(); ++index) {
     auto & pose = path.poses[index];
     pose.header = path.header;
-    pose.pose.position.x = nodes[index].x;
-    pose.pose.position.y = nodes[index].y;
+    pose.pose.position = points[index];
     pose.pose.orientation.w = 1.0;
-    if (index > 0 && index + 1 < nodes.size()) {
+    if (index + 1 < points.size()) {
       const double yaw = std::atan2(
-        nodes[index + 1].y - nodes[index].y,
-        nodes[index + 1].x - nodes[index].x);
+        points[index + 1].y - points[index].y,
+        points[index + 1].x - points[index].x);
       tf2::Quaternion orientation;
       orientation.setRPY(0.0, 0.0, yaw);
       pose.pose.orientation = tf2::toMsg(orientation);
@@ -254,134 +297,172 @@ void ColregsLocalPlannerServer::computePlan()
   if (!action_server_ || !action_server_->is_server_active()) {
     return;
   }
-  const auto goal = action_server_->get_current_goal();
+  auto goal = action_server_->get_current_goal();
   if (!goal) {
     return;
   }
-  auto result = std::make_shared<Action::Result>();
-  const auto started = std::chrono::steady_clock::now();
-  auto canceled = [this]() {return action_server_->is_cancel_requested();};
 
-  try {
-    if (canceled()) {
-      action_server_->terminate_all();
+  while (goal) {
+    auto result = std::make_shared<Action::Result>();
+    const auto started = std::chrono::steady_clock::now();
+    auto current_canceled = [this]() {
+      return action_server_->is_current_goal_cancel_requested();
+    };
+    auto interrupted = [this]() {
+      action_server_->terminate_pending_goal_if_cancel_requested();
+      return action_server_->is_current_goal_cancel_requested() ||
+             action_server_->is_preempt_requested();
+    };
+
+    action_server_->terminate_pending_goal_if_cancel_requested();
+    if (current_canceled()) {
+      action_server_->terminate_current(result);
+      if (action_server_->is_preempt_requested()) {
+        goal = action_server_->accept_pending_goal();
+        continue;
+      }
       return;
     }
-    if (!goal->planner_id.empty() && goal->planner_id != "RRTStar") {
-      abortGoal(result, Action::Result::INVALID_PLANNER, "Planner ID must be empty or RRTStar");
-      return;
+    if (action_server_->is_preempt_requested()) {
+      goal = action_server_->accept_pending_goal();
+      continue;
     }
 
-    const auto costmap_deadline = started +
-      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-      std::chrono::duration<double>(costmap_update_timeout_));
-    while (!isCostmapCurrent()) {
-      if (canceled()) {
-        action_server_->terminate_all();
+    try {
+      if (!goal->planner_id.empty() && goal->planner_id != "RRTStar") {
+        abortGoal(result, Action::Result::INVALID_PLANNER, "Planner ID must be empty or RRTStar");
         return;
       }
-      if (std::chrono::steady_clock::now() >= costmap_deadline) {
-        abortGoal(result, Action::Result::TIMEOUT, "Costmap timed out waiting for an update");
+
+      const auto costmap_deadline = started +
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(costmap_update_timeout_));
+      while (!isCostmapCurrent()) {
+        if (interrupted()) {
+          break;
+        }
+        if (std::chrono::steady_clock::now() >= costmap_deadline) {
+          abortGoal(result, Action::Result::TIMEOUT, "Costmap timed out waiting for an update");
+          return;
+        }
+        std::this_thread::sleep_for(10ms);
+      }
+      if (interrupted()) {
+        continue;
+      }
+
+      geometry_msgs::msg::PoseStamped start;
+      if (goal->use_start) {
+        start = goal->start;
+      } else if (!getRobotPose(start)) {
+        abortGoal(result, Action::Result::TF_ERROR, "Unable to obtain robot pose");
         return;
       }
-      std::this_thread::sleep_for(10ms);
-    }
+      geometry_msgs::msg::PoseStamped transformed_start;
+      geometry_msgs::msg::PoseStamped transformed_goal;
+      if (!transformPoseToGlobalFrame(start, transformed_start) ||
+        !transformPoseToGlobalFrame(goal->goal, transformed_goal))
+      {
+        abortGoal(result, Action::Result::TF_ERROR, "Unable to transform poses to costmap frame");
+        return;
+      }
+      if (!std::isfinite(transformed_start.pose.position.x) ||
+        !std::isfinite(transformed_start.pose.position.y) ||
+        !std::isfinite(transformed_goal.pose.position.x) ||
+        !std::isfinite(transformed_goal.pose.position.y))
+      {
+        abortGoal(
+          result, Action::Result::TF_ERROR,
+          "Transformed start or goal pose contains non-finite x/y coordinates");
+        return;
+      }
+      if (interrupted()) {
+        continue;
+      }
 
-    geometry_msgs::msg::PoseStamped start;
-    if (goal->use_start) {
-      start = goal->start;
-    } else if (!getRobotPose(start)) {
-      abortGoal(result, Action::Result::TF_ERROR, "Unable to obtain robot pose");
-      return;
-    }
-    geometry_msgs::msg::PoseStamped transformed_start;
-    geometry_msgs::msg::PoseStamped transformed_goal;
-    if (!transformPoseToGlobalFrame(start, transformed_start) ||
-      !transformPoseToGlobalFrame(goal->goal, transformed_goal))
-    {
-      abortGoal(result, Action::Result::TF_ERROR, "Unable to transform poses to costmap frame");
-      return;
-    }
+      nav2_costmap_2d::Costmap2D snapshot;
+      {
+        std::lock_guard<nav2_costmap_2d::Costmap2D::mutex_t> lock(*costmap_->getMutex());
+        snapshot = *costmap_;
+      }
+      unsigned int start_mx;
+      unsigned int start_my;
+      unsigned int goal_mx;
+      unsigned int goal_my;
+      if (!snapshot.worldToMap(
+          transformed_start.pose.position.x, transformed_start.pose.position.y,
+          start_mx, start_my))
+      {
+        abortGoal(result, Action::Result::START_OUTSIDE_MAP, "Start pose is outside the costmap");
+        return;
+      }
+      if (!snapshot.worldToMap(
+          transformed_goal.pose.position.x, transformed_goal.pose.position.y,
+          goal_mx, goal_my))
+      {
+        abortGoal(result, Action::Result::GOAL_OUTSIDE_MAP, "Goal pose is outside the costmap");
+        return;
+      }
+      if (snapshot.getCost(start_mx, start_my) >=
+        nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
+      {
+        abortGoal(result, Action::Result::START_OCCUPIED, "Start pose is occupied");
+        return;
+      }
+      if (snapshot.getCost(goal_mx, goal_my) >=
+        nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
+      {
+        abortGoal(result, Action::Result::GOAL_OCCUPIED, "Goal pose is occupied");
+        return;
+      }
 
-    nav2_costmap_2d::Costmap2D snapshot;
-    {
-      std::lock_guard<nav2_costmap_2d::Costmap2D::mutex_t> lock(*costmap_->getMutex());
-      snapshot = *costmap_;
-    }
-    unsigned int start_mx;
-    unsigned int start_my;
-    unsigned int goal_mx;
-    unsigned int goal_my;
-    if (!snapshot.worldToMap(
+      const auto planning_deadline = std::chrono::steady_clock::now() +
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(max_planning_time_));
+      RRTStar planner(planner_parameters_);
+      std::vector<RRTStarNode> nodes;
+      const auto status = planner.planPath(
         transformed_start.pose.position.x, transformed_start.pose.position.y,
-        start_mx, start_my))
-    {
-      abortGoal(result, Action::Result::START_OUTSIDE_MAP, "Start pose is outside the costmap");
-      return;
-    }
-    if (!snapshot.worldToMap(
         transformed_goal.pose.position.x, transformed_goal.pose.position.y,
-        goal_mx, goal_my))
-    {
-      abortGoal(result, Action::Result::GOAL_OUTSIDE_MAP, "Goal pose is outside the costmap");
-      return;
-    }
-    if (snapshot.getCost(start_mx, start_my) >=
-      nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
-    {
-      abortGoal(result, Action::Result::START_OCCUPIED, "Start pose is occupied");
-      return;
-    }
-    if (snapshot.getCost(goal_mx, goal_my) >=
-      nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
-    {
-      abortGoal(result, Action::Result::GOAL_OCCUPIED, "Goal pose is occupied");
-      return;
-    }
+        snapshot, interrupted, planning_deadline, nodes);
+      if (status == PlanStatus::CANCELED) {
+        continue;
+      }
+      if (status == PlanStatus::TIMEOUT) {
+        abortGoal(result, Action::Result::TIMEOUT, "RRT* planning timed out");
+        return;
+      }
+      if (status == PlanStatus::INVALID_INPUT) {
+        abortGoal(result, Action::Result::UNKNOWN, "RRT* rejected the planning input");
+        return;
+      }
+      if (status != PlanStatus::SUCCESS || nodes.empty()) {
+        abortGoal(result, Action::Result::NO_VALID_PATH, "RRT* failed to find a valid path");
+        return;
+      }
 
-    const auto planning_deadline = std::chrono::steady_clock::now() +
-      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-      std::chrono::duration<double>(max_planning_time_));
-    RRTStar planner(planner_parameters_);
-    std::vector<RRTStarNode> nodes;
-    const auto status = planner.planPath(
-      transformed_start.pose.position.x, transformed_start.pose.position.y,
-      transformed_goal.pose.position.x, transformed_goal.pose.position.y,
-      snapshot, canceled, planning_deadline, nodes);
-    if (status == PlanStatus::CANCELED) {
-      action_server_->terminate_all();
+      result->path = makePath(nodes, transformed_start, transformed_goal);
+      const auto elapsed = std::chrono::steady_clock::now() - started;
+      const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed);
+      const auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        elapsed - seconds);
+      result->planning_time.sec = static_cast<int32_t>(seconds.count());
+      result->planning_time.nanosec = static_cast<uint32_t>(nanoseconds.count());
+      result->error_code = Action::Result::NONE;
+      result->error_msg.clear();
+      if (!action_server_->succeed_current_if_not_interrupted(
+          result, [this, &result]() {plan_publisher_->publish(result->path);}))
+      {
+        continue;
+      }
+      return;
+    } catch (const std::exception & error) {
+      if (interrupted()) {
+        continue;
+      }
+      abortGoal(result, Action::Result::UNKNOWN, error.what());
       return;
     }
-    if (status == PlanStatus::TIMEOUT) {
-      abortGoal(result, Action::Result::TIMEOUT, "RRT* planning timed out");
-      return;
-    }
-    if (status == PlanStatus::INVALID_INPUT) {
-      abortGoal(result, Action::Result::UNKNOWN, "RRT* rejected the planning input");
-      return;
-    }
-    if (status != PlanStatus::SUCCESS || nodes.empty()) {
-      abortGoal(result, Action::Result::NO_VALID_PATH, "RRT* failed to find a valid path");
-      return;
-    }
-
-    result->path = makePath(nodes, transformed_start, transformed_goal);
-    const auto elapsed = std::chrono::steady_clock::now() - started;
-    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed);
-    const auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
-      elapsed - seconds);
-    result->planning_time.sec = static_cast<int32_t>(seconds.count());
-    result->planning_time.nanosec = static_cast<uint32_t>(nanoseconds.count());
-    result->error_code = Action::Result::NONE;
-    result->error_msg.clear();
-    if (canceled()) {
-      action_server_->terminate_all();
-      return;
-    }
-    plan_publisher_->publish(result->path);
-    action_server_->succeeded_current(result);
-  } catch (const std::exception & error) {
-    abortGoal(result, Action::Result::UNKNOWN, error.what());
   }
 }
 
