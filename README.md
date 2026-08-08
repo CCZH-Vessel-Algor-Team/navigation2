@@ -68,6 +68,15 @@
 - 当前实现仅将 `reference_path` 透传为 `local_path`，保留 frame 和全部 poses，仅刷新路径时间戳；尚不读取 TS 上下文，也不改变路径几何。
 - 当前执行模型为串行且不支持抢占。取消采用 group cancellation：执行过程在关键边界检查取消请求，观察到请求后以 `CANCELED` 和 `Local path computation canceled` 终止该 server 的全部 goals，不提供逐 goal 独立取消语义。受 `SimpleActionServer` 非原子检查/完成 API 限制，最终取消检查与发布/成功完成之间仍存在极小竞态窗口。
 
+### 11) `nav2_maritime_situation_msgs`
+- 作用：定义独立的海事态势接口 `SituationReport` 和 `SituationReportArray`。
+- 单船报告包含目标 UUID、`cpa_valid`、DCPA、TCPA、会遇类型和风险等级；数组消息使用 `Header` 标识统一评估坐标系和时间。
+
+### 12) `nav2_maritime_situation_monitor`
+- 作用：订阅 `/tracked_ship`（`nav2_colregs_msgs/TrackedShipList`）和 `/odom`（`nav_msgs/Odometry`），在 ENU 平面评估所有有效目标，并发布 `/maritime_situation`（`nav2_maritime_situation_msgs/SituationReportArray`）。
+- 组成：ROS 边界节点调用独立的 ENU 算法与报告构造模块；该包仅发布信息性态势报告，不发送速度或路径命令，也不接入主开发 launch 或 Nav2 lifecycle manager。
+- 提供独立参数文件与 standalone launch，不 include Nav2 bringup 或 TS 子系统。
+
 ## 二、编译
 
 ### 全量编译
@@ -88,6 +97,8 @@ colcon build --symlink-install \
   nav2_colregs_ts_manager \
   nav2_colregs_los_controller \
   nav2_colregs_alos_controller \
+  nav2_maritime_situation_msgs \
+  nav2_maritime_situation_monitor \
   nav2_colregs_bringup
 ```
 
@@ -133,6 +144,12 @@ ros2 launch nav2_colregs_bringup colregs_simulation_launch.py
 ```
 作用：单船（TB3）COLREGS 基础仿真，不含目标船。
 
+### 5) `maritime_situation_monitor.launch.py`
+```bash
+ros2 launch nav2_maritime_situation_monitor maritime_situation_monitor.launch.py
+```
+作用：独立启动海事态势监控器。launch 参数为 `params_file`、`use_sim_time` 和可选 `namespace`；默认输入为 `/tracked_ship`、`/odom`，输出为 `/maritime_situation`。
+
 ## 四、关键参数
 
 ### TS 仿真参数
@@ -156,6 +173,10 @@ ros2 launch nav2_colregs_bringup colregs_simulation_launch.py
 ### Controller
 - ALOS: `forward_dist: 2.0`, `gamma: 0.0006`, `max_angle_for_motion: 1.047`
 - LOS: `lookahead_dist`（见各 params yaml）
+
+### 海事态势监控器
+- `cpa_valid` 表示 DCPA/TCPA 是否由有效的非零相对速度预测得到。相对速度严格小于 `relative_speed_epsilon`（默认 `1e-6 m/s`）时，`cpa_valid=false`、`tcpa=0.0`、`dcpa` 为当前距离，并强制报告 `RISK_SAFE`；消费者必须先检查 `cpa_valid`。
+- 默认风险阈值：INFO 为 DCPA `30.0 m` / TCPA `120.0 s`，WARNING 为 `20.0 m` / `30.0 s`，CRITICAL 为 `10.0 m` / `10.0 s`。
 
 ## 五、常用诊断命令
 
@@ -248,6 +269,10 @@ nav2_colregs_los_controller/
   include/ src/ los_controller_plugin.xml
 nav2_colregs_alos_controller/
   include/ src/ alos_controller_plugin.xml
+nav2_maritime_situation_msgs/
+  msg/
+nav2_maritime_situation_monitor/
+  config/ launch/ nav2_maritime_situation_monitor/ test/
 nav2_colregs_bringup/
   launch/ params/ behavior_trees/ maps/ worlds/ models/ rviz/ scripts/
 ```

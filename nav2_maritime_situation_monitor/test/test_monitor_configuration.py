@@ -34,7 +34,6 @@ NODE_PATH = (
 CONFIG_PATH = PACKAGE_ROOT / 'config' / 'maritime_situation_monitor.yaml'
 LAUNCH_PATH = PACKAGE_ROOT / 'launch' / 'maritime_situation_monitor.launch.py'
 MESSAGE_ROOT = PACKAGE_ROOT.parent / 'nav2_maritime_situation_msgs' / 'msg'
-README_PATH = PACKAGE_ROOT.parent / 'README.md'
 
 APPROVED_DEFAULTS = {
     'publish_frequency': 0.5,
@@ -444,10 +443,11 @@ def test_propagation_value_errors_follow_existing_output_isolation_policy():
     assert 'targets.append(target)' in ast.unparse(target_try)
 
 
-def test_readme_documents_strict_epsilon_boundary():
-    readme = README_PATH.read_text(encoding='utf-8')
-    assert '相对速度严格小于 `relative_speed_epsilon`' in readme
-    assert '相对速度小于或等于 `relative_speed_epsilon`' not in readme
+def test_message_and_config_document_strict_epsilon_boundary():
+    report = (MESSAGE_ROOT / 'SituationReport.msg').read_text(encoding='utf-8')
+    config = yaml.safe_load(CONFIG_PATH.read_text(encoding='utf-8'))
+    assert 'at or above\n# the configured tolerance' in report
+    assert config['/**']['ros__parameters']['relative_speed_epsilon'] == 1.0e-6
 
 
 def _message(stamp_sec=0, stamp_nanosec=0):
