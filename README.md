@@ -69,6 +69,15 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
   - `launch/ts_subsystem_launch.py`：启动 `ts_state_manager`、`avoidance_point_node`、`barrier_node`。
 - 注意：该包在 Humble 分支不是完整仿真 bringup 包，不包含 Gazebo worlds/models/scripts/RViz 资源。
 
+### 10) `nav2_maritime_situation_msgs`
+- 作用：定义独立的海事态势输出接口 `SituationReport` 和 `SituationReportArray`。
+- 单船报告包含目标 UUID、`cpa_valid`、DCPA、TCPA、会遇类型和风险等级；数组消息使用 `Header` 标识统一评估坐标系和时间。
+
+### 11) `nav2_maritime_situation_monitor`
+- 作用：订阅 `/tracked_ship` (`nav2_colregs_msgs/TrackedShipList`) 和 `/odom` (`nav_msgs/Odometry`)，在 ENU 平面计算所有有效目标的 CPA、风险等级和 COLREGS 会遇类型，并发布 `/maritime_situation` (`nav2_maritime_situation_msgs/SituationReportArray`)。
+- 输出仅用于态势展示、记录和上层决策输入，不发送速度、路径或其他控制命令，也不加入 Nav2 lifecycle manager。
+- 该包提供独立参数文件和 launch，不启动或 include Nav2 bringup、TS subsystem 或 lifecycle manager。
+
 ## 二、Humble 移植状态
 
 ### 已移植并在 Humble apt 环境 build 验证
@@ -171,6 +180,28 @@ ros2 launch nav2_colregs_bringup ts_subsystem_launch.py
 
 `ts_subsystem_launch.py` 暴露 `tracked_ship_topic`、`robot_base_frame`、`odom_topic` 作为便捷参数，只作用于 TS subsystem 进程。TSProjectionLayer 是 Nav2 costmap 插件，不由该 launch 启动；如果需要改目标船 topic，必须同步修改传给 Nav2 的 params 文件中 local/global `ts_projection_layer.tracked_ship_topic`。
 
+### 海事态势监控器
+
+监控器可独立启动，不要求 Nav2 lifecycle 或 TS subsystem launch：
+
+```bash
+ros2 launch nav2_maritime_situation_monitor maritime_situation_monitor.launch.py
+```
+
+launch 参数为 `params_file`、`use_sim_time` 和可选 `namespace`（默认为空）。默认接口为输入 `/tracked_ship`、`/odom`，输出 `/maritime_situation`；可在 `config/maritime_situation_monitor.yaml` 中修改。节点只发布信息性态势报告，不控制本船。
+
+`cpa_valid` 表示 DCPA/TCPA 是否由有效的非零相对速度预测得到。当相对速度严格小于 `relative_speed_epsilon`（默认 `1e-6 m/s`）时，CPA 预测退化：`cpa_valid=false`、`tcpa=0.0`、`dcpa` 为当前距离，并强制报告 `RISK_SAFE`。消费者必须先检查 `cpa_valid`，不得把该 `tcpa` 当作有效预测时间。
+
+默认风险阈值（DCPA 单位 m，TCPA 单位 s）为：
+
+| 等级 | DCPA | TCPA |
+|---|---:|---:|
+| INFO | 30.0 | 120.0 |
+| WARNING | 20.0 | 30.0 |
+| CRITICAL | 10.0 | 10.0 |
+
+默认会遇分类阈值为：船首相遇方位 `6.0 deg`、反向航向容差 `15.0 deg`、追越船尾扇区 `112.5 deg`，航向速度下限为 `0.05 m/s`。输入超时默认值为目标船 `3.0 s`、本船里程计 `1.0 s`，TF 等待上限为 `0.2 s`，发布频率为 `0.5 Hz`。
+
 ### 参数文件状态
 
 - `nav2_colregs_params_humble_minimal.yaml`：Humble 当前推荐配置片段，引用的 COLREGS 插件均已移植并 build 验证。
@@ -232,4 +263,8 @@ nav2_colregs_alos_controller/
   include/ src/ alos_controller_plugin.xml
 nav2_colregs_bringup/
   params/ behavior_trees/ launch/
+nav2_maritime_situation_msgs/
+  msg/
+nav2_maritime_situation_monitor/
+  config/ launch/ nav2_maritime_situation_monitor/ test/
 ```
