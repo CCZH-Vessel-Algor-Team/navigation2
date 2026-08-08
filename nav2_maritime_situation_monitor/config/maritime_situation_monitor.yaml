@@ -1,0 +1,22 @@
+/**:
+  ros__parameters:
+    publish_frequency: 0.5
+    tracked_ship_topic: /tracked_ship
+    odom_topic: /odom
+    output_topic: /maritime_situation
+    global_frame: map
+    base_frame: base_link
+    target_timeout: 3.0
+    ownship_timeout: 1.0
+    transform_timeout: 0.2
+    relative_speed_epsilon: 1.0e-6
+    course_speed_epsilon: 0.05
+    info_dcpa_threshold: 30.0
+    info_tcpa_threshold: 120.0
+    warning_dcpa_threshold: 20.0
+    warning_tcpa_threshold: 30.0
+    critical_dcpa_threshold: 10.0
+    critical_tcpa_threshold: 10.0
+    head_on_bearing_threshold_deg: 6.0
+    reciprocal_heading_tolerance_deg: 15.0
+    overtaking_stern_sector_deg: 112.5
