@@ -18,6 +18,8 @@
   <depend>nav2_regulated_pure_pursuit_controller</depend>
   <depend>pluginlib</depend>
 
+  <test_depend>ament_cmake_gtest</test_depend>
+
   <export>
     <build_type>ament_cmake</build_type>
     <nav2_core plugin="${prefix}/alos_controller_plugin.xml" />

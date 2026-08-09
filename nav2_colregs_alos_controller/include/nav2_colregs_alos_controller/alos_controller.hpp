@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -65,7 +66,7 @@ public:
 
   /**
    * @brief Delegate the incoming global plan to internal PathHandler.
-   *        Resets the sideslip estimate if configured.
+   *        Resets the sideslip estimate for a new goal if configured.
    */
   void setPlan(const nav_msgs::msg::Path & path) override;
 
@@ -102,6 +103,8 @@ protected:
     bool is_goal_point,
     double dist_to_goal);
 
+  bool updateGoalAndCheckIfNew(const nav_msgs::msg::Path & path);
+
   mutable std::mutex mutex_;
   rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
@@ -126,7 +129,10 @@ protected:
   double gamma_{0.0006};
   double beta_hat0_{0.0};
   double beta_hat_{0.0};
-  bool reset_beta_on_new_path_{true};
+  bool reset_beta_on_new_goal_{true};
+  double beta_reset_goal_dist_tolerance_{0.05};
+  std::optional<geometry_msgs::msg::Point> previous_goal_position_;
+  std::string previous_goal_frame_;
   double max_robot_pose_search_dist_{10.0};
   double goal_dist_tol_{0.25};
   double control_duration_{0.05};

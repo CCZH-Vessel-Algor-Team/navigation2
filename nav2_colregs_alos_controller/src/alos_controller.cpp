@@ -53,7 +53,9 @@ void ALOSController::configure(
   nav2_util::declare_parameter_if_not_declared(
     node, plugin_name_ + ".beta_hat0", rclcpp::ParameterValue(0.0));
   nav2_util::declare_parameter_if_not_declared(
-    node, plugin_name_ + ".reset_beta_on_new_path", rclcpp::ParameterValue(true));
+    node, plugin_name_ + ".reset_beta_on_new_goal", rclcpp::ParameterValue(true));
+  nav2_util::declare_parameter_if_not_declared(
+    node, plugin_name_ + ".beta_reset_goal_dist_tolerance", rclcpp::ParameterValue(0.05));
   nav2_util::declare_parameter_if_not_declared(
     node, plugin_name_ + ".max_angle_for_motion", rclcpp::ParameterValue(0.3));
   nav2_util::declare_parameter_if_not_declared(
@@ -68,13 +70,17 @@ void ALOSController::configure(
   node->get_parameter(plugin_name_ + ".forward_dist", forward_dist_);
   node->get_parameter(plugin_name_ + ".gamma", gamma_);
   node->get_parameter(plugin_name_ + ".beta_hat0", beta_hat0_);
-  node->get_parameter(plugin_name_ + ".reset_beta_on_new_path", reset_beta_on_new_path_);
+  node->get_parameter(plugin_name_ + ".reset_beta_on_new_goal", reset_beta_on_new_goal_);
+  node->get_parameter(
+    plugin_name_ + ".beta_reset_goal_dist_tolerance", beta_reset_goal_dist_tolerance_);
   node->get_parameter(plugin_name_ + ".max_angle_for_motion", max_angle_for_motion_);
   node->get_parameter(plugin_name_ + ".max_robot_pose_search_dist",
                       max_robot_pose_search_dist_);
   node->get_parameter(plugin_name_ + ".debug_log_enabled", debug_log_enabled_);
 
   beta_hat_ = beta_hat0_;
+  previous_goal_position_.reset();
+  previous_goal_frame_.clear();
 
   double controller_frequency = 20.0;
   node->get_parameter("controller_frequency", controller_frequency);
@@ -103,6 +109,8 @@ void ALOSController::cleanup()
   closest_pub_.reset();
   plan_pub_.reset();
   path_handler_.reset();
+  previous_goal_position_.reset();
+  previous_goal_frame_.clear();
   collision_checker_.reset();
 }
 
@@ -124,10 +132,44 @@ void ALOSController::deactivate()
 
 void ALOSController::setPlan(const nav_msgs::msg::Path & path)
 {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (path.poses.empty()) {
+    return;
+  }
+
+  const bool is_new_goal = updateGoalAndCheckIfNew(path);
   path_handler_->setPlan(path);
-  if (reset_beta_on_new_path_) {
+  if (reset_beta_on_new_goal_ && is_new_goal) {
     beta_hat_ = beta_hat0_;
   }
+}
+
+bool ALOSController::updateGoalAndCheckIfNew(const nav_msgs::msg::Path & path)
+{
+  if (path.poses.empty()) {
+    return false;
+  }
+
+  const auto & goal_position = path.poses.back().pose.position;
+  if (!previous_goal_position_) {
+    previous_goal_position_ = goal_position;
+    previous_goal_frame_ = path.header.frame_id;
+    return false;
+  }
+
+  const bool frame_changed = previous_goal_frame_ != path.header.frame_id;
+  const double goal_displacement = std::hypot(
+    goal_position.x - previous_goal_position_->x,
+    goal_position.y - previous_goal_position_->y);
+  const bool is_new_goal =
+    frame_changed || goal_displacement > beta_reset_goal_dist_tolerance_;
+
+  if (is_new_goal) {
+    previous_goal_position_ = goal_position;
+    previous_goal_frame_ = path.header.frame_id;
+  }
+  return is_new_goal;
 }
 
 void ALOSController::setSpeedLimit(const double & speed_limit, const bool & percentage)

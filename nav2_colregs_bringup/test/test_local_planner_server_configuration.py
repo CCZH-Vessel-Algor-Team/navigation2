@@ -48,6 +48,11 @@ def test_projection_validation_parameters_select_demo_tree_and_keep_fallback():
         'action_server_result_timeout': 10.0,
     }
 
+    follow_path_params = params['controller_server']['ros__parameters']['FollowPath']
+    assert follow_path_params['reset_beta_on_new_goal'] is True
+    assert follow_path_params['beta_reset_goal_dist_tolerance'] == 0.05
+    assert 'reset_beta_on_new_path' not in follow_path_params
+
     behavior_params = params['behavior_server']['ros__parameters']
     assert 'create_local_path' in behavior_params['behavior_plugins']
     assert behavior_params['create_local_path']['plugin'] == (
