@@ -40,4 +40,12 @@ install(TARGETS nav2_colregs_alos_controller
 install(DIRECTORY include/ DESTINATION include/)
 install(FILES alos_controller_plugin.xml DESTINATION share/${PROJECT_NAME})
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_alos_controller test/test_alos_controller.cpp)
+  target_link_libraries(test_alos_controller nav2_colregs_alos_controller)
+  ament_target_dependencies(test_alos_controller ${dependencies})
+endif()
+
 ament_package()

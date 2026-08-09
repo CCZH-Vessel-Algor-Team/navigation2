@@ -54,7 +54,7 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
 ### 8) `nav2_colregs_alos_controller`
 - 作用：Adaptive LOS（ALOS）制导 Controller 插件，在 LOS 基础上加入侧滑角自适应估计。
 - 算法：基于 Fossen (2023)，找最近点和前推点，计算路径切线角、侧偏和自适应侧滑估计，输出目标航向和速度指令。
-- 关键参数：`forward_dist`, `gamma`, `beta_hat0`, `reset_beta_on_new_path`。
+- 关键参数：`forward_dist`, `gamma`, `beta_hat0`, `reset_beta_on_new_goal`, `beta_reset_goal_dist_tolerance`。
 - Humble 适配：移除 Jazzy RPP `PathHandler` 依赖，使用 Humble RPP 风格的路径变换逻辑。
 - 注意：`/lookahead_point` 和 `/closest_point` 是原始全局路径上的调试/可视化点。COLREGS/ALOS 修正只作用于速度指令输出。
 
