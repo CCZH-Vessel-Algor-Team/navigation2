@@ -56,6 +56,14 @@ install(FILES rrt_star_planner.xml
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_rrt_star test/test_rrt_star.cpp)
+  target_link_libraries(test_rrt_star ${library_name})
+  ament_target_dependencies(test_rrt_star nav2_costmap_2d)
+endif()
+
 ament_export_include_directories(include)
 ament_export_libraries(${library_name})
 ament_export_dependencies(${dependencies})

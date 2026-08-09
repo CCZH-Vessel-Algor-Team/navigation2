@@ -3,6 +3,8 @@
 本仓库基于 `jazzy` 主干，新增了面向 COLREGS 场景的独立功能包与启动入口。
 核心扩展：目标船（TS）仿真、TSProjectionLayer 代价图层、TS State Manager（CPA/TCPA）、LOS/ALOS 制导控制器、自定义 Behavior 插件。
 
+RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值前均以请求目标的精确 x/y 坐标结束。
+
 ## 一、相对官方新增的包
 
 ### 1) `nav2_colregs_msgs`
