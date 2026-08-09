@@ -20,11 +20,13 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
 
 ### 2) `nav2_rrt_star_planner`
 - 作用：RRT* 全局规划器插件。
+- 路径端点：成功规划（包括近似回退）在裁剪和插值前均以请求目标的精确 x/y 坐标结束。
 - Humble 适配：使用 Humble `nav2_core::GlobalPlanner::createPlan(start, goal)` 接口，不使用 Jazzy `cancel_checker` 参数。
 
 ### 3) `nav2_colregs_vo_rrt_star_planner`
 - 作用：COLREGS VO-RRT* 全局规划器插件。
 - 特点：在 RRT* 基础上接入目标船状态/速度障碍逻辑，用于生成符合 COLREGS 约束的候选路径。
+- 路径端点：成功规划（包括近似回退）在 barrier-aware 裁剪和插值前均以请求目标的精确 x/y 坐标结束。
 - Humble 适配：同样使用 Humble two-argument planner API，并使用 Humble `nav2_core::PlannerException`。
 
 ### 4) `nav2_colregs_costmap_layers`

@@ -164,6 +164,18 @@ bool RRTStar::planPath(
     }
   }
 
+  const auto & selected_node = tree_[best_goal_node_idx_];
+  if (selected_node.x != goal_x || selected_node.y != goal_y) {
+    RRTStarNode goal_node;
+    goal_node.x = goal_x;
+    goal_node.y = goal_y;
+    goal_node.parent_idx = best_goal_node_idx_;
+    goal_node.cost_from_root = selected_node.cost_from_root +
+      edgeCost(selected_node.x, selected_node.y, goal_x, goal_y, costmap);
+    best_goal_node_idx_ = static_cast<int>(tree_.size());
+    tree_.push_back(goal_node);
+  }
+
   // Extract path by walking parent pointers.
   path_nodes.clear();
   int idx = best_goal_node_idx_;
