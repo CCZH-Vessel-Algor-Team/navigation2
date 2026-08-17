@@ -10,6 +10,9 @@ namespace nav2_colregs_ts_manager
 AvoidancePointNode::AvoidancePointNode()
 : rclcpp::Node("avoidance_point_node")
 {
+  declare_parameter("os_radius", 5.0);
+  declare_parameter("safety_factor", 1.5);
+
   ts_list_sub_ = create_subscription<nav2_colregs_msgs::msg::ProcessedTSList>(
     "processed_ts_list", rclcpp::SystemDefaultsQoS(),
     std::bind(&AvoidancePointNode::tsListCallback, this, std::placeholders::_1));
@@ -73,9 +76,11 @@ void AvoidancePointNode::handleService(
   double ts_x = ts.pose.position.x;
   double ts_y = ts.pose.position.y;
   double dist = std::hypot(ts_x - os_x, ts_y - os_y);
+  double safe_dist = dist + (ts.radius + get_parameter("os_radius").as_double())
+                           * get_parameter("safety_factor").as_double();
 
-  response->point.x = os_x + dist * std::cos(safe_heading);
-  response->point.y = os_y + dist * std::sin(safe_heading);
+  response->point.x = os_x + safe_dist * std::cos(safe_heading);
+  response->point.y = os_y + safe_dist * std::sin(safe_heading);
   response->point.z = 0.0;
   response->safe_heading = safe_heading;
   response->has_feasible_angle = true;
