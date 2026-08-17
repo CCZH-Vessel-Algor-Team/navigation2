@@ -71,7 +71,7 @@ private:
   bool loadAndValidateParameters();
   void computePlan();
   void abortGoal(
-    const std::shared_ptr<Action::Result> & result, uint16_t error_code,
+    const std::shared_ptr<Action::Result> & result,
     const std::string & message);
   nav_msgs::msg::Path makePath(
     const std::vector<RRTStarNode> & nodes,
