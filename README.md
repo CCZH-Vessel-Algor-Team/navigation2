@@ -72,10 +72,12 @@ RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值�
 - 生命周期节点：`/colregs_local_planner_server`。
 - 标准 Action：`/compute_path_to_pose`（`nav2_msgs/action/ComputePathToPose`）；成功路径发布到 `/plan`。
 - Server 内部持有固定 `map` 坐标系、非滚动的 `/colregs_costmap`，不由 Lifecycle Manager 单独管理。
-- Server 同时编排 `colregs_ts_state` TS 状态子节点（独立 NodeThread，lifecycle 顺序固定为 costmap → TS），阶段 1 仅运行 markers 与快照服务，不参与规划决策。
-- 每次请求在 costmap mutex 内深拷贝快照，释放锁后对静态快照执行确定性基础 RRT*；接受空 `planner_id` 或 `RRTStar`。
+- Server 同时编排 `colregs_ts_state` TS 状态子节点（独立 NodeThread，lifecycle 顺序固定为 costmap → TS）。
+- 每次请求在 costmap mutex 内深拷贝快照，释放锁后对静态快照执行确定性 RRT*；接受空 `planner_id` 或 `RRTStar`。
 - pruning 后的 RRT* raw nodes 按 `colregs_costmap` resolution 稠密插值，再保留精确 start/goal pose 后发布，避免 Controller 直接消费稀疏树节点。
-- BT 以 `1 Hz` 重新规划，`FollowPath` 直接消费 `{path}`。移动 TS 只通过 TSProjectionLayer 进入每次快照；当前算法没有 CPA/TCPA、相遇类型、VO 或 COLREGS 规则约束，因此不能宣称动态 COLREGS 合规。
+- 阶段 3 已接入 VO-RRT 语义：每次请求经 `getTsPlanningInput` 取一致快照并做 `processTs`/`evaluateColregs` 决策；存在威胁且安全航向可行时执行两段式规划（start→避让点确定性段不做碰撞检查 + 避让点→goal 的 RRT*，barrier 线段进入 RRT* 碰撞判定），决策不激活或 OS 速度不可用时回退纯 RRT*；两段式 RRT* 段失败直接报错。`avoid_direction` 参数化（默认 `right`，即向右/starboard 过）。
+- BT 以 `1 Hz` 重新规划，`FollowPath` 直接消费 `{path}`。当前实现为静态快照 + 决策几何约束，不含 encounter 分类与航行规则推理，不能宣称完整 COLREGS 合规。
+- 已知限制：避让点若落在 costmap 膨胀区或图外，两段式将报 `NO_VALID_PATH`（不回退，沿用 VO-RRT 语义）；调参需保证避让距离与膨胀半径兼容。
 
 ### 11) `nav2_maritime_situation_msgs`
 - 作用：定义独立的海事态势接口 `SituationReport` 和 `SituationReportArray`。

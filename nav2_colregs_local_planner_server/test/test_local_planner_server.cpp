@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <limits>
@@ -24,6 +25,7 @@
 #include "gtest/gtest.h"
 #include "lifecycle_msgs/msg/state.hpp"
 #include "nav2_colregs_local_planner_server/local_planner_server.hpp"
+#include "nav2_colregs_ts_manager/ts_core.hpp"
 #include "nav2_costmap_2d/cost_values.hpp"
 #include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -46,9 +48,19 @@ public:
   {
     return ts_state_ros_->get_current_state();
   }
+  const nav2_colregs_ts_manager::TsCoreParams & tsCoreParams() const
+  {
+    return ts_state_ros_->coreParams();
+  }
   void setCurrent(bool current) {current_ = current;}
   void setRobotPoseAvailable(bool available) {robot_pose_available_ = available;}
   void setTransformAvailable(bool available) {transform_available_ = available;}
+  void setInjectedTsInput(
+    const nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput & input)
+  {
+    injected_ts_input_ = input;
+    use_injected_ts_input_ = true;
+  }
   void blockNextTransform()
   {
     std::lock_guard<std::mutex> lock(transform_mutex_);
@@ -74,6 +86,15 @@ public:
 
 protected:
   bool isCostmapCurrent() const override {return current_;}
+
+  nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput getTsPlanningInput(
+    double os_x, double os_y) override
+  {
+    if (use_injected_ts_input_) {
+      return injected_ts_input_;
+    }
+    return ColregsLocalPlannerServer::getTsPlanningInput(os_x, os_y);
+  }
 
   bool getRobotPose(geometry_msgs::msg::PoseStamped & pose) const override
   {
@@ -121,6 +142,8 @@ private:
   bool current_{true};
   bool robot_pose_available_{true};
   bool transform_available_{true};
+  bool use_injected_ts_input_{false};
+  nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput injected_ts_input_;
   mutable std::mutex transform_mutex_;
   mutable std::condition_variable transform_condition_;
   mutable bool block_transform_{false};
@@ -604,6 +627,104 @@ TEST_F(LocalPlannerServerTest, nonMapCostmapFrameFailsConfiguration)
   EXPECT_EQ(server->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
   EXPECT_EQ(server->costmap(), nullptr);
   server->shutdown();
+}
+
+namespace
+{
+
+nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput headOnThreatInput(
+  bool velocity_valid = true, double ts_x = 5.0)
+{
+  nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput input;
+  input.ts.stamp = rclcpp::Time(100, 0);
+  nav2_colregs_ts_manager::RawTsEntry entry;
+  entry.target_id = "head-on";
+  entry.x = ts_x;
+  entry.y = 1.0;
+  entry.vx = -1.0;
+  entry.vy = 0.0;
+  entry.radius = 0.3;
+  entry.last_seen = rclcpp::Time(100, 0);
+  input.ts.ships.push_back(entry);
+  input.os.x = 1.0;
+  input.os.y = 1.0;
+  input.os.vx = velocity_valid ? 1.0 : 0.0;
+  input.os.vy = 0.0;
+  input.os.velocity_valid = velocity_valid;
+  return input;
+}
+
+}  // namespace
+
+TEST_F(LocalPlannerServerTest, activeThreatProducesTwoSegmentPathThroughAvoidancePoint)
+{
+  server_->set_parameter(rclcpp::Parameter("prune_path", false));
+  activate();
+  server_->setInjectedTsInput(headOnThreatInput());
+
+  const auto goal = makeGoal();
+  const auto result = runGoal(goal);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_NE(result.result, nullptr);
+  const auto & path = result.result->path.poses;
+  ASSERT_GT(path.size(), 2u);
+  EXPECT_EQ(path.front().pose, goal.start.pose);
+  EXPECT_EQ(path.back().pose, goal.goal.pose);
+
+  // Reproduce the server-side pure evaluation and verify the path passes
+  // exactly through the avoidance point (raw nodes, pruning disabled).
+  const auto input = headOnThreatInput();
+  const auto & params = server_->tsCoreParams();
+  const auto snapshot = processTs(input.ts, input.os, params);
+  const auto decision = evaluateColregs(
+    snapshot, input.os, goal.goal.pose.position.x, goal.goal.pose.position.y,
+    "right", params);
+  ASSERT_TRUE(decision.active);
+  bool found_avoidance_point = false;
+  for (const auto & pose : path) {
+    if (std::abs(pose.pose.position.x - decision.avoidance_point.x) < 1e-9 &&
+      std::abs(pose.pose.position.y - decision.avoidance_point.y) < 1e-9)
+    {
+      found_avoidance_point = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found_avoidance_point);
+}
+
+TEST_F(LocalPlannerServerTest, inescapableThreatFallsBackToDirectPath)
+{
+  activate();
+  // Distance 0.2 <= os_radius + ts_radius = 0.6 → inescapable cone [[0, 2π]].
+  server_->setInjectedTsInput(headOnThreatInput(true, 1.2));
+
+  const auto goal = makeGoal();
+  const auto result = runGoal(goal);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_NE(result.result, nullptr);
+  ASSERT_GT(result.result->path.poses.size(), 1u);
+  EXPECT_EQ(result.result->path.poses.front().pose, goal.start.pose);
+  EXPECT_EQ(result.result->path.poses.back().pose, goal.goal.pose);
+}
+
+TEST_F(LocalPlannerServerTest, invalidOsVelocityFallsBackToDirectPath)
+{
+  activate();
+  server_->setInjectedTsInput(headOnThreatInput(false));
+
+  const auto goal = makeGoal();
+  const auto result = runGoal(goal);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_NE(result.result, nullptr);
+  ASSERT_GT(result.result->path.poses.size(), 1u);
+  EXPECT_EQ(result.result->path.poses.front().pose, goal.start.pose);
+  EXPECT_EQ(result.result->path.poses.back().pose, goal.goal.pose);
+}
+
+TEST_F(LocalPlannerServerTest, invalidAvoidDirectionFailsConfiguration)
+{
+  server_->set_parameter(rclcpp::Parameter("avoid_direction", "up"));
+  EXPECT_EQ(server_->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
 }
 
 }  // namespace nav2_colregs_local_planner_server

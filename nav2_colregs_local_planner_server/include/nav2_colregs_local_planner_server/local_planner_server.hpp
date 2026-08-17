@@ -59,6 +59,8 @@ protected:
   virtual bool transformPoseToGlobalFrame(
     const geometry_msgs::msg::PoseStamped & input,
     geometry_msgs::msg::PoseStamped & output) const;
+  virtual nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput getTsPlanningInput(
+    double os_x, double os_y);
 
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
   nav2_costmap_2d::Costmap2D * costmap_{nullptr};
@@ -86,6 +88,7 @@ private:
   double action_server_result_timeout_{10.0};
   double costmap_update_timeout_{1.0};
   double max_planning_time_{0.8};
+  std::string avoid_direction_{"right"};
 };
 
 }  // namespace nav2_colregs_local_planner_server

@@ -154,6 +154,7 @@ def test_projection_validation_parameters_route_to_rrt_star_server():
         'eta': 1.1,
         'random_seed': 42,
         'prune_path': True,
+        'avoid_direction': 'right',
     }
 
     follow_path_params = params['controller_server']['ros__parameters']['FollowPath']
@@ -419,9 +420,9 @@ def test_local_planner_server_interrupts_for_cancel_or_preemption_before_publica
 
     compute_plan = source[source.index('void ColregsLocalPlannerServer::computePlan()'):]
     first_cancel = compute_plan.index('if (current_canceled())')
-    plan = compute_plan.index('const auto status = planner.planPath(')
+    plan = compute_plan.index('status = planner.planPath(')
     interruption_callback = compute_plan.index(
-        'snapshot, interrupted, planning_deadline, nodes);', plan
+        'interrupted, planning_deadline,', plan
     )
     success_gate = compute_plan.index(
         'if (status != PlanStatus::SUCCESS || nodes.empty())', plan
