@@ -42,6 +42,10 @@ public:
 
   nav2_costmap_2d::Costmap2D * costmap() {return costmap_;}
   std::string costmapName() const {return costmap_ros_->getName();}
+  rclcpp_lifecycle::State tsStateNodeState() const
+  {
+    return ts_state_ros_->get_current_state();
+  }
   void setCurrent(bool current) {current_ = current;}
   void setRobotPoseAvailable(bool available) {robot_pose_available_ = available;}
   void setTransformAvailable(bool available) {transform_available_ = available;}
@@ -291,6 +295,29 @@ TEST_F(LocalPlannerServerTest, lifecycleOwnsActionAndCostmap)
   ASSERT_EQ(server_->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
   ASSERT_EQ(server_->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
   EXPECT_EQ(server_->costmap(), nullptr);
+}
+
+TEST_F(LocalPlannerServerTest, lifecycleOrchestratesTsStateSubNode)
+{
+  EXPECT_EQ(
+    server_->tsStateNodeState().id(),
+    lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  configure();
+  EXPECT_EQ(
+    server_->tsStateNodeState().id(),
+    lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(server_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  EXPECT_EQ(
+    server_->tsStateNodeState().id(),
+    lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  ASSERT_EQ(server_->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  EXPECT_EQ(
+    server_->tsStateNodeState().id(),
+    lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  ASSERT_EQ(server_->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_EQ(
+    server_->tsStateNodeState().id(),
+    lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
 }
 
 TEST_F(LocalPlannerServerTest, acceptsEmptyAndRrtStarPlannerIds)

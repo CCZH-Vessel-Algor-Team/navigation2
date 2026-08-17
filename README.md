@@ -42,40 +42,46 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
 - 注意：包已移植并可 build，但 Humble 分支尚未恢复 Jazzy 的完整 keepout/vector-object validation launch 链路。
 
 ### 6) `nav2_colregs_ts_manager`
-- 作用：TS 状态管理节点（LifecycleNode）。订阅 `/tracked_ship`（`TrackedShipList`）和 `/odom`，逐 `target_id` 维护多 TS 状态，计算 CPA/TCPA，发布 `/processed_ts_list` topic。
-- TS 位姿通过 TF 从消息 `frame_id` 变换到 `global_frame`（通常为 `map`），确保多坐标系兼容。
-- 与 `TSProjectionLayer` 配合：前者判断 TS 是否危险，后者将 TS 位姿画入 costmap。
+- 作用（阶段 2 起）：TS 状态计算库 + Server 托管的 TS 状态子节点。原三个独立节点（`ts_state_manager`、`avoidance_point_node`、`barrier_node`）与 `/processed_ts_list`、`/get_avoidance_point`、`/get_barrier_lines` 接口已内化删除。
+- 组成：`ts_core` 纯计算库（`processTs` 超时过滤 + CPA/TCPA + 碰撞锥；`evaluateColregs` 主威胁/安全航向/避让点/屏障线）与 `ColregsTsStateROS` 生命周期子节点（节点名 `colregs_ts_state`）。
+- `colregs_ts_state` 由 `colregs_local_planner_server` 持有编排（机制同 `colregs_costmap`），订阅 `/tracked_ship` 与 `/odom`，统一状态互斥锁维护 TS map，10 Hz timer 做超时剔除并发布 `/cpa_markers`（唯一对外接口）。
+- TS 位姿/速度经消息 frame→`global_frame` 变换旋转；TF 失败跳过该 TS。OS 速度由 odom body 分量旋转到 map frame，失败时 `velocity_valid=false` 降级。
 - 超时参数：`ts_timeout: 3.0`（自动清除失联船舶）。
 
-### 7) `nav2_colregs_los_controller`
+### 7) `nav2_colregs_local_planner_server`
+- 作用（阶段 2 新增）：生命周期管理的 RRT* 规划 server，替代标准 `planner_server` + RRT 插件链作为 COLREGS 规划入口。
+- 标准 Action：`/compute_path_to_pose`；成功路径发布到 `/plan`。
+- Server 自有 `colregs_costmap`（map-fixed 四层全局图），并编排 `colregs_ts_state` TS 子节点（lifecycle 顺序 costmap → TS）。
+- Humble 适配：`Costmap2DROS` 三参构造 + 参数注入 `use_sim_time`；`nav2_util::SimpleActionServer` 打入 goal 取消原子性补丁。
+- 阶段 2 尚不消费 TS 决策；阶段 3 在 `computePlan` 接入 `evaluateColregs` 与 barrier 通道。
+
+### 8) `nav2_colregs_los_controller`
 - 作用：最简 LOS 制导 Controller 插件。
 - 算法：沿路径找前视点，使用 `atan2` 计算目标艏向，再做角/线速度限制和 footprint 碰撞检测。
 - Humble 适配：移除 Jazzy RPP `PathHandler` 依赖，内部保存并变换/prune 全局路径。
 - 注意：`/lookahead_point` 发布的是原始全局路径上的前视点，仅做坐标变换，不包含 COLREGS 修正。
 
-### 8) `nav2_colregs_alos_controller`
+### 9) `nav2_colregs_alos_controller`
 - 作用：Adaptive LOS（ALOS）制导 Controller 插件，在 LOS 基础上加入侧滑角自适应估计。
 - 算法：基于 Fossen (2023)，找最近点和前推点，计算路径切线角、侧偏和自适应侧滑估计，输出目标航向和速度指令。
 - 关键参数：`forward_dist`, `gamma`, `beta_hat0`, `reset_beta_on_new_goal`, `beta_reset_goal_dist_tolerance`。
 - Humble 适配：移除 Jazzy RPP `PathHandler` 依赖，使用 Humble RPP 风格的路径变换逻辑。
 - 注意：`/lookahead_point` 和 `/closest_point` 是原始全局路径上的调试/可视化点。COLREGS/ALOS 修正只作用于速度指令输出。
 
-### 9) `nav2_colregs_bringup`
-- 作用：Humble 移植分支中保留参数、Behavior Tree XML 资源，以及不依赖 Gazebo 的 TS 子系统 launch。
+### 10) `nav2_colregs_bringup`
+- 作用：Humble 移植分支中保留参数与 Behavior Tree XML 资源。
 - 当前安装内容：
   - `params/`
   - `behavior_trees/`
-  - `launch/ts_subsystem_launch.py`
 - 重点文件：
-  - `params/nav2_colregs_params_humble_minimal.yaml`：Humble 插件接线示例，供合并到已有 Humble Nav2 params 使用。
-  - `launch/ts_subsystem_launch.py`：启动 `ts_state_manager`、`avoidance_point_node`、`barrier_node`。
-- 注意：该包在 Humble 分支不是完整仿真 bringup 包，不包含 Gazebo worlds/models/scripts/RViz 资源。
+  - `params/nav2_colregs_params_humble_minimal.yaml`：Humble 插件接线示例（含 `colregs_local_planner_server`、`colregs_costmap`、`colregs_ts_state` 段），供合并到已有 Humble Nav2 params 使用。
+- 注意：该包在 Humble 分支不是完整仿真 bringup 包，不包含 Gazebo worlds/models/scripts/RViz 资源；`ts_subsystem_launch.py` 已随阶段 2 的 TS 子系统内化而移除。
 
-### 10) `nav2_maritime_situation_msgs`
+### 11) `nav2_maritime_situation_msgs`
 - 作用：定义独立的海事态势输出接口 `SituationReport` 和 `SituationReportArray`。
 - 单船报告包含目标 UUID、`cpa_valid`、DCPA、TCPA、会遇类型和风险等级；数组消息使用 `Header` 标识统一评估坐标系和时间。
 
-### 11) `nav2_maritime_situation_monitor`
+### 12) `nav2_maritime_situation_monitor`
 - 作用：订阅 `/tracked_ship` (`nav2_colregs_msgs/TrackedShipList`) 和 `/odom` (`nav_msgs/Odometry`)，在 ENU 平面计算所有有效目标的 CPA、风险等级和 COLREGS 会遇类型，并发布 `/maritime_situation` (`nav2_maritime_situation_msgs/SituationReportArray`)。
 - 输出仅用于态势展示、记录和上层决策输入，不发送速度、路径或其他控制命令，也不加入 Nav2 lifecycle manager。
 - 该包提供独立参数文件和 launch，不启动或 include Nav2 bringup、TS subsystem 或 lifecycle manager。
@@ -91,7 +97,8 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
 - `nav2_colregs_vector_object_server`
 - `nav2_colregs_los_controller`
 - `nav2_colregs_alos_controller`
-- `nav2_colregs_bringup`（params + behavior tree XML + TS subsystem launch）
+- `nav2_colregs_local_planner_server`（阶段 2 新增：RRT* 规划 server + `colregs_ts_state` TS 子节点编排）
+- `nav2_colregs_bringup`（params + behavior tree XML）
 
 验证命令：
 
@@ -102,6 +109,7 @@ colcon build --symlink-install --packages-select \
   nav2_colregs_msgs \
   nav2_rrt_star_planner \
   nav2_colregs_ts_manager \
+  nav2_colregs_local_planner_server \
   nav2_colregs_vo_rrt_star_planner \
   nav2_colregs_costmap_layers \
   nav2_colregs_vector_object_server \
@@ -116,6 +124,14 @@ colcon build --symlink-install --packages-select \
 Summary: 9 packages finished
 ```
 
+### 阶段 2：TS 状态子系统集成（对应 Jazzy `feat/rrt-star-local-planner-server`）
+
+- `nav2_colregs_ts_manager` 重构为 `ts_core` 纯计算库（`processTs`/`evaluateColregs`）+ `ColregsTsStateROS` 生命周期子节点；旧三节点（`ts_state_manager`、`avoidance_point_node`、`barrier_node`）与 `ts_subsystem_launch.py` 已删除。
+- `/processed_ts_list`、`/get_avoidance_point`、`/get_barrier_lines` 已内化；唯一对外接口为 `/cpa_markers`（由 server 进程内 `colregs_ts_state` 子节点发布）。
+- `nav2_colregs_local_planner_server` 自带 `colregs_costmap` 并编排 `colregs_ts_state`（lifecycle 顺序 costmap → TS）；阶段 2 尚不消费 TS 决策（阶段 3 接线 VO-RRT 语义）。
+- Humble 适配：`Costmap2DROS` 使用三参构造并以参数注入 `use_sim_time`；`nav2_util::SimpleActionServer` 打入与 Jazzy 相同的 goal 取消原子性补丁。
+- 已知中间态：`VORRTStarPlanner` 依赖的 service 链随三节点删除而断开，运行时按其内置超时回退退化为纯 RRT*；阶段 3 将 VO 语义移入 `ColregsLocalPlannerServer` 后由 `evaluateColregs` 进程内接管。
+
 ### 暂未移植
 - 完整 Gazebo / 目标船仿真 launch 文件。
 - Gazebo worlds、models、bridge config、RViz 配置、地图和仿真脚本。
@@ -123,7 +139,7 @@ Summary: 9 packages finished
 - `nav2_colregs_local_path_behavior`。
 - `nav2_colregs_local_path_bt_nodes`。
 
-其中 `nav2_colregs_local_path_bt_nodes` 在 Jazzy 分支中主要用于 behavior-validation：从 blackboard 读取 `{path}`，调用 `CreateLocalPath` action，打印路径信息后透传为 `{local_path}`。它不是 Humble plugin MVP 的必要组件。
+其中 `nav2_colregs_local_path_bt_nodes` 在 Jazzy 分支中主要用于 behavior-validation：从 blackboard 读取 `{path}`，调用 `CreateLocalPath` action，打印路径信息后透传为 `{local_path}`。它不是 Humble plugin MVP 的必要组件。`CreateLocalPath` 诊断链在 Humble 分支明确不移植（与 `nav2_colregs_params_humble_minimal.yaml` 既有声明一致）。
 
 ### Humble API 适配点
 - Humble `nav2_core::GlobalPlanner::createPlan()` 不包含 Jazzy 的 `cancel_checker` 参数。
@@ -163,24 +179,14 @@ source install/setup.bash
 Humble 分支当前不提供完整 COLREGS 仿真 launch。推荐从已有 Humble Nav2 bringup/仿真配置开始，将 `nav2_colregs_bringup/params/nav2_colregs_params_humble_minimal.yaml` 中的片段合并到工作参数文件。
 
 最小接线包含：
-- `planner_server`：`RRTStar`、`VORRTStar` 插件配置。
+- `colregs_local_planner_server`：阶段 2 起的 COLREGS 规划入口（替代标准 `planner_server` + RRT 插件链；标准 `planner_server` 段可作为备用并存，但 VRX 会遇验证以 server 链路为准）。
+- `colregs_costmap`：server 自有全局 costmap（Static/Obstacle/TSProjection/Inflation 四层），显式配置 `tracked_ship_topic`。
+- `colregs_ts_state`：server 内 TS 状态子节点参数（CPA/TCPA、威胁判定、`/cpa_markers` 发布），显式配置 `tracked_ship_topic`、`robot_base_frame`、`odom_topic`。
 - `controller_server`：默认使用 `nav2_colregs_alos_controller::ALOSController`。
-- `local_costmap` / `global_costmap`：`nav2_colregs_costmap_layers::TSProjectionLayer`，显式配置 `tracked_ship_topic`。
-- `ts_state_manager`：CPA/TCPA 和威胁状态参数，显式配置 `tracked_ship_topic`、`robot_base_frame`、`odom_topic`。
+- `local_costmap`：`nav2_colregs_costmap_layers::TSProjectionLayer`，显式配置 `tracked_ship_topic`。
 - `bt_navigator`：保留默认 Humble Nav2 BT XML/plugin set，不使用 Jazzy `CreateLocalPath` 诊断 BT 节点。
 
-TS 子系统可单独启动：
-
-```bash
-ros2 launch nav2_colregs_bringup ts_subsystem_launch.py
-```
-
-该 launch 默认使用 `nav2_colregs_params_humble_minimal.yaml`，会启动：
-- `ts_state_manager`
-- `avoidance_point_node`
-- `barrier_node`
-
-`ts_subsystem_launch.py` 暴露 `tracked_ship_topic`、`robot_base_frame`、`odom_topic` 作为便捷参数，只作用于 TS subsystem 进程。TSProjectionLayer 是 Nav2 costmap 插件，不由该 launch 启动；如果需要改目标船 topic，必须同步修改传给 Nav2 的 params 文件中 local/global `ts_projection_layer.tracked_ship_topic`。
+TS 状态子系统无独立 launch：它随 `colregs_local_planner_server` 进程运行（`colregs_ts_state` 子节点），对外仅发布 `/cpa_markers`。`ts_subsystem_launch.py` 与三个独立 TS 节点已在阶段 2 移除；`VORRTStarPlanner` 的 service 链（`/get_avoidance_point`、`/get_barrier_lines`）随之断开，该插件运行时回退纯 RRT* 行为（见"已知中间态"）。
 
 ### 海事态势监控器
 

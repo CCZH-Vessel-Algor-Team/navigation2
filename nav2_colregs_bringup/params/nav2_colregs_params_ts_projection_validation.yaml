@@ -460,13 +460,17 @@ docking_server:
       simulation_step: 0.1
       dock_collision_threshold: 0.3
 
-ts_state_manager:
+# TS state sub-node owned by colregs_local_planner_server (Phase 2 port):
+# maintains the TS map, publishes /cpa_markers, and serves planning snapshots.
+colregs_ts_state:
   ros__parameters:
     frequency: 10.0
     ts_timeout: 3.0
     tcpa_horizon: 10.0
     safety_factor: 1.1
     os_radius: 0.3
+    barrier_ray_length: 999.0
     global_frame: "map"
     robot_base_frame: "base_link"
     odom_topic: "odom"
+    tracked_ship_topic: "/tracked_ship"
