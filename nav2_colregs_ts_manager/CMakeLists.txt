@@ -19,9 +19,15 @@ set(ts_core_library ts_core)
 set(ts_ros_library colregs_ts_state_ros)
 
 add_library(${ts_core_library} SHARED src/ts_core.cpp)
+target_include_directories(${ts_core_library} PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
 ament_target_dependencies(${ts_core_library} rclcpp geometry_msgs)
 
 add_library(${ts_ros_library} SHARED src/colregs_ts_state_ros.cpp)
+target_include_directories(${ts_ros_library} PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
 target_link_libraries(${ts_ros_library} ${ts_core_library})
 ament_target_dependencies(
   ${ts_ros_library}
