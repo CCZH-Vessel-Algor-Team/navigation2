@@ -230,7 +230,7 @@ void ColregsTsStateROS::odomCallback(nav_msgs::msg::Odometry::ConstSharedPtr msg
 }
 
 bool ColregsTsStateROS::getOsPoseAndVelocity(
-  double & os_x, double & os_y, double & os_vx, double & os_vy) const
+  double & os_x, double & os_y, double & os_vx, double & os_vy)
 {
   geometry_msgs::msg::PoseStamped os_pose;
   os_pose.header.frame_id = robot_base_frame_;
@@ -268,7 +268,7 @@ bool ColregsTsStateROS::getOsPoseAndVelocity(
 }
 
 ColregsTsStateROS::PlanningInput ColregsTsStateROS::getPlanningInput(
-  double os_x, double os_y) const
+  double os_x, double os_y)
 {
   PlanningInput input;
   {

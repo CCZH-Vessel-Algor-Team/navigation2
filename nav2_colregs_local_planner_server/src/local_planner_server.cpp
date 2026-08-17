@@ -241,11 +241,10 @@ bool ColregsLocalPlannerServer::transformPoseToGlobalFrame(
 }
 
 void ColregsLocalPlannerServer::abortGoal(
-  const std::shared_ptr<Action::Result> & result, uint16_t error_code,
+  const std::shared_ptr<Action::Result> & result,
   const std::string & message)
 {
-  result->error_code = error_code;
-  result->error_msg = message;
+  RCLCPP_WARN(get_logger(), "Aborting ComputePathToPose goal: %s", message.c_str());
   action_server_->terminate_current(result);
 }
 
@@ -335,31 +334,35 @@ void ColregsLocalPlannerServer::computePlan()
     auto result = std::make_shared<Action::Result>();
     const auto started = std::chrono::steady_clock::now();
     auto current_canceled = [this]() {
-      return action_server_->is_current_goal_cancel_requested();
-    };
+        return action_server_->is_cancel_requested();
+      };
     auto interrupted = [this]() {
-      action_server_->terminate_pending_goal_if_cancel_requested();
-      return action_server_->is_current_goal_cancel_requested() ||
-             action_server_->is_preempt_requested();
-    };
+        if (action_server_->is_cancel_requested() &&
+          action_server_->is_preempt_requested())
+        {
+          action_server_->terminate_pending_goal();
+        }
+        return action_server_->is_cancel_requested() ||
+               action_server_->is_preempt_requested();
+      };
 
-    action_server_->terminate_pending_goal_if_cancel_requested();
     if (current_canceled()) {
-      action_server_->terminate_current(result);
       if (action_server_->is_preempt_requested()) {
-        goal = action_server_->accept_pending_goal();
+        action_server_->terminate_pending_goal();
         continue;
       }
+      action_server_->terminate_current(result);
       return;
     }
     if (action_server_->is_preempt_requested()) {
+      action_server_->terminate_current(result);
       goal = action_server_->accept_pending_goal();
       continue;
     }
 
     try {
       if (!goal->planner_id.empty() && goal->planner_id != "RRTStar") {
-        abortGoal(result, Action::Result::INVALID_PLANNER, "Planner ID must be empty or RRTStar");
+        abortGoal(result, "Planner ID must be empty or RRTStar");
         return;
       }
 
@@ -371,7 +374,7 @@ void ColregsLocalPlannerServer::computePlan()
           break;
         }
         if (std::chrono::steady_clock::now() >= costmap_deadline) {
-          abortGoal(result, Action::Result::TIMEOUT, "Costmap timed out waiting for an update");
+          abortGoal(result, "Costmap timed out waiting for an update");
           return;
         }
         std::this_thread::sleep_for(10ms);
@@ -384,7 +387,7 @@ void ColregsLocalPlannerServer::computePlan()
       if (goal->use_start) {
         start = goal->start;
       } else if (!getRobotPose(start)) {
-        abortGoal(result, Action::Result::TF_ERROR, "Unable to obtain robot pose");
+        abortGoal(result, "Unable to obtain robot pose");
         return;
       }
       geometry_msgs::msg::PoseStamped transformed_start;
@@ -392,7 +395,7 @@ void ColregsLocalPlannerServer::computePlan()
       if (!transformPoseToGlobalFrame(start, transformed_start) ||
         !transformPoseToGlobalFrame(goal->goal, transformed_goal))
       {
-        abortGoal(result, Action::Result::TF_ERROR, "Unable to transform poses to costmap frame");
+        abortGoal(result, "Unable to transform poses to costmap frame");
         return;
       }
       if (!std::isfinite(transformed_start.pose.position.x) ||
@@ -400,9 +403,7 @@ void ColregsLocalPlannerServer::computePlan()
         !std::isfinite(transformed_goal.pose.position.x) ||
         !std::isfinite(transformed_goal.pose.position.y))
       {
-        abortGoal(
-          result, Action::Result::TF_ERROR,
-          "Transformed start or goal pose contains non-finite x/y coordinates");
+        abortGoal(result, "Transformed start or goal pose contains non-finite x/y coordinates");
         return;
       }
       if (interrupted()) {
@@ -422,26 +423,26 @@ void ColregsLocalPlannerServer::computePlan()
           transformed_start.pose.position.x, transformed_start.pose.position.y,
           start_mx, start_my))
       {
-        abortGoal(result, Action::Result::START_OUTSIDE_MAP, "Start pose is outside the costmap");
+        abortGoal(result, "Start pose is outside the costmap");
         return;
       }
       if (!snapshot.worldToMap(
           transformed_goal.pose.position.x, transformed_goal.pose.position.y,
           goal_mx, goal_my))
       {
-        abortGoal(result, Action::Result::GOAL_OUTSIDE_MAP, "Goal pose is outside the costmap");
+        abortGoal(result, "Goal pose is outside the costmap");
         return;
       }
       if (snapshot.getCost(start_mx, start_my) >=
         nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
       {
-        abortGoal(result, Action::Result::START_OCCUPIED, "Start pose is occupied");
+        abortGoal(result, "Start pose is occupied");
         return;
       }
       if (snapshot.getCost(goal_mx, goal_my) >=
         nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
       {
-        abortGoal(result, Action::Result::GOAL_OCCUPIED, "Goal pose is occupied");
+        abortGoal(result, "Goal pose is occupied");
         return;
       }
 
@@ -458,15 +459,15 @@ void ColregsLocalPlannerServer::computePlan()
         continue;
       }
       if (status == PlanStatus::TIMEOUT) {
-        abortGoal(result, Action::Result::TIMEOUT, "RRT* planning timed out");
+        abortGoal(result, "RRT* planning timed out");
         return;
       }
       if (status == PlanStatus::INVALID_INPUT) {
-        abortGoal(result, Action::Result::UNKNOWN, "RRT* rejected the planning input");
+        abortGoal(result, "RRT* rejected the planning input");
         return;
       }
       if (status != PlanStatus::SUCCESS || nodes.empty()) {
-        abortGoal(result, Action::Result::NO_VALID_PATH, "RRT* failed to find a valid path");
+        abortGoal(result, "RRT* failed to find a valid path");
         return;
       }
 
@@ -477,19 +478,17 @@ void ColregsLocalPlannerServer::computePlan()
         elapsed - seconds);
       result->planning_time.sec = static_cast<int32_t>(seconds.count());
       result->planning_time.nanosec = static_cast<uint32_t>(nanoseconds.count());
-      result->error_code = Action::Result::NONE;
-      result->error_msg.clear();
-      if (!action_server_->succeed_current_if_not_interrupted(
-          result, [this, &result]() {plan_publisher_->publish(result->path);}))
-      {
+      if (interrupted()) {
         continue;
       }
+      plan_publisher_->publish(result->path);
+      action_server_->succeeded_current(result);
       return;
     } catch (const std::exception & error) {
       if (interrupted()) {
         continue;
       }
-      abortGoal(result, Action::Result::UNKNOWN, error.what());
+      abortGoal(result, error.what());
       return;
     }
   }

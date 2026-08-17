@@ -250,13 +250,11 @@ protected:
     return goal_future.get();
   }
 
-  void expectError(const Action::Goal & goal, uint16_t error_code)
+  void expectError(const Action::Goal & goal)
   {
     const auto result = runGoal(goal);
     ASSERT_EQ(result.code, rclcpp_action::ResultCode::ABORTED);
     ASSERT_NE(result.result, nullptr);
-    EXPECT_EQ(result.result->error_code, error_code);
-    EXPECT_FALSE(result.result->error_msg.empty());
   }
 
   void occupy(double x, double y)
@@ -334,7 +332,7 @@ TEST_F(LocalPlannerServerTest, rejectsUnknownPlannerId)
   activate();
   auto goal = makeGoal();
   goal.planner_id = "GridBased";
-  expectError(goal, Action::Result::INVALID_PLANNER);
+  expectError(goal);
 }
 
 TEST_F(LocalPlannerServerTest, usesRobotPoseWhenUseStartIsFalse)
@@ -355,10 +353,10 @@ TEST_F(LocalPlannerServerTest, reportsTfErrorForMissingRobotPoseOrTransform)
   auto robot_goal = makeGoal();
   robot_goal.use_start = false;
   server_->setRobotPoseAvailable(false);
-  expectError(robot_goal, Action::Result::TF_ERROR);
+  expectError(robot_goal);
   server_->setRobotPoseAvailable(true);
   server_->setTransformAvailable(false);
-  expectError(makeGoal(), Action::Result::TF_ERROR);
+  expectError(makeGoal());
 }
 
 TEST_F(LocalPlannerServerTest, rejectsNonFiniteTransformedStartAndGoal)
@@ -366,11 +364,11 @@ TEST_F(LocalPlannerServerTest, rejectsNonFiniteTransformedStartAndGoal)
   activate();
   auto nan_start = makeGoal();
   nan_start.start.header.frame_id = "nan_transform";
-  expectError(nan_start, Action::Result::TF_ERROR);
+  expectError(nan_start);
 
   auto infinite_goal = makeGoal();
   infinite_goal.goal.header.frame_id = "inf_transform";
-  expectError(infinite_goal, Action::Result::TF_ERROR);
+  expectError(infinite_goal);
 }
 
 TEST_F(LocalPlannerServerTest, transformsStartAndGoalIntoMap)
@@ -392,22 +390,22 @@ TEST_F(LocalPlannerServerTest, transformsStartAndGoalIntoMap)
 TEST_F(LocalPlannerServerTest, reportsEndpointsOutsideMap)
 {
   activate();
-  expectError(makeGoal(-0.1, 2.0), Action::Result::START_OUTSIDE_MAP);
-  expectError(makeGoal(1.0, 10.0), Action::Result::GOAL_OUTSIDE_MAP);
+  expectError(makeGoal(-0.1, 2.0));
+  expectError(makeGoal(1.0, 10.0));
 }
 
 TEST_F(LocalPlannerServerTest, reportsOccupiedEndpoints)
 {
   activate();
   occupy(1.0, 1.0);
-  expectError(makeGoal(), Action::Result::START_OCCUPIED);
+  expectError(makeGoal());
   {
     std::lock_guard<nav2_costmap_2d::Costmap2D::mutex_t> lock(
       *server_->costmap()->getMutex());
     server_->costmap()->resetMap(0, 0, 100, 100);
   }
   occupy(8.0, 1.0);
-  expectError(makeGoal(), Action::Result::GOAL_OCCUPIED);
+  expectError(makeGoal());
 }
 
 TEST_F(LocalPlannerServerTest, reportsCostmapUpdateTimeout)
@@ -415,14 +413,14 @@ TEST_F(LocalPlannerServerTest, reportsCostmapUpdateTimeout)
   server_->set_parameter(rclcpp::Parameter("costmap_update_timeout", 0.02));
   activate();
   server_->setCurrent(false);
-  expectError(makeGoal(), Action::Result::TIMEOUT);
+  expectError(makeGoal());
 }
 
 TEST_F(LocalPlannerServerTest, reportsNoPathThroughSolidWall)
 {
   activate();
   addSolidWall();
-  expectError(makeGoal(1.0, 8.0), Action::Result::NO_VALID_PATH);
+  expectError(makeGoal(1.0, 8.0));
 }
 
 TEST_F(LocalPlannerServerTest, cancellationTerminatesAsCanceled)
@@ -445,7 +443,6 @@ TEST_F(LocalPlannerServerTest, cancellationTerminatesAsCanceled)
   const auto result = runResult(handle);
   EXPECT_EQ(result.code, rclcpp_action::ResultCode::CANCELED);
   ASSERT_NE(result.result, nullptr);
-  EXPECT_NE(result.result->error_code, Action::Result::NO_VALID_PATH);
 }
 
 TEST_F(LocalPlannerServerTest, preemptsLongPlanAndPublishesOnlyPendingGoalResult)
@@ -466,7 +463,6 @@ TEST_F(LocalPlannerServerTest, preemptsLongPlanAndPublishesOnlyPendingGoalResult
   const auto second_result = runResult(second_handle);
   EXPECT_EQ(first_result.code, rclcpp_action::ResultCode::ABORTED);
   ASSERT_NE(first_result.result, nullptr);
-  EXPECT_NE(first_result.result->error_code, Action::Result::NO_VALID_PATH);
   ASSERT_EQ(second_result.code, rclcpp_action::ResultCode::SUCCEEDED);
   ASSERT_NE(second_result.result, nullptr);
   ASSERT_FALSE(second_result.result->path.poses.empty());
@@ -576,7 +572,6 @@ TEST_F(LocalPlannerServerTest, preservesExactEndpointsAndPublishesSuccessfulPlan
     EXPECT_GT(spacing, 1e-9);
     EXPECT_LE(spacing, 0.101);
   }
-  EXPECT_EQ(result.result->error_code, Action::Result::NONE);
   EXPECT_LT(result.result->planning_time.nanosec, 1000000000u);
   const auto deadline = std::chrono::steady_clock::now() + 1s;
   while (!published_plan_ && std::chrono::steady_clock::now() < deadline) {

@@ -53,7 +53,7 @@ public:
   /// Single-lock consistent snapshot for one planning request. OS position
   /// comes from the planning start; velocity is the cached odometry body
   /// twist rotated into the global frame (velocity_valid=false on failure).
-  PlanningInput getPlanningInput(double os_x, double os_y) const;
+  PlanningInput getPlanningInput(double os_x, double os_y);
 
 protected:
   nav2_util::CallbackReturn on_configure(
@@ -73,7 +73,7 @@ private:
   void timerCallback();
 
   bool getOsPoseAndVelocity(
-    double & os_x, double & os_y, double & os_vx, double & os_vy) const;
+    double & os_x, double & os_y, double & os_vx, double & os_vy);
 
   mutable std::mutex state_mutex_;
   std::unordered_map<std::string, RawTsEntry> ts_map_;
