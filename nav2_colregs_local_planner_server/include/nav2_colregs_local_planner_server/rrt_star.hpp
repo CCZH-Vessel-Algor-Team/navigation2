@@ -21,6 +21,8 @@
 #include <random>
 #include <vector>
 
+#include "geometry_msgs/msg/point.hpp"
+
 namespace nav2_costmap_2d
 {
 class Costmap2D;
@@ -60,9 +62,14 @@ class RRTStar
 public:
   explicit RRTStar(const RRTStarParameters & parameters);
 
+  /// Plan from (start_x, start_y) to (goal_x, goal_y). Barriers are segment
+  /// constraints carried as consecutive point pairs (6 points = 3 segments,
+  /// matching the VO-RRT convention): any planned edge crossing a barrier
+  /// segment is rejected just like a costmap collision.
   PlanStatus planPath(
     double start_x, double start_y, double goal_x, double goal_y,
     const nav2_costmap_2d::Costmap2D & costmap,
+    const std::vector<geometry_msgs::msg::Point> & barriers,
     const std::function<bool()> & cancel_checker,
     const std::chrono::steady_clock::time_point & deadline,
     std::vector<RRTStarNode> & path);
@@ -73,6 +80,7 @@ private:
   bool parametersValid() const;
   bool checkInterrupted() const;
   bool boundedCeil(double value, int & result) const;
+  bool barrierFree(double x1, double y1, double x2, double y2) const;
   bool pointCollisionFree(
     double x, double y, const nav2_costmap_2d::Costmap2D & costmap) const;
   bool collisionFree(
@@ -97,6 +105,7 @@ private:
   std::mt19937 rng_;
   int iterations_executed_{0};
   const std::function<bool()> * cancel_checker_{nullptr};
+  const std::vector<geometry_msgs::msg::Point> * barriers_{nullptr};
   std::chrono::steady_clock::time_point deadline_;
   mutable bool interrupted_{false};
   mutable PlanStatus interruption_status_{PlanStatus::CANCELED};

@@ -55,6 +55,13 @@ public:
   /// twist rotated into the global frame (velocity_valid=false on failure).
   PlanningInput getPlanningInput(double os_x, double os_y);
 
+  /// CPA/cone/barrier parameters owned by this sub-node; the hosting server
+  /// uses them for the pure processTs/evaluateColregs evaluation.
+  const TsCoreParams & coreParams() const
+  {
+    return core_params_;
+  }
+
 protected:
   nav2_util::CallbackReturn on_configure(
     const rclcpp_lifecycle::State & state) override;

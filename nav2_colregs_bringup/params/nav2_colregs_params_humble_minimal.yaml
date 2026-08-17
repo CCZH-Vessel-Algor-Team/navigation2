@@ -136,6 +136,8 @@ colregs_local_planner_server:
     eta: 1.1
     random_seed: 42
     prune_path: true
+    # COLREGS passing side used by the TS decision (right = starboard).
+    avoid_direction: "right"
 
 colregs_costmap:
   colregs_costmap:

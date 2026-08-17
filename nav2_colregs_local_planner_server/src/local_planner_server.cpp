@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "lifecycle_msgs/msg/state.hpp"
+#include "nav2_colregs_ts_manager/ts_core.hpp"
 #include "nav2_costmap_2d/cost_values.hpp"
 #include "rcl_action/rcl_action.h"
 #include "tf2/LinearMath/Quaternion.h"
@@ -54,6 +55,7 @@ ColregsLocalPlannerServer::ColregsLocalPlannerServer(const rclcpp::NodeOptions &
   declare_parameter("eta", 1.1);
   declare_parameter("random_seed", 42);
   declare_parameter("prune_path", true);
+  declare_parameter("avoid_direction", "right");
 
   // Humble Costmap2DROS has no use_sim_time constructor argument; pass it as
   // a parameter before the costmap configures its clock-dependent pieces.
@@ -91,6 +93,7 @@ bool ColregsLocalPlannerServer::loadAndValidateParameters()
     get_parameter("eta").as_double(),
     static_cast<uint32_t>(random_seed),
     get_parameter("prune_path").as_bool()};
+  avoid_direction_ = get_parameter("avoid_direction").as_string();
 
   const bool integer_ranges_valid =
     max_iterations > 0 && max_iterations <= std::numeric_limits<int>::max() &&
@@ -109,6 +112,7 @@ bool ColregsLocalPlannerServer::loadAndValidateParameters()
     std::isfinite(planner_parameters_.safety_dist) && planner_parameters_.safety_dist >= 0.0 &&
     std::isfinite(planner_parameters_.cost_weight) && planner_parameters_.cost_weight >= 0.0 &&
     std::isfinite(planner_parameters_.eta) && planner_parameters_.eta > 0.0 &&
+    (avoid_direction_ == "right" || avoid_direction_ == "left") &&
     integer_ranges_valid;
   if (!valid) {
     RCLCPP_ERROR(get_logger(), "Invalid COLREGS RRT* planner parameters");
@@ -238,6 +242,12 @@ bool ColregsLocalPlannerServer::transformPoseToGlobalFrame(
   geometry_msgs::msg::PoseStamped & output) const
 {
   return costmap_ros_->transformPoseToGlobalFrame(input, output);
+}
+
+nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput
+ColregsLocalPlannerServer::getTsPlanningInput(double os_x, double os_y)
+{
+  return ts_state_ros_->getPlanningInput(os_x, os_y);
 }
 
 void ColregsLocalPlannerServer::abortGoal(
@@ -449,12 +459,51 @@ void ColregsLocalPlannerServer::computePlan()
       const auto planning_deadline = std::chrono::steady_clock::now() +
         std::chrono::duration_cast<std::chrono::steady_clock::duration>(
         std::chrono::duration<double>(max_planning_time_));
+
+      // COLREGS TS decision: consistent snapshot from the TS sub-node, pure
+      // evaluation with the sub-node's CPA/cone parameters. An inactive
+      // decision (no threat, infeasible safe heading, or invalid OS velocity)
+      // falls back to plain RRT* per design decision D5.
+      const auto ts_input = getTsPlanningInput(
+        transformed_start.pose.position.x, transformed_start.pose.position.y);
+      const auto & ts_params = ts_state_ros_->coreParams();
+      const auto ts_snapshot = processTs(ts_input.ts, ts_input.os, ts_params);
+      const auto decision = evaluateColregs(
+        ts_snapshot, ts_input.os,
+        transformed_goal.pose.position.x, transformed_goal.pose.position.y,
+        avoid_direction_, ts_params);
+      if (interrupted()) {
+        continue;
+      }
+
       RRTStar planner(planner_parameters_);
       std::vector<RRTStarNode> nodes;
-      const auto status = planner.planPath(
-        transformed_start.pose.position.x, transformed_start.pose.position.y,
-        transformed_goal.pose.position.x, transformed_goal.pose.position.y,
-        snapshot, interrupted, planning_deadline, nodes);
+      PlanStatus status = PlanStatus::NO_PATH;
+      if (decision.active) {
+        // Two-segment plan: the deterministic start→avoidance-point leg is
+        // prepended as a raw node and only densified by makePath (no
+        // collision check — VO-RRT semantics, design limitation L2); RRT*
+        // runs from the avoidance point to the goal under the barriers.
+        std::vector<RRTStarNode> rrt_nodes;
+        status = planner.planPath(
+          decision.avoidance_point.x, decision.avoidance_point.y,
+          transformed_goal.pose.position.x, transformed_goal.pose.position.y,
+          snapshot, decision.barrier_points, interrupted, planning_deadline,
+          rrt_nodes);
+        if (status == PlanStatus::SUCCESS && !rrt_nodes.empty()) {
+          rrt_nodes.insert(
+            rrt_nodes.begin(),
+            {transformed_start.pose.position.x,
+              transformed_start.pose.position.y, -1, 0.0});
+        }
+        nodes = std::move(rrt_nodes);
+      } else {
+        const std::vector<geometry_msgs::msg::Point> no_barriers;
+        status = planner.planPath(
+          transformed_start.pose.position.x, transformed_start.pose.position.y,
+          transformed_goal.pose.position.x, transformed_goal.pose.position.y,
+          snapshot, no_barriers, interrupted, planning_deadline, nodes);
+      }
       if (status == PlanStatus::CANCELED) {
         continue;
       }

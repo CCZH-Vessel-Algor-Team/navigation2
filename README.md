@@ -53,7 +53,8 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
 - 标准 Action：`/compute_path_to_pose`；成功路径发布到 `/plan`。
 - Server 自有 `colregs_costmap`（map-fixed 四层全局图），并编排 `colregs_ts_state` TS 子节点（lifecycle 顺序 costmap → TS）。
 - Humble 适配：`Costmap2DROS` 三参构造 + 参数注入 `use_sim_time`；`nav2_util::SimpleActionServer` 打入 goal 取消原子性补丁。
-- 阶段 2 尚不消费 TS 决策；阶段 3 在 `computePlan` 接入 `evaluateColregs` 与 barrier 通道。
+- 阶段 3 已接入 VO-RRT 语义：每次请求先经 `getPlanningInput` 取一致快照并做 `processTs`/`evaluateColregs` 决策；存在威胁且安全航向可行时执行两段式规划（start→避让点确定性段不做碰撞检查 + 避让点→goal 的 RRT*，barrier 线段进入 RRT* 碰撞判定），决策不激活或 OS 速度不可用时回退纯 RRT*；两段式 RRT* 段失败直接报错。`avoid_direction` 参数化（默认 `right`，即向右/starboard 过）。
+- 已知限制：避让点若落在 costmap 膨胀区或图外，两段式将报 `NO_VALID_PATH`（不回退，沿用 VO-RRT 语义）；VRX 调参需保证避让距离与膨胀半径兼容。
 
 ### 8) `nav2_colregs_los_controller`
 - 作用：最简 LOS 制导 Controller 插件。
@@ -128,7 +129,7 @@ Summary: 9 packages finished
 
 - `nav2_colregs_ts_manager` 重构为 `ts_core` 纯计算库（`processTs`/`evaluateColregs`）+ `ColregsTsStateROS` 生命周期子节点；旧三节点（`ts_state_manager`、`avoidance_point_node`、`barrier_node`）与 `ts_subsystem_launch.py` 已删除。
 - `/processed_ts_list`、`/get_avoidance_point`、`/get_barrier_lines` 已内化；唯一对外接口为 `/cpa_markers`（由 server 进程内 `colregs_ts_state` 子节点发布）。
-- `nav2_colregs_local_planner_server` 自带 `colregs_costmap` 并编排 `colregs_ts_state`（lifecycle 顺序 costmap → TS）；阶段 2 尚不消费 TS 决策（阶段 3 接线 VO-RRT 语义）。
+- `nav2_colregs_local_planner_server` 自带 `colregs_costmap` 并编排 `colregs_ts_state`（lifecycle 顺序 costmap → TS）；阶段 3 起 `computePlan` 内消费 TS 决策（两段式 VO-RRT 语义，`avoid_direction` 参数化）。
 - Humble 适配：`Costmap2DROS` 使用三参构造并以参数注入 `use_sim_time`；`nav2_util::SimpleActionServer` 打入与 Jazzy 相同的 goal 取消原子性补丁。
 - 已知中间态：`VORRTStarPlanner` 依赖的 service 链随三节点删除而断开，运行时按其内置超时回退退化为纯 RRT*；阶段 3 将 VO 语义移入 `ColregsLocalPlannerServer` 后由 `evaluateColregs` 进程内接管。
 
