@@ -4,6 +4,8 @@ project(nav2_colregs_local_planner_server)
 find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(lifecycle_msgs REQUIRED)
+find_package(nav2_colregs_msgs REQUIRED)
+find_package(nav2_colregs_ts_manager REQUIRED)
 find_package(nav2_common REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
 find_package(nav2_msgs REQUIRED)
@@ -24,6 +26,8 @@ set(dependencies
   geometry_msgs
   lifecycle_msgs
   rcl_action
+  nav2_colregs_msgs
+  nav2_colregs_ts_manager
   nav2_costmap_2d
   nav2_msgs
   nav2_util

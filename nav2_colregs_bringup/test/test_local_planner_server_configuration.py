@@ -174,6 +174,24 @@ def test_projection_validation_parameters_route_to_rrt_star_server():
     )
 
 
+def test_ts_state_sub_node_replaces_standalone_ts_manager():
+    params = load_params()
+
+    assert 'ts_state_manager' not in params
+    assert params['colregs_ts_state']['ros__parameters'] == {
+        'frequency': 10.0,
+        'ts_timeout': 3.0,
+        'tcpa_horizon': 10.0,
+        'safety_factor': 1.1,
+        'os_radius': 0.3,
+        'barrier_ray_length': 999.0,
+        'global_frame': 'map',
+        'robot_base_frame': 'base_link',
+        'odom_topic': 'odom',
+        'tracked_ship_topic': '/tracked_ship',
+    }
+
+
 def test_colregs_costmap_preserves_the_four_layer_global_map_configuration():
     params = load_params()
 

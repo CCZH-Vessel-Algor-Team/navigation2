@@ -45,9 +45,11 @@ RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值�
 - 从 blackboard 读取 `{path}`，编码为 action goal 发送到 behavior_server，成功后将路径透传写回 `{local_path}`。
 
 ### 7) `nav2_colregs_ts_manager`
-- 作用：TS 状态管理节点（LifecycleNode）。订阅 `/tracked_ship`（`TrackedShipList`）和 `/odom`，逐 `target_id` 维护多 TS 状态，计算 CPA/TCPA，发布 `/processed_ts_list` topic。
-- TS 位姿通过 TF 从消息 frame_id 变换到 `global_frame`（map），确保多坐标系兼容。
-- 与 `TSProjectionLayer` 配合：前者判断"TS 是否危险"，后者将"TS 位姿画入 costmap"。
+- 作用：TS 状态计算库与 Server 托管的 TS 状态子节点。原三个独立节点（ts_state_manager、avoidance_point_node、barrier_node）与 `/processed_ts_list`、`/get_avoidance_point`、`/get_barrier_lines` 接口已内化删除。
+- 组成：`ts_core` 纯计算库（原始/处理后快照类型、`processTs` 超时过滤 + CPA/TCPA + 碰撞锥、`evaluateColregs` 主威胁/安全航向/避让点/屏障线）与 `ColregsTsStateROS` 生命周期子节点。
+- `ColregsTsStateROS`（节点名 `colregs_ts_state`）：由 `colregs_local_planner_server` 持有并编排（机制同 `colregs_costmap`），订阅 `/tracked_ship` 与 `/odom`，统一状态互斥锁维护 TS map，10 Hz timer 做超时剔除并发布 `/cpa_markers`（保留的唯一对外接口）。
+- TS 位姿/速度经消息 frame→`global_frame`（map）变换旋转；TF 失败跳过该 TS（不回退原始坐标）。OS 速度由 odom body 分量按 TF 旋转到 map，失败时 `velocity_valid=false` 降级。
+- 规划期接口：`getPlanningInput(os_x, os_y)` 单锁返回一致快照（阶段 1 仅就绪，算法消费在阶段 3 接线）。
 - 超时参数：`ts_timeout: 3.0`（自动清除失联船舶）。
 
 ### 8) `nav2_colregs_los_controller`
@@ -70,6 +72,7 @@ RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值�
 - 生命周期节点：`/colregs_local_planner_server`。
 - 标准 Action：`/compute_path_to_pose`（`nav2_msgs/action/ComputePathToPose`）；成功路径发布到 `/plan`。
 - Server 内部持有固定 `map` 坐标系、非滚动的 `/colregs_costmap`，不由 Lifecycle Manager 单独管理。
+- Server 同时编排 `colregs_ts_state` TS 状态子节点（独立 NodeThread，lifecycle 顺序固定为 costmap → TS），阶段 1 仅运行 markers 与快照服务，不参与规划决策。
 - 每次请求在 costmap mutex 内深拷贝快照，释放锁后对静态快照执行确定性基础 RRT*；接受空 `planner_id` 或 `RRTStar`。
 - pruning 后的 RRT* raw nodes 按 `colregs_costmap` resolution 稠密插值，再保留精确 start/goal pose 后发布，避免 Controller 直接消费稀疏树节点。
 - BT 以 `1 Hz` 重新规划，`FollowPath` 直接消费 `{path}`。移动 TS 只通过 TSProjectionLayer 进入每次快照；当前算法没有 CPA/TCPA、相遇类型、VO 或 COLREGS 规则约束，因此不能宣称动态 COLREGS 合规。
@@ -137,7 +140,7 @@ ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py
 - **COLREGS Local Planner Server**（标准 `/compute_path_to_pose`，发布 `/plan`）
 - Server 自有 **`/colregs_costmap`**（map-fixed，Static/Obstacle/TSProjection/Inflation 四层）
 - **TSProjectionLayer**（在规划与控制 costmap 内标记 TS 障碍物）
-- **TS State Manager**（CPA/TCPA 计算，`/processed_ts_list` topic）
+- **`colregs_ts_state` TS 状态子节点**（Server 进程内，CPA/TCPA/碰撞锥计算，发布 `/cpa_markers`）
 - BT 以 **1 Hz** 调用 `ComputePathToPose`，将 `{path}` 直接交给 `FollowPath`
 - **ALOS Controller**（制导）
 - 使用专用 RViz：`colregs_local_planner_demo.rviz`
@@ -200,8 +203,8 @@ ros2 topic echo /tracked_ship --once
 # 检查 costmap 中 TS LETHAL 标记
 ros2 topic echo /local_costmap/costmap --once
 
-# 检查 TS 处理列表
-ros2 topic echo /processed_ts_list --once
+# 检查 TS 状态子节点的 CPA markers
+ros2 topic echo /cpa_markers --once
 
 # TF 检查
 ros2 run tf2_ros tf2_echo map odom

@@ -22,6 +22,7 @@
 
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "nav2_colregs_local_planner_server/rrt_star.hpp"
+#include "nav2_colregs_ts_manager/colregs_ts_state_ros.hpp"
 #include "nav2_costmap_2d/costmap_2d_ros.hpp"
 #include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "nav2_util/lifecycle_node.hpp"
@@ -61,6 +62,7 @@ protected:
 
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
   nav2_costmap_2d::Costmap2D * costmap_{nullptr};
+  std::shared_ptr<nav2_colregs_ts_manager::ColregsTsStateROS> ts_state_ros_;
 
 private:
   using Action = nav2_msgs::action::ComputePathToPose;
@@ -77,6 +79,7 @@ private:
     const geometry_msgs::msg::PoseStamped & goal);
 
   std::unique_ptr<nav2_util::NodeThread> costmap_thread_;
+  std::unique_ptr<nav2_util::NodeThread> ts_thread_;
   std::unique_ptr<ActionServer> action_server_;
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr plan_publisher_;
   RRTStarParameters planner_parameters_{};

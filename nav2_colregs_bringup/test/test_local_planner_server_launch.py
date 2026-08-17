@@ -292,7 +292,7 @@ def test_log_level_is_forwarded_across_all_bringup_edges():
     projection_tree = launch_tree('colregs_ts_projection_validation_launch.py')
     assert 'log_level' in declared_argument_names(projection_tree)
     projection_includes = calls_named(projection_tree, 'IncludeLaunchDescription')
-    assert "'log_level': log_level" in launch_arguments(projection_includes[1])
+    assert "'log_level': log_level" in launch_arguments(projection_includes[0])
 
     simulation_tree = launch_tree('colregs_ts_simulation_launch.py')
     assert 'log_level' in declared_argument_names(simulation_tree)
@@ -351,7 +351,7 @@ def test_projection_validation_has_only_ts_and_simulation_includes():
     includes = [
         entity for entity in entities if isinstance(entity, IncludeLaunchDescription)
     ]
-    assert len(includes) == 2
+    assert len(includes) == 1
     assert all(
         isinstance(entity, (DeclareLaunchArgument, IncludeLaunchDescription))
         for entity in entities
@@ -363,13 +363,16 @@ def test_projection_validation_has_only_ts_and_simulation_includes():
     assert 'OnStateTransition' not in source
     assert 'RegisterEventHandler' not in source
     assert 'lifecycle_manager_colregs_local_planner' not in source
+    # The TS subsystem runs inside colregs_local_planner_server as the
+    # colregs_ts_state sub-node; no standalone TS launch remains.
+    assert 'ts_subsystem' not in source
+    assert 'ts_state_manager' not in source
 
     includes = calls_named(tree, 'IncludeLaunchDescription')
     assert [included_launch_filename(call) for call in includes] == [
-        'ts_subsystem_launch.py',
         'colregs_ts_simulation_launch.py',
     ]
-    simulation_arguments = ast.unparse(keyword(includes[1], 'launch_arguments'))
+    simulation_arguments = ast.unparse(keyword(includes[0], 'launch_arguments'))
     for argument in (
         'params_file',
         'use_sim_time',

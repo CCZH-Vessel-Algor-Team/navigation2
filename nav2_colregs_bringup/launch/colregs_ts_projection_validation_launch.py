@@ -22,14 +22,8 @@ def generate_launch_description():
     colregs_bringup_launch_file = os.path.join(
         bringup_dir, 'launch', 'colregs_bringup_launch.py')
 
-    ts_subsystem = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(bringup_dir, 'launch', 'ts_subsystem_launch.py')),
-        launch_arguments={
-            'params_file': params_file,
-            'use_sim_time': use_sim_time,
-        }.items(),
-    )
+    # The TS state subsystem runs inside colregs_local_planner_server as the
+    # colregs_ts_state lifecycle sub-node (CPA markers on /cpa_markers).
     simulation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(
             bringup_dir, 'launch', 'colregs_ts_simulation_launch.py')),
@@ -64,6 +58,5 @@ def generate_launch_description():
             default_value=os.path.join(
                 bringup_dir, 'rviz', 'colregs_local_planner_demo.rviz')),
         DeclareLaunchArgument('log_level', default_value='info'),
-        ts_subsystem,
         simulation,
     ])

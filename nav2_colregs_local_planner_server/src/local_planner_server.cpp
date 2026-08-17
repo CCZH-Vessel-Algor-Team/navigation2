@@ -58,11 +58,15 @@ ColregsLocalPlannerServer::ColregsLocalPlannerServer(const rclcpp::NodeOptions &
   costmap_ros_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
     "colregs_costmap", std::string{get_namespace()}, "colregs_costmap",
     get_parameter("use_sim_time").as_bool());
+  ts_state_ros_ = std::make_shared<nav2_colregs_ts_manager::ColregsTsStateROS>(
+    "colregs_ts_state", std::string{get_namespace()},
+    get_parameter("use_sim_time").as_bool());
 }
 
 ColregsLocalPlannerServer::~ColregsLocalPlannerServer()
 {
   costmap_thread_.reset();
+  ts_thread_.reset();
 }
 
 bool ColregsLocalPlannerServer::loadAndValidateParameters()
@@ -133,6 +137,13 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_configure(
     }
     costmap_ = costmap_ros_->getCostmap();
     costmap_thread_ = std::make_unique<nav2_util::NodeThread>(costmap_ros_);
+    if (ts_state_ros_->configure().id() !=
+      lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE)
+    {
+      on_cleanup(state);
+      return nav2_util::CallbackReturn::FAILURE;
+    }
+    ts_thread_ = std::make_unique<nav2_util::NodeThread>(ts_state_ros_);
     plan_publisher_ = create_publisher<nav_msgs::msg::Path>("plan", 1);
 
     rcl_action_server_options_t server_options = rcl_action_server_get_default_options();
@@ -159,6 +170,14 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_activate(
     plan_publisher_->on_deactivate();
     return nav2_util::CallbackReturn::FAILURE;
   }
+  if (ts_state_ros_->activate().id() !=
+    lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE)
+  {
+    costmap_ros_->deactivate();
+    action_server_->deactivate();
+    plan_publisher_->on_deactivate();
+    return nav2_util::CallbackReturn::FAILURE;
+  }
   createBond();
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -169,6 +188,7 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_deactivate(
   action_server_->deactivate();
   plan_publisher_->on_deactivate();
   costmap_ros_->deactivate();
+  ts_state_ros_->deactivate();
   destroyBond();
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -185,6 +205,12 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_cleanup(
   }
   costmap_thread_.reset();
   costmap_ = nullptr;
+  if (ts_state_ros_->get_current_state().id() !=
+    lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
+  {
+    ts_state_ros_->cleanup();
+  }
+  ts_thread_.reset();
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
