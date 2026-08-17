@@ -2,19 +2,24 @@
 <package format="3">
   <name>nav2_colregs_ts_manager</name>
   <version>1.0.0</version>
-  <description>TS Subsystem: TS State Manager (CPA + LVO), Avoidance Point, COLREGS Barrier</description>
+  <description>COLREGS TS state: computation core and server-owned TS state lifecycle sub-node</description>
   <maintainer email="vectorwang@hotmail.com">Vector Wang</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
   <depend>nav2_colregs_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>tf2_geometry_msgs</depend>
   <depend>visualization_msgs</depend>
+  <depend>nav2_util</depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
