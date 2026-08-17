@@ -334,17 +334,17 @@ void ColregsLocalPlannerServer::computePlan()
     auto result = std::make_shared<Action::Result>();
     const auto started = std::chrono::steady_clock::now();
     auto current_canceled = [this]() {
-        return action_server_->is_cancel_requested();
-      };
+      return action_server_->is_cancel_requested();
+    };
     auto interrupted = [this]() {
-        if (action_server_->is_cancel_requested() &&
-          action_server_->is_preempt_requested())
-        {
-          action_server_->terminate_pending_goal();
-        }
-        return action_server_->is_cancel_requested() ||
-               action_server_->is_preempt_requested();
-      };
+      if (action_server_->is_cancel_requested() &&
+        action_server_->is_preempt_requested())
+      {
+        action_server_->terminate_pending_goal();
+      }
+      return action_server_->is_cancel_requested() ||
+             action_server_->is_preempt_requested();
+    };
 
     if (current_canceled()) {
       if (action_server_->is_preempt_requested()) {
