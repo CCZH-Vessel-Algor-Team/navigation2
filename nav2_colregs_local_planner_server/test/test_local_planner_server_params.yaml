@@ -1,0 +1,42 @@
+colregs_planner_test:
+  colregs_costmap:
+    colregs_costmap:
+      ros__parameters:
+        global_frame: map
+        robot_base_frame: map
+        update_frequency: 20.0
+        publish_frequency: 0.0
+        rolling_window: false
+        width: 10
+        height: 10
+        resolution: 0.1
+        origin_x: 0.0
+        origin_y: 0.0
+        robot_radius: 0.1
+        plugins: ["inflation_layer"]
+        inflation_layer:
+          plugin: "nav2_costmap_2d::InflationLayer"
+          inflation_radius: 0.1
+          cost_scaling_factor: 3.0
+        always_send_full_costmap: true
+
+colregs_non_map_test:
+  colregs_costmap:
+    colregs_costmap:
+      ros__parameters:
+        global_frame: odom
+        robot_base_frame: odom
+        update_frequency: 20.0
+        publish_frequency: 0.0
+        rolling_window: false
+        width: 10
+        height: 10
+        resolution: 0.1
+        origin_x: 0.0
+        origin_y: 0.0
+        robot_radius: 0.1
+        plugins: ["inflation_layer"]
+        inflation_layer:
+          plugin: "nav2_costmap_2d::InflationLayer"
+          inflation_radius: 0.1
+          cost_scaling_factor: 3.0
