@@ -28,7 +28,46 @@ namespace nav2_colregs_local_planner_server
 namespace
 {
 constexpr double kEpsilon = 1e-9;
+
+// Segment intersection test ported verbatim from the VO-RRT planner
+// (nav2_colregs_vo_rrt_star_planner/src/rrt_star.cpp segmentsIntersect).
+bool segmentsIntersect(
+  double ax, double ay, double bx, double by,
+  double cx, double cy, double dx, double dy)
+{
+  constexpr double eps = 1e-9;
+
+  auto cross = [](double ux, double uy, double vx, double vy) {
+      return ux * vy - uy * vx;
+    };
+
+  auto orientation = [&](double px, double py, double qx, double qy, double rx, double ry) {
+      return cross(qx - px, qy - py, rx - px, ry - py);
+    };
+
+  auto onSegment = [&](double px, double py, double qx, double qy, double rx, double ry) {
+      return qx <= std::max(px, rx) + eps && qx + eps >= std::min(px, rx) &&
+             qy <= std::max(py, ry) + eps && qy + eps >= std::min(py, ry) &&
+             std::abs(orientation(px, py, qx, qy, rx, ry)) <= eps;
+    };
+
+  const double o1 = orientation(ax, ay, bx, by, cx, cy);
+  const double o2 = orientation(ax, ay, bx, by, dx, dy);
+  const double o3 = orientation(cx, cy, dx, dy, ax, ay);
+  const double o4 = orientation(cx, cy, dx, dy, bx, by);
+
+  if (((o1 > eps && o2 < -eps) || (o1 < -eps && o2 > eps)) &&
+    ((o3 > eps && o4 < -eps) || (o3 < -eps && o4 > eps)))
+  {
+    return true;
+  }
+
+  return onSegment(ax, ay, cx, cy, bx, by) ||
+         onSegment(ax, ay, dx, dy, bx, by) ||
+         onSegment(cx, cy, ax, ay, dx, dy) ||
+         onSegment(cx, cy, bx, by, dx, dy);
 }
+}  // namespace
 
 RRTStar::RRTStar(const RRTStarParameters & parameters)
 : parameters_(parameters), rng_(parameters.random_seed)
@@ -38,6 +77,7 @@ RRTStar::RRTStar(const RRTStarParameters & parameters)
 PlanStatus RRTStar::planPath(
   double start_x, double start_y, double goal_x, double goal_y,
   const nav2_costmap_2d::Costmap2D & costmap,
+  const std::vector<geometry_msgs::msg::Point> & barriers,
   const std::function<bool()> & cancel_checker,
   const std::chrono::steady_clock::time_point & deadline,
   std::vector<RRTStarNode> & path)
@@ -47,6 +87,7 @@ PlanStatus RRTStar::planPath(
   iterations_executed_ = 0;
   rng_.seed(parameters_.random_seed);
   cancel_checker_ = &cancel_checker;
+  barriers_ = &barriers;
   deadline_ = deadline;
   interrupted_ = false;
   invalid_geometry_ = false;
@@ -59,11 +100,20 @@ PlanStatus RRTStar::planPath(
       return invalid_geometry_ ? PlanStatus::INVALID_INPUT : fallback;
     };
 
+  bool barriers_finite = true;
+  for (const auto & barrier_point : barriers) {
+    if (!std::isfinite(barrier_point.x) || !std::isfinite(barrier_point.y)) {
+      barriers_finite = false;
+      break;
+    }
+  }
+
   if (!parametersValid() || !std::isfinite(start_x) || !std::isfinite(start_y) ||
     !std::isfinite(goal_x) || !std::isfinite(goal_y) ||
     costmap.getSizeInCellsX() == 0 || costmap.getSizeInCellsY() == 0 ||
     !std::isfinite(costmap.getResolution()) || costmap.getResolution() <= 0.0 ||
-    !std::isfinite(costmap.getOriginX()) || !std::isfinite(costmap.getOriginY()))
+    !std::isfinite(costmap.getOriginX()) || !std::isfinite(costmap.getOriginY()) ||
+    !barriers_finite)
   {
     return PlanStatus::INVALID_INPUT;
   }
@@ -399,6 +449,21 @@ bool RRTStar::pointCollisionFree(
   return true;
 }
 
+bool RRTStar::barrierFree(double x1, double y1, double x2, double y2) const
+{
+  if (barriers_ == nullptr) {
+    return true;
+  }
+  for (size_t i = 0; i + 1 < barriers_->size(); i += 2) {
+    const auto & a = (*barriers_)[i];
+    const auto & b = (*barriers_)[i + 1];
+    if (segmentsIntersect(x1, y1, x2, y2, a.x, a.y, b.x, b.y)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool RRTStar::collisionFree(
   double x1, double y1, double x2, double y2,
   const nav2_costmap_2d::Costmap2D & costmap) const
@@ -406,6 +471,9 @@ bool RRTStar::collisionFree(
   const double length = std::hypot(x2 - x1, y2 - y1);
   if (!std::isfinite(length)) {
     invalid_geometry_ = true;
+    return false;
+  }
+  if (!barrierFree(x1, y1, x2, y2)) {
     return false;
   }
   if (length == 0.0) {

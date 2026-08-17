@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "gtest/gtest.h"
+#include "geometry_msgs/msg/point.hpp"
 #include "nav2_colregs_local_planner_server/rrt_star.hpp"
 #include "nav2_costmap_2d/cost_values.hpp"
 #include "nav2_costmap_2d/costmap_2d.hpp"
@@ -78,6 +79,7 @@ private:
   static void prepareOperation(RRTStar & planner)
   {
     planner.cancel_checker_ = nullptr;
+    planner.barriers_ = nullptr;
     planner.deadline_ = std::chrono::steady_clock::time_point::max();
     planner.interrupted_ = false;
     planner.invalid_geometry_ = false;
@@ -102,10 +104,11 @@ nav2_costmap_2d::Costmap2D freeMap()
 PlanStatus plan(
   RRTStar & planner, const nav2_costmap_2d::Costmap2D & map,
   std::vector<RRTStarNode> & path, double goal_x = 4.5, double goal_y = 0.5,
-  const std::function<bool()> & cancel = {})
+  const std::function<bool()> & cancel = {},
+  const std::vector<geometry_msgs::msg::Point> & barriers = {})
 {
   return planner.planPath(
-    0.5, 0.5, goal_x, goal_y, map, cancel,
+    0.5, 0.5, goal_x, goal_y, map, barriers, cancel,
     steady_clock::now() + std::chrono::seconds(10), path);
 }
 
@@ -116,7 +119,7 @@ TEST(RRTStar, ClearsOutputBeforeEveryReturn)
   std::vector<RRTStarNode> path(3);
   EXPECT_EQ(
     planner.planPath(
-      0.5, 0.5, 4.5, 0.5, map, []() {return true;},
+      0.5, 0.5, 4.5, 0.5, map, {}, []() {return true;},
       steady_clock::now() + std::chrono::seconds(1), path),
     PlanStatus::CANCELED);
   EXPECT_TRUE(path.empty());
@@ -134,7 +137,7 @@ TEST(RRTStar, RejectsInvalidParametersCoordinatesAndMap)
   RRTStar planner(parameters());
   EXPECT_EQ(
     planner.planPath(
-      std::numeric_limits<double>::quiet_NaN(), 0.5, 4.5, 0.5, map, {},
+      std::numeric_limits<double>::quiet_NaN(), 0.5, 4.5, 0.5, map, {}, {},
       steady_clock::now() + std::chrono::seconds(1), path),
     PlanStatus::INVALID_INPUT);
   nav2_costmap_2d::Costmap2D empty_map;
@@ -270,7 +273,7 @@ TEST(RRTStar, NearEdgeNonCenterEndpointsDoNotExpandTreeOutsideCenterBounds)
 
   ASSERT_EQ(
     planner.planPath(
-      0.01, 0.01, 19.99, 19.99, map, {},
+      0.01, 0.01, 19.99, 19.99, map, {}, {},
       steady_clock::now() + std::chrono::seconds(10), path),
     PlanStatus::SUCCESS);
   ASSERT_FALSE(path.empty());
@@ -378,7 +381,7 @@ TEST(RRTStar, HonorsCancellationAndDeadline)
     PlanStatus::CANCELED);
   EXPECT_EQ(
     planner.planPath(
-      0.5, 0.5, 4.5, 0.5, map, {}, steady_clock::now(), path),
+      0.5, 0.5, 4.5, 0.5, map, {}, {}, steady_clock::now(), path),
     PlanStatus::TIMEOUT);
 }
 
@@ -414,7 +417,7 @@ TEST(RRTStar, HonorsDeadlineReachedInsidePlanningWork)
 
   EXPECT_EQ(
     planner.planPath(
-      0.5, 0.5, 19.5, 19.5, map,
+      0.5, 0.5, 19.5, 19.5, map, {},
       [&checks]() {
         if (++checks == 20) {
           std::this_thread::sleep_for(std::chrono::milliseconds(150));
@@ -476,6 +479,88 @@ TEST(RRTStar, PruningPreservesExactEndpoints)
   EXPECT_DOUBLE_EQ(path.front().y, 0.5);
   EXPECT_DOUBLE_EQ(path.back().x, 4.25);
   EXPECT_DOUBLE_EQ(path.back().y, 0.5);
+}
+
+geometry_msgs::msg::Point barrierPoint(double x, double y)
+{
+  geometry_msgs::msg::Point point;
+  point.x = x;
+  point.y = y;
+  point.z = 0.0;
+  return point;
+}
+
+TEST(RRTStar, RejectsNonFiniteBarrierPoints)
+{
+  auto map = freeMap();
+  RRTStar planner(parameters());
+  std::vector<RRTStarNode> path;
+  std::vector<geometry_msgs::msg::Point> barriers;
+  barriers.push_back(barrierPoint(2.5, -5.0));
+  barriers.push_back(
+    barrierPoint(std::numeric_limits<double>::quiet_NaN(), 25.0));
+
+  EXPECT_EQ(
+    planner.planPath(
+      0.5, 0.5, 4.5, 0.5, map, barriers, {},
+      steady_clock::now() + std::chrono::seconds(10), path),
+    PlanStatus::INVALID_INPUT);
+  EXPECT_TRUE(path.empty());
+}
+
+TEST(RRTStar, SpanningBarrierBlocksEveryPath)
+{
+  auto map = freeMap();
+  RRTStar planner(parameters());
+  std::vector<RRTStarNode> path;
+  // Vertical barrier crossing the whole map between start (0.5, 0.5) and
+  // goal (4.5, 0.5): any path must intersect it.
+  std::vector<geometry_msgs::msg::Point> barriers;
+  barriers.push_back(barrierPoint(2.5, -5.0));
+  barriers.push_back(barrierPoint(2.5, 25.0));
+
+  EXPECT_EQ(
+    plan(planner, map, path, 4.5, 0.5, {}, barriers),
+    PlanStatus::NO_PATH);
+  EXPECT_TRUE(path.empty());
+}
+
+TEST(RRTStar, PartialBarrierForcesDetourAroundItsEnd)
+{
+  auto map = freeMap();
+  auto params = parameters();
+  params.max_iterations = 2000;
+  RRTStar planner(params);
+  std::vector<RRTStarNode> path;
+  // Barrier only covers y < 10 at x = 2.5, so the detour must pass above
+  // its end before crossing to the goal side.
+  std::vector<geometry_msgs::msg::Point> barriers;
+  barriers.push_back(barrierPoint(2.5, -5.0));
+  barriers.push_back(barrierPoint(2.5, 10.0));
+
+  const auto status = plan(planner, map, path, 4.5, 0.5, {}, barriers);
+  ASSERT_EQ(status, PlanStatus::SUCCESS);
+  ASSERT_GE(path.size(), 2u);
+  EXPECT_DOUBLE_EQ(path.front().x, 0.5);
+  EXPECT_DOUBLE_EQ(path.back().x, 4.5);
+  for (size_t i = 1; i < path.size(); ++i) {
+    const double x1 = path[i - 1].x;
+    const double y1 = path[i - 1].y;
+    const double x2 = path[i].x;
+    const double y2 = path[i].y;
+    const bool straddles = (x1 < 2.5 && x2 > 2.5) || (x1 > 2.5 && x2 < 2.5);
+    if (straddles) {
+      // A detour edge may cross the barrier line only above its end.
+      const double ratio = (2.5 - x1) / (x2 - x1);
+      const double crossing_y = y1 + ratio * (y2 - y1);
+      ASSERT_GT(crossing_y, 10.0);
+    }
+    if (x1 == 2.5 || x2 == 2.5) {
+      // Endpoints exactly on the barrier line must lie above its end.
+      const double on_line_y = x1 == 2.5 ? y1 : y2;
+      ASSERT_GT(on_line_y, 10.0);
+    }
+  }
 }
 
 }  // namespace
