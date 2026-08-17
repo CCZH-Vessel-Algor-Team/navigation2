@@ -174,7 +174,7 @@ TEST(RRTStar, RejectsExtremeFiniteRequestCoordinatesBeforeCoordinateConversion)
 
   EXPECT_EQ(
     planner.planPath(
-      maximum, 0.5, 4.5, 0.5, map, {},
+      maximum, 0.5, 4.5, 0.5, map, {}, {},
       steady_clock::now() + std::chrono::seconds(1), path),
     PlanStatus::INVALID_INPUT);
   EXPECT_TRUE(path.empty());
@@ -182,7 +182,7 @@ TEST(RRTStar, RejectsExtremeFiniteRequestCoordinatesBeforeCoordinateConversion)
   path.resize(2);
   EXPECT_EQ(
     planner.planPath(
-      0.5, 0.5, -maximum, 0.5, map, {},
+      0.5, 0.5, -maximum, 0.5, map, {}, {},
       steady_clock::now() + std::chrono::seconds(1), path),
     PlanStatus::INVALID_INPUT);
   EXPECT_TRUE(path.empty());
@@ -530,6 +530,7 @@ TEST(RRTStar, PartialBarrierForcesDetourAroundItsEnd)
   auto map = freeMap();
   auto params = parameters();
   params.max_iterations = 2000;
+  params.goal_bias = 0.1;
   RRTStar planner(params);
   std::vector<RRTStarNode> path;
   // Barrier only covers y < 10 at x = 2.5, so the detour must pass above
@@ -548,7 +549,7 @@ TEST(RRTStar, PartialBarrierForcesDetourAroundItsEnd)
     const double y1 = path[i - 1].y;
     const double x2 = path[i].x;
     const double y2 = path[i].y;
-    const bool straddles = (x1 < 2.5 && x2 > 2.5) || (x1 > 2.5 && x2 < 2.5);
+    const bool straddles = (x1<2.5 && x2>2.5) || (x1 > 2.5 && x2 < 2.5);
     if (straddles) {
       // A detour edge may cross the barrier line only above its end.
       const double ratio = (2.5 - x1) / (x2 - x1);
