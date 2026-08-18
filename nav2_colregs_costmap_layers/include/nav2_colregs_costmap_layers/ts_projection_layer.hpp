@@ -63,7 +63,7 @@ private:
 
   std::unordered_map<std::string, ShipEntry> ships_;
   double track_timeout_{3.0};
-  std::string tracked_ship_topic_{"/dynamic_ship/tracked_ships"};
+  std::string tracked_ship_topic_{"/tracked_ship"};
 };
 
 }  // namespace nav2_colregs_costmap_layers
