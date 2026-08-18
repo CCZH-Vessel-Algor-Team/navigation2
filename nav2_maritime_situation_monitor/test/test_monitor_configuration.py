@@ -57,6 +57,13 @@ APPROVED_DEFAULTS = {
     'head_on_bearing_threshold_deg': 6.0,
     'reciprocal_heading_tolerance_deg': 15.0,
     'overtaking_stern_sector_deg': 112.5,
+    'enable_markers': True,
+    'marker_topic': '/maritime_situation_markers',
+    'marker_scale': 3.0,
+    'marker_label_scale': 2.0,
+    'marker_velocity_scale': 2.0,
+    'marker_line_width': 0.2,
+    'marker_z_offset': 0.5,
 }
 
 

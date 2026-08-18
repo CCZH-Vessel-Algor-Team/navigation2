@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "tf2_ros/buffer.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
 
 namespace nav2_colregs_costmap_layers
@@ -44,10 +45,55 @@ void TSProjectionLayer::onInitialize()
 void TSProjectionLayer::trackedShipCallback(
   nav2_colregs_msgs::msg::TrackedShipList::ConstSharedPtr msg)
 {
-  const auto now = node_.lock()->get_clock()->now();
-  tf_frame_ = msg->header.frame_id;
+  auto node = node_.lock();
+  if (!node) {
+    return;
+  }
+  const auto now = node->get_clock()->now();
+  const std::string source_frame = msg->header.frame_id.empty()
+    ? tf_frame_ : msg->header.frame_id;
+  if (source_frame.empty()) {
+    RCLCPP_WARN_THROTTLE(logger_, *node->get_clock(), 5000,
+      "TSProjectionLayer: TrackedShipList has empty frame_id, dropping");
+    return;
+  }
+
+  // Freeze positions into the costmap frame at receive time. Storing body-frame
+  // coordinates and re-transforming with the latest TF would rotate targets
+  // whenever ownship yaw changes.
+  geometry_msgs::msg::TransformStamped t;
+  try {
+    rclcpp::Time stamp(msg->header.stamp, node->get_clock()->get_clock_type());
+    if (stamp.nanoseconds() == 0) {
+      t = tf_->lookupTransform(
+        global_frame_, source_frame, tf2::TimePointZero, tf2::durationFromSec(0.05));
+    } else {
+      t = tf_->lookupTransform(
+        global_frame_, source_frame, stamp, rclcpp::Duration::from_seconds(0.05));
+    }
+  } catch (const tf2::TransformException &) {
+    try {
+      t = tf_->lookupTransform(global_frame_, source_frame, tf2::TimePointZero);
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN_THROTTLE(logger_, *node->get_clock(), 5000,
+        "TSProjectionLayer: TF %s -> %s failed: %s",
+        source_frame.c_str(), global_frame_.c_str(), ex.what());
+      return;
+    }
+  }
+  tf_frame_ = global_frame_;
 
   for (const auto & ship : msg->ships) {
+    geometry_msgs::msg::PointStamped ts_in, ts_cf;
+    ts_in.header.frame_id = source_frame;
+    ts_in.point.x = ship.pose.position.x;
+    ts_in.point.y = ship.pose.position.y;
+    try {
+      tf2::doTransform(ts_in, ts_cf, t);
+    } catch (const tf2::TransformException &) {
+      continue;
+    }
+
     const auto key = uuidToString(ship.target_id.uuid.data());
     auto it = ships_.find(key);
 
@@ -67,15 +113,14 @@ void TSProjectionLayer::trackedShipCallback(
         entry.cum_max_x = std::max(entry.cum_max_x, entry.x + entry.radius);
         entry.cum_max_y = std::max(entry.cum_max_y, entry.y + entry.radius);
       }
-      entry.x = ship.pose.position.x;
-      entry.y = ship.pose.position.y;
+      entry.x = ts_cf.point.x;
+      entry.y = ts_cf.point.y;
       entry.radius = ship.radius;
       entry.last_seen = now;
     } else {
-      // New ship: initialize cumulative bounds with current position.
       ShipEntry e;
-      e.x = ship.pose.position.x;
-      e.y = ship.pose.position.y;
+      e.x = ts_cf.point.x;
+      e.y = ts_cf.point.y;
       e.radius = ship.radius;
       e.last_seen = now;
       e.cum_min_x = e.x - e.radius;
@@ -104,7 +149,8 @@ geometry_msgs::msg::TransformStamped TSProjectionLayer::lookupTransform(
   try {
     t = tf_->lookupTransform(global_frame_, from_frame, tf2::TimePointZero);
   } catch (const tf2::TransformException &) {
-    // Return identity transform on failure.
+    t.header.frame_id = global_frame_;
+    t.child_frame_id = from_frame;
     t.transform.rotation.w = 1.0;
   }
   return t;
