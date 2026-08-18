@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_ros/buffer.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
+#include "rclcpp/qos.hpp"
 
 namespace nav2_colregs_costmap_layers
 {
@@ -26,20 +28,23 @@ void TSProjectionLayer::onInitialize()
   declareParameter("enabled", rclcpp::ParameterValue(true));
   node->get_parameter(name_ + "." + "enabled", enabled_);
 
-  declareParameter("track_timeout", rclcpp::ParameterValue(3.0));
+  declareParameter("track_timeout", rclcpp::ParameterValue(0.5));
   track_timeout_ = node->get_parameter(name_ + "." + "track_timeout").as_double();
 
   declareParameter("tracked_ship_topic", rclcpp::ParameterValue(tracked_ship_topic_));
   node->get_parameter(name_ + "." + "tracked_ship_topic", tracked_ship_topic_);
 
+  // Match convert_to_trackship SENSOR_DATA (best-effort). SystemDefaultsQoS is
+  // RELIABLE and would not connect to that publisher.
   sub_ = node->create_subscription<nav2_colregs_msgs::msg::TrackedShipList>(
-    tracked_ship_topic_, rclcpp::SystemDefaultsQoS(),
+    tracked_ship_topic_, rclcpp::SensorDataQoS(),
     std::bind(&TSProjectionLayer::trackedShipCallback, this, std::placeholders::_1));
 
   global_frame_ = layered_costmap_->getGlobalFrameID();
   current_ = true;
   RCLCPP_INFO(logger_, "TSProjectionLayer initialized, subscribed to %s "
-    "(track_timeout=%.1fs)", tracked_ship_topic_.c_str(), track_timeout_);
+    "(track_timeout=%.2fs, list is authoritative)",
+    tracked_ship_topic_.c_str(), track_timeout_);
 }
 
 void TSProjectionLayer::trackedShipCallback(
@@ -82,8 +87,31 @@ void TSProjectionLayer::trackedShipCallback(
     }
   }
   tf_frame_ = global_frame_;
+  last_msg_time_ = now;
+  last_msg_valid_ = true;
+
+  auto queue_clear = [this](const ShipEntry & entry) {
+    ClearRect rect;
+    rect.min_x = entry.x - entry.radius;
+    rect.min_y = entry.y - entry.radius;
+    rect.max_x = entry.x + entry.radius;
+    rect.max_y = entry.y + entry.radius;
+    if (entry.has_cumulative_bounds) {
+      rect.min_x = std::min(rect.min_x, entry.cum_min_x);
+      rect.min_y = std::min(rect.min_y, entry.cum_min_y);
+      rect.max_x = std::max(rect.max_x, entry.cum_max_x);
+      rect.max_y = std::max(rect.max_y, entry.cum_max_y);
+    }
+    pending_clears_.push_back(rect);
+  };
+
+  std::unordered_set<std::string> seen;
+  seen.reserve(msg->ships.size());
 
   for (const auto & ship : msg->ships) {
+    const auto key = uuidToString(ship.target_id.uuid.data());
+    seen.insert(key);
+
     geometry_msgs::msg::PointStamped ts_in, ts_cf;
     ts_in.header.frame_id = source_frame;
     ts_in.point.x = ship.pose.position.x;
@@ -94,7 +122,6 @@ void TSProjectionLayer::trackedShipCallback(
       continue;
     }
 
-    const auto key = uuidToString(ship.target_id.uuid.data());
     auto it = ships_.find(key);
 
     if (it != ships_.end()) {
@@ -132,9 +159,11 @@ void TSProjectionLayer::trackedShipCallback(
     }
   }
 
-  // Purge stale entries.
+  // TrackedShipList is the complete set: drop IDs absent from this message
+  // immediately so a UUID change cannot leave a ghost circle until timeout.
   for (auto it = ships_.begin(); it != ships_.end(); ) {
-    if ((now - it->second.last_seen).seconds() > track_timeout_) {
+    if (seen.find(it->first) == seen.end()) {
+      queue_clear(it->second);
       it = ships_.erase(it);
     } else {
       ++it;
@@ -161,11 +190,56 @@ void TSProjectionLayer::updateBounds(
   double * min_x, double * min_y,
   double * max_x, double * max_y)
 {
-  if (ships_.empty()) {
+  auto node = node_.lock();
+  if (node && last_msg_valid_ && track_timeout_ > 0.0) {
+    if ((node->get_clock()->now() - last_msg_time_).seconds() > track_timeout_) {
+      for (const auto & entry_pair : ships_) {
+        const auto & entry = entry_pair.second;
+        pending_clears_.push_back(ClearRect{
+          entry.has_cumulative_bounds
+            ? std::min(entry.cum_min_x, entry.x - entry.radius)
+            : entry.x - entry.radius,
+          entry.has_cumulative_bounds
+            ? std::min(entry.cum_min_y, entry.y - entry.radius)
+            : entry.y - entry.radius,
+          entry.has_cumulative_bounds
+            ? std::max(entry.cum_max_x, entry.x + entry.radius)
+            : entry.x + entry.radius,
+          entry.has_cumulative_bounds
+            ? std::max(entry.cum_max_y, entry.y + entry.radius)
+            : entry.y + entry.radius});
+      }
+      ships_.clear();
+      last_msg_valid_ = false;
+    }
+  }
+
+  if (ships_.empty() && pending_clears_.empty()) {
     return;
   }
 
   auto t = lookupTransform(tf_frame_);
+
+  for (const auto & rect : pending_clears_) {
+    geometry_msgs::msg::PointStamped c1, c2, t1, t2;
+    c1.header.frame_id = tf_frame_;
+    t1.header.frame_id = global_frame_;
+    c2.header = c1.header;
+    t2.header = t1.header;
+    c1.point.x = rect.min_x;
+    c1.point.y = rect.min_y;
+    c2.point.x = rect.max_x;
+    c2.point.y = rect.max_y;
+    try {
+      tf2::doTransform(c1, t1, t);
+      tf2::doTransform(c2, t2, t);
+      *min_x = std::min(*min_x, std::min(t1.point.x, t2.point.x));
+      *min_y = std::min(*min_y, std::min(t1.point.y, t2.point.y));
+      *max_x = std::max(*max_x, std::max(t1.point.x, t2.point.x));
+      *max_y = std::max(*max_y, std::max(t1.point.y, t2.point.y));
+    } catch (const tf2::TransformException &) { /* skip */ }
+  }
+  pending_clears_.clear();
 
   for (auto & entry_pair : ships_) {
     auto & entry = entry_pair.second;
@@ -274,6 +348,8 @@ void TSProjectionLayer::updateCosts(
 void TSProjectionLayer::reset()
 {
   ships_.clear();
+  pending_clears_.clear();
+  last_msg_valid_ = false;
 }
 
 bool TSProjectionLayer::isClearable()
