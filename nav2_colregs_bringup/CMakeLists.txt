@@ -12,6 +12,13 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+# Legacy TS subsystem launch (restored from feat/colregs-humble): backs the
+# classic planner_server + VORRTStar stack in usv_sim_full's three_vision bringup.
+install(
+  DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME}
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
