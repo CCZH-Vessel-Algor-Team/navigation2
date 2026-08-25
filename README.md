@@ -49,8 +49,10 @@ RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值�
 - 组成：`ts_core` 纯计算库（原始/处理后快照类型、`processTs` 超时过滤 + CPA/TCPA + 碰撞锥、`evaluateColregs` 主威胁/安全航向/避让点/屏障线）与 `ColregsTsStateROS` 生命周期子节点。
 - `ColregsTsStateROS`（节点名 `colregs_ts_state`）：由 `colregs_local_planner_server` 持有并编排（机制同 `colregs_costmap`），订阅 `/tracked_ship` 与 `/odom`，统一状态互斥锁维护 TS map，10 Hz timer 做超时剔除并发布 `/cpa_markers`（保留的唯一对外接口）。
 - TS 位姿/速度经消息 frame→`global_frame`（map）变换旋转；TF 失败跳过该 TS（不回退原始坐标）。OS 速度由 odom body 分量按 TF 旋转到 map，失败时 `velocity_valid=false` 降级。
-- 规划期接口：`getPlanningInput(os_x, os_y)` 单锁返回一致快照（阶段 1 仅就绪，算法消费在阶段 3 接线）。
+- 规划期接口：`getPlanningInput(os_x, os_y)` 单锁返回一致快照；阶段 3 起 `computePlan` 经 `processTs`/`evaluateColregs` 消费。
 - 超时参数：`ts_timeout: 3.0`（自动清除失联船舶）。
+- 兼容共存（过渡期）：三个旧独立节点 `ts_state_manager`/`avoidance_point_node`/`barrier_node` 与 `ts_subsystem_launch.py` 已自 `feat/colregs-humble` 恢复，编译为独立 `ts_manager_core` 库（与 `ts_core`/`colregs_ts_state_ros` 无符号/头重叠），仅供 legacy `planner_server + VORRTStar` 栈（`/processed_ts_list`、`/get_avoidance_point`、`/get_barrier_lines`）使用；legacy 栈迁移到新链路后应整体移除。
+- 兼容共存（过渡期）：三个旧独立节点 `ts_state_manager`/`avoidance_point_node`/`barrier_node` 与 `ts_subsystem_launch.py` 已自 `feat/colregs-humble` 恢复，编译为独立 `ts_manager_core` 库（与 `ts_core`/`colregs_ts_state_ros` 无符号/头重叠），仅供 legacy `planner_server + VORRTStar` 栈（`/processed_ts_list`、`/get_avoidance_point`、`/get_barrier_lines`）使用；legacy 栈迁移到新链路后应整体移除。
 
 ### 8) `nav2_colregs_los_controller`
 - 作用：最简 LOS 制导 Controller 插件。
