@@ -61,7 +61,7 @@ add_executable(barrier_node src/barrier_node_main.cpp)
 target_link_libraries(barrier_node ${legacy_ts_library})
 ament_target_dependencies(barrier_node rclcpp)
 
-install(TARGETS ${ts_core_library} ${ts_ros_library}
+install(TARGETS ${ts_core_library} ${ts_ros_library} ${legacy_ts_library}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
