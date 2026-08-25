@@ -31,6 +31,7 @@
 #include "nav_msgs/msg/path.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/lifecycle_publisher.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 
 namespace nav2_colregs_local_planner_server
 {
@@ -72,6 +73,9 @@ private:
 
   bool loadAndValidateParameters();
   void computePlan();
+  void publishDecisionMarkers(
+    const nav2_colregs_ts_manager::ColregsDecision & decision,
+    const geometry_msgs::msg::PoseStamped & start);
   void abortGoal(
     const std::shared_ptr<Action::Result> & result, uint16_t error_code,
     const std::string & message);
@@ -84,6 +88,8 @@ private:
   std::unique_ptr<nav2_util::NodeThread> ts_thread_;
   std::unique_ptr<ActionServer> action_server_;
   rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>::SharedPtr plan_publisher_;
+  rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr
+    decision_markers_publisher_;
   RRTStarParameters planner_parameters_{};
   double action_server_result_timeout_{10.0};
   double costmap_update_timeout_{1.0};

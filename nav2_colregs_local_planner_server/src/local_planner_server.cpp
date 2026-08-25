@@ -33,6 +33,7 @@
 #include "rcl_action/rcl_action.h"
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 
 using namespace std::chrono_literals;
 
@@ -149,6 +150,8 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_configure(
     }
     ts_thread_ = std::make_unique<nav2_util::NodeThread>(ts_state_ros_);
     plan_publisher_ = create_publisher<nav_msgs::msg::Path>("plan", 1);
+    decision_markers_publisher_ = create_publisher<visualization_msgs::msg::MarkerArray>(
+      "colregs_decision_markers", 1);
 
     rcl_action_server_options_t server_options = rcl_action_server_get_default_options();
     server_options.result_timeout.nanoseconds = RCL_S_TO_NS(action_server_result_timeout_);
@@ -168,10 +171,12 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_activate(
   const rclcpp_lifecycle::State &)
 {
   plan_publisher_->on_activate();
+  decision_markers_publisher_->on_activate();
   action_server_->activate();
   if (costmap_ros_->activate().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
     action_server_->deactivate();
     plan_publisher_->on_deactivate();
+    decision_markers_publisher_->on_deactivate();
     return nav2_util::CallbackReturn::FAILURE;
   }
   if (ts_state_ros_->activate().id() !=
@@ -180,6 +185,7 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_activate(
     costmap_ros_->deactivate();
     action_server_->deactivate();
     plan_publisher_->on_deactivate();
+    decision_markers_publisher_->on_deactivate();
     return nav2_util::CallbackReturn::FAILURE;
   }
   createBond();
@@ -191,6 +197,7 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_deactivate(
 {
   action_server_->deactivate();
   plan_publisher_->on_deactivate();
+  decision_markers_publisher_->on_deactivate();
   costmap_ros_->deactivate();
   ts_state_ros_->deactivate();
   destroyBond();
@@ -202,6 +209,7 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_cleanup(
 {
   action_server_.reset();
   plan_publisher_.reset();
+  decision_markers_publisher_.reset();
   if (costmap_ros_->get_current_state().id() !=
     lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED)
   {
@@ -245,6 +253,62 @@ nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput
 ColregsLocalPlannerServer::getTsPlanningInput(double os_x, double os_y)
 {
   return ts_state_ros_->getPlanningInput(os_x, os_y);
+}
+
+void ColregsLocalPlannerServer::publishDecisionMarkers(
+  const nav2_colregs_ts_manager::ColregsDecision & decision,
+  const geometry_msgs::msg::PoseStamped & start)
+{
+  // Visualization only: published outside any costmap/TS lock, next to the
+  // plan publisher. Active decisions show the avoidance arrow and the U
+  // barrier of the same evaluation frame; inactive decisions clear both.
+  auto markers = std::make_unique<visualization_msgs::msg::MarkerArray>();
+  const auto stamp = now();
+
+  visualization_msgs::msg::Marker arrow;
+  arrow.header.frame_id = costmap_ros_->getGlobalFrameID();
+  arrow.header.stamp = stamp;
+  arrow.ns = "avoidance";
+  arrow.id = 0;
+  arrow.type = visualization_msgs::msg::Marker::ARROW;
+  arrow.action = decision.active ? visualization_msgs::msg::Marker::ADD :
+    visualization_msgs::msg::Marker::DELETE;
+  if (decision.active) {
+    arrow.points.resize(2);
+    arrow.points[0].x = start.pose.position.x;
+    arrow.points[0].y = start.pose.position.y;
+    arrow.points[0].z = 0.0;
+    arrow.points[1] = decision.avoidance_point;
+  }
+  arrow.scale.x = 0.1;
+  arrow.scale.y = 0.2;
+  arrow.scale.z = 0.2;
+  arrow.color.r = 0.2;
+  arrow.color.g = 0.8;
+  arrow.color.b = 0.2;
+  arrow.color.a = 0.8;
+  arrow.lifetime = rclcpp::Duration::from_seconds(7.0);
+  markers->markers.push_back(arrow);
+
+  visualization_msgs::msg::Marker lines;
+  lines.header.frame_id = costmap_ros_->getGlobalFrameID();
+  lines.header.stamp = stamp;
+  lines.ns = "barrier";
+  lines.id = 0;
+  lines.type = visualization_msgs::msg::Marker::LINE_LIST;
+  lines.action = decision.active ? visualization_msgs::msg::Marker::ADD :
+    visualization_msgs::msg::Marker::DELETE;
+  lines.points = decision.active ? decision.barrier_points :
+    std::vector<geometry_msgs::msg::Point>{};
+  lines.scale.x = 0.05;
+  lines.color.r = 0.9;
+  lines.color.g = 0.2;
+  lines.color.b = 0.2;
+  lines.color.a = 0.8;
+  lines.lifetime = rclcpp::Duration::from_seconds(7.0);
+  markers->markers.push_back(lines);
+
+  decision_markers_publisher_->publish(std::move(markers));
 }
 
 void ColregsLocalPlannerServer::abortGoal(
@@ -471,6 +535,7 @@ void ColregsLocalPlannerServer::computePlan()
       if (interrupted()) {
         continue;
       }
+      publishDecisionMarkers(decision, transformed_start);
 
       RRTStar planner(planner_parameters_);
       std::vector<RRTStarNode> nodes;

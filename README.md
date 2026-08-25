@@ -78,6 +78,7 @@ RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值�
 - 阶段 3 已接入 VO-RRT 语义：每次请求经 `getTsPlanningInput` 取一致快照并做 `processTs`/`evaluateColregs` 决策；存在威胁且安全航向可行时执行两段式规划（start→避让点确定性段不做碰撞检查 + 避让点→goal 的 RRT*，barrier 线段进入 RRT* 碰撞判定），决策不激活或 OS 速度不可用时回退纯 RRT*；两段式 RRT* 段失败直接报错。`avoid_direction` 参数化（默认 `right`，即向右/starboard 过）。
 - BT 以 `1 Hz` 重新规划，`FollowPath` 直接消费 `{path}`。当前实现为静态快照 + 决策几何约束，不含 encounter 分类与航行规则推理，不能宣称完整 COLREGS 合规。
 - 已知限制：避让点若落在 costmap 膨胀区或图外，两段式将报 `NO_VALID_PATH`（不回退，沿用 VO-RRT 语义）；调参需保证避让距离与膨胀半径兼容。
+- 决策可视化：`colregs_decision_markers`（MarkerArray，与 server 同命名空间）随每次决策发布——active 时为避让点 ARROW（ns `avoidance`）与屏障 LINE_LIST（ns `barrier`）的同帧组合，inactive 时发布 DELETE 立即清除；marker lifetime 7 s 自动过期。发布在决策计算后、任何锁外，频率等于重规划频率，不影响规划性能。
 
 ### 11) `nav2_maritime_situation_msgs`
 - 作用：定义独立的海事态势接口 `SituationReport` 和 `SituationReportArray`。
