@@ -30,6 +30,7 @@
 #include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 
 using namespace std::chrono_literals;
 
@@ -177,6 +178,25 @@ protected:
     client_ = rclcpp_action::create_client<Action>(client_node_, "compute_path_to_pose");
     plan_subscription_ = client_node_->create_subscription<nav_msgs::msg::Path>(
       "plan", 1, [this](nav_msgs::msg::Path::SharedPtr message) {published_plan_ = message;});
+    decision_markers_subscription_ =
+      client_node_->create_subscription<visualization_msgs::msg::MarkerArray>(
+      "colregs_decision_markers", 1,
+      [this](visualization_msgs::msg::MarkerArray::SharedPtr message)
+      {
+        last_decision_markers_ = message;
+        decision_markers_seen_ = true;
+      });
+  }
+
+  bool waitForDecisionMarkers(
+    std::chrono::steady_clock::duration timeout = 1s)
+  {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!decision_markers_seen_ && std::chrono::steady_clock::now() < deadline) {
+      rclcpp::spin_some(client_node_);
+      std::this_thread::sleep_for(5ms);
+    }
+    return decision_markers_seen_;
   }
 
   void TearDown() override
@@ -303,6 +323,10 @@ protected:
   rclcpp::Node::SharedPtr client_node_;
   rclcpp_action::Client<Action>::SharedPtr client_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr plan_subscription_;
+  rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr
+    decision_markers_subscription_;
+  visualization_msgs::msg::MarkerArray::SharedPtr last_decision_markers_;
+  bool decision_markers_seen_{false};
   nav_msgs::msg::Path::SharedPtr published_plan_;
 };
 
@@ -685,6 +709,70 @@ TEST_F(LocalPlannerServerTest, activeThreatProducesTwoSegmentPathThroughAvoidanc
     }
   }
   EXPECT_TRUE(found_avoidance_point);
+}
+
+TEST_F(LocalPlannerServerTest, activeThreatPublishesDecisionMarkers)
+{
+  activate();
+  server_->setInjectedTsInput(headOnThreatInput());
+
+  const auto goal = makeGoal();
+  const auto result = runGoal(goal);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_TRUE(waitForDecisionMarkers());
+
+  // Mirror the server-side evaluation and require the arrow endpoint and the
+  // barrier polyline to come from the same decision frame.
+  const auto input = headOnThreatInput();
+  const auto & params = server_->tsCoreParams();
+  const auto snapshot = processTs(input.ts, input.os, params);
+  const auto decision = evaluateColregs(
+    snapshot, input.os, goal.goal.pose.position.x, goal.goal.pose.position.y,
+    "right", params);
+  ASSERT_TRUE(decision.active);
+
+  const auto & markers = last_decision_markers_->markers;
+  ASSERT_EQ(markers.size(), 2u);
+  bool arrow_checked = false;
+  bool barrier_checked = false;
+  for (const auto & marker : markers) {
+    if (marker.ns == "avoidance") {
+      ASSERT_EQ(marker.type, visualization_msgs::msg::Marker::ARROW);
+      EXPECT_EQ(marker.action, visualization_msgs::msg::Marker::ADD);
+      ASSERT_EQ(marker.points.size(), 2u);
+      EXPECT_NEAR(marker.points[1].x, decision.avoidance_point.x, 1e-9);
+      EXPECT_NEAR(marker.points[1].y, decision.avoidance_point.y, 1e-9);
+      arrow_checked = true;
+    } else if (marker.ns == "barrier") {
+      ASSERT_EQ(marker.type, visualization_msgs::msg::Marker::LINE_LIST);
+      EXPECT_EQ(marker.action, visualization_msgs::msg::Marker::ADD);
+      ASSERT_EQ(marker.points.size(), decision.barrier_points.size());
+      for (size_t i = 0; i < marker.points.size(); ++i) {
+        EXPECT_NEAR(marker.points[i].x, decision.barrier_points[i].x, 1e-9);
+        EXPECT_NEAR(marker.points[i].y, decision.barrier_points[i].y, 1e-9);
+      }
+      barrier_checked = true;
+    }
+  }
+  EXPECT_TRUE(arrow_checked);
+  EXPECT_TRUE(barrier_checked);
+}
+
+TEST_F(LocalPlannerServerTest, inactiveThreatClearsDecisionMarkers)
+{
+  activate();
+  server_->setInjectedTsInput(headOnThreatInput(true, 1.2));  // inescapable cone
+
+  const auto result = runGoal(makeGoal());
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_TRUE(waitForDecisionMarkers());
+
+  const auto & markers = last_decision_markers_->markers;
+  ASSERT_EQ(markers.size(), 2u);
+  for (const auto & marker : markers) {
+    EXPECT_EQ(marker.action, visualization_msgs::msg::Marker::DELETE);
+    EXPECT_TRUE(marker.points.empty());
+  }
 }
 
 TEST_F(LocalPlannerServerTest, inescapableThreatFallsBackToDirectPath)
