@@ -55,6 +55,7 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
 - Server 自有 `colregs_costmap`（map-fixed 四层全局图），并编排 `colregs_ts_state` TS 子节点（lifecycle 顺序 costmap → TS）。
 - Humble 适配：`Costmap2DROS` 三参构造 + 参数注入 `use_sim_time`；`nav2_util::SimpleActionServer` 打入 goal 取消原子性补丁。
 - 阶段 3 已接入 VO-RRT 语义：每次请求先经 `getPlanningInput` 取一致快照并做 `processTs`/`evaluateColregs` 决策；存在威胁且安全航向可行时执行两段式规划（start→避让点确定性段不做碰撞检查 + 避让点→goal 的 RRT*，barrier 线段进入 RRT* 碰撞判定），决策不激活或 OS 速度不可用时回退纯 RRT*；两段式 RRT* 段失败直接报错。`avoid_direction` 参数化（默认 `right`，即向右/starboard 过）。
+- 决策可视化：`colregs_decision_markers`（MarkerArray，与 server 同命名空间）随每次决策发布——active 时为避让点 ARROW（ns `avoidance`）与屏障 LINE_LIST（ns `barrier`）的同帧组合，inactive 时发布 DELETE 立即清除；marker lifetime 7 s 自动过期。发布在决策计算后、任何锁外，频率等于重规划频率，不影响规划性能。
 - 已知限制：避让点若落在 costmap 膨胀区或图外，两段式将报 `NO_VALID_PATH`（不回退，沿用 VO-RRT 语义）；VRX 调参需保证避让距离与膨胀半径兼容。
 
 ### 8) `nav2_colregs_los_controller`
