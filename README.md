@@ -42,11 +42,12 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
 - 注意：包已移植并可 build，但 Humble 分支尚未恢复 Jazzy 的完整 keepout/vector-object validation launch 链路。
 
 ### 6) `nav2_colregs_ts_manager`
-- 作用（阶段 2 起）：TS 状态计算库 + Server 托管的 TS 状态子节点。原三个独立节点（`ts_state_manager`、`avoidance_point_node`、`barrier_node`）与 `/processed_ts_list`、`/get_avoidance_point`、`/get_barrier_lines` 接口已内化删除。
+- 作用（阶段 2 起）：TS 状态计算库 + Server 托管的 TS 状态子节点。新链路（`colregs_local_planner_server`）进程内消费 TS 决策，不依赖 `/processed_ts_list` 与两个 service。
 - 组成：`ts_core` 纯计算库（`processTs` 超时过滤 + CPA/TCPA + 碰撞锥；`evaluateColregs` 主威胁/安全航向/避让点/屏障线）与 `ColregsTsStateROS` 生命周期子节点（节点名 `colregs_ts_state`）。
-- `colregs_ts_state` 由 `colregs_local_planner_server` 持有编排（机制同 `colregs_costmap`），订阅 `/tracked_ship` 与 `/odom`，统一状态互斥锁维护 TS map，10 Hz timer 做超时剔除并发布 `/cpa_markers`（唯一对外接口）。
+- `colregs_ts_state` 由 `colregs_local_planner_server` 持有编排（机制同 `colregs_costmap`），订阅 `/tracked_ship` 与 `/odom`，统一状态互斥锁维护 TS map，10 Hz timer 做超时剔除并发布 `/cpa_markers`（新链路唯一对外接口）。
 - TS 位姿/速度经消息 frame→`global_frame` 变换旋转；TF 失败跳过该 TS。OS 速度由 odom body 分量旋转到 map frame，失败时 `velocity_valid=false` 降级。
 - 超时参数：`ts_timeout: 3.0`（自动清除失联船舶）。
+- 兼容共存（过渡期）：三个旧独立节点 `ts_state_manager`/`avoidance_point_node`/`barrier_node` 与 `ts_subsystem_launch.py` 已自 `feat/colregs-humble` 恢复，编译为独立 `ts_manager_core` 库（与 `ts_core`/`colregs_ts_state_ros` 无符号/头重叠），仅供 legacy `planner_server + VORRTStar` 栈（`/processed_ts_list`、`/get_avoidance_point`、`/get_barrier_lines`）使用；legacy 栈迁移到新链路后应整体移除。
 
 ### 7) `nav2_colregs_local_planner_server`
 - 作用（阶段 2 新增）：生命周期管理的 RRT* 规划 server，替代标准 `planner_server` + RRT 插件链作为 COLREGS 规划入口。
