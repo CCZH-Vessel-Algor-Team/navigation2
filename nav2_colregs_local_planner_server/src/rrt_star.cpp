@@ -38,18 +38,18 @@ bool segmentsIntersect(
   constexpr double eps = 1e-9;
 
   auto cross = [](double ux, double uy, double vx, double vy) {
-      return ux * vy - uy * vx;
-    };
+    return ux * vy - uy * vx;
+  };
 
   auto orientation = [&](double px, double py, double qx, double qy, double rx, double ry) {
-      return cross(qx - px, qy - py, rx - px, ry - py);
-    };
+    return cross(qx - px, qy - py, rx - px, ry - py);
+  };
 
   auto onSegment = [&](double px, double py, double qx, double qy, double rx, double ry) {
-      return qx <= std::max(px, rx) + eps && qx + eps >= std::min(px, rx) &&
-             qy <= std::max(py, ry) + eps && qy + eps >= std::min(py, ry) &&
-             std::abs(orientation(px, py, qx, qy, rx, ry)) <= eps;
-    };
+    return qx <= std::max(px, rx) + eps && qx + eps >= std::min(px, rx) &&
+           qy <= std::max(py, ry) + eps && qy + eps >= std::min(py, ry) &&
+           std::abs(orientation(px, py, qx, qy, rx, ry)) <= eps;
+  };
 
   const double o1 = orientation(ax, ay, bx, by, cx, cy);
   const double o2 = orientation(ax, ay, bx, by, dx, dy);
@@ -93,12 +93,12 @@ PlanStatus RRTStar::planPath(
   invalid_geometry_ = false;
 
   auto failureStatus = [&](PlanStatus fallback) {
-      path.clear();
-      if (interrupted_) {
-        return interruption_status_;
-      }
-      return invalid_geometry_ ? PlanStatus::INVALID_INPUT : fallback;
-    };
+    path.clear();
+    if (interrupted_) {
+      return interruption_status_;
+    }
+    return invalid_geometry_ ? PlanStatus::INVALID_INPUT : fallback;
+  };
 
   bool barriers_finite = true;
   for (const auto & barrier_point : barriers) {
@@ -168,103 +168,103 @@ PlanStatus RRTStar::planPath(
 
   bool goal_reached = false;
   auto iterate = [&]() {
-      ++iterations_executed_;
+    ++iterations_executed_;
+    if (checkInterrupted()) {
+      return false;
+    }
+    std::uniform_real_distribution<double> unit_distribution(0.0, 1.0);
+    double sample_x = std::clamp(goal_x, min_x, max_x);
+    double sample_y = std::clamp(goal_y, min_y, max_y);
+    if (unit_distribution(rng_) >= parameters_.goal_bias) {
+      sample_x = std::uniform_real_distribution<double>(min_x, max_x)(rng_);
+      sample_y = std::uniform_real_distribution<double>(min_y, max_y)(rng_);
+    }
+
+    const int nearest_idx = nearestNode(sample_x, sample_y);
+    if (nearest_idx < 0) {
+      return false;
+    }
+    const auto nearest = tree_[nearest_idx];
+    const double dx = sample_x - nearest.x;
+    const double dy = sample_y - nearest.y;
+    const double distance = std::hypot(dx, dy);
+    if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(distance)) {
+      invalid_geometry_ = true;
+      return false;
+    }
+    if (distance <= kEpsilon) {
+      return true;
+    }
+
+    const double scale = std::min(1.0, parameters_.step_size / distance);
+    const double new_x = std::clamp(nearest.x + dx * scale, min_x, max_x);
+    const double new_y = std::clamp(nearest.y + dy * scale, min_y, max_y);
+    if (!std::isfinite(new_x) || !std::isfinite(new_y)) {
+      invalid_geometry_ = true;
+      return false;
+    }
+    for (const auto & node : tree_) {
       if (checkInterrupted()) {
         return false;
       }
-      std::uniform_real_distribution<double> unit_distribution(0.0, 1.0);
-      double sample_x = std::clamp(goal_x, min_x, max_x);
-      double sample_y = std::clamp(goal_y, min_y, max_y);
-      if (unit_distribution(rng_) >= parameters_.goal_bias) {
-        sample_x = std::uniform_real_distribution<double>(min_x, max_x)(rng_);
-        sample_y = std::uniform_real_distribution<double>(min_y, max_y)(rng_);
-      }
-
-      const int nearest_idx = nearestNode(sample_x, sample_y);
-      if (nearest_idx < 0) {
-        return false;
-      }
-      const auto nearest = tree_[nearest_idx];
-      const double dx = sample_x - nearest.x;
-      const double dy = sample_y - nearest.y;
-      const double distance = std::hypot(dx, dy);
-      if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(distance)) {
-        invalid_geometry_ = true;
-        return false;
-      }
-      if (distance <= kEpsilon) {
+      if (std::hypot(node.x - new_x, node.y - new_y) <= kEpsilon) {
         return true;
       }
+    }
+    if (!collisionFree(nearest.x, nearest.y, new_x, new_y, costmap)) {
+      return !interrupted_ && !invalid_geometry_;
+    }
 
-      const double scale = std::min(1.0, parameters_.step_size / distance);
-      const double new_x = std::clamp(nearest.x + dx * scale, min_x, max_x);
-      const double new_y = std::clamp(nearest.y + dy * scale, min_y, max_y);
-      if (!std::isfinite(new_x) || !std::isfinite(new_y)) {
-        invalid_geometry_ = true;
+    const auto near = findNear(new_x, new_y);
+    if (interrupted_) {
+      return false;
+    }
+    int best_parent = nearest_idx;
+    double best_cost = nearest.cost_from_root +
+      edgeCost(nearest.x, nearest.y, new_x, new_y, costmap);
+    if (!std::isfinite(best_cost)) {
+      invalid_geometry_ = true;
+    }
+    if (interrupted_ || invalid_geometry_) {
+      return false;
+    }
+    for (const int idx : near) {
+      if (checkInterrupted()) {
         return false;
       }
-      for (const auto & node : tree_) {
-        if (checkInterrupted()) {
+      const auto & candidate = tree_[idx];
+      if (!collisionFree(candidate.x, candidate.y, new_x, new_y, costmap)) {
+        if (interrupted_ || invalid_geometry_) {
           return false;
         }
-        if (std::hypot(node.x - new_x, node.y - new_y) <= kEpsilon) {
-          return true;
-        }
+        continue;
       }
-      if (!collisionFree(nearest.x, nearest.y, new_x, new_y, costmap)) {
-        return !interrupted_ && !invalid_geometry_;
-      }
-
-      const auto near = findNear(new_x, new_y);
-      if (interrupted_) {
-        return false;
-      }
-      int best_parent = nearest_idx;
-      double best_cost = nearest.cost_from_root +
-        edgeCost(nearest.x, nearest.y, new_x, new_y, costmap);
-      if (!std::isfinite(best_cost)) {
+      const double candidate_cost = candidate.cost_from_root +
+        edgeCost(candidate.x, candidate.y, new_x, new_y, costmap);
+      if (!std::isfinite(candidate_cost)) {
         invalid_geometry_ = true;
       }
       if (interrupted_ || invalid_geometry_) {
         return false;
       }
-      for (const int idx : near) {
-        if (checkInterrupted()) {
-          return false;
-        }
-        const auto & candidate = tree_[idx];
-        if (!collisionFree(candidate.x, candidate.y, new_x, new_y, costmap)) {
-          if (interrupted_ || invalid_geometry_) {
-            return false;
-          }
-          continue;
-        }
-        const double candidate_cost = candidate.cost_from_root +
-          edgeCost(candidate.x, candidate.y, new_x, new_y, costmap);
-        if (!std::isfinite(candidate_cost)) {
-          invalid_geometry_ = true;
-        }
-        if (interrupted_ || invalid_geometry_) {
-          return false;
-        }
-        if (candidate_cost < best_cost - kEpsilon) {
-          best_parent = idx;
-          best_cost = candidate_cost;
-        }
+      if (candidate_cost < best_cost - kEpsilon) {
+        best_parent = idx;
+        best_cost = candidate_cost;
       }
+    }
 
-      const int new_idx = static_cast<int>(tree_.size());
-      tree_.push_back({new_x, new_y, best_parent, best_cost});
-      if (!rewire(new_idx, near, costmap)) {
-        return false;
-      }
-      if (std::hypot(new_x - goal_x, new_y - goal_y) <= parameters_.goal_threshold &&
-        collisionFree(new_x, new_y, goal_x, goal_y, costmap))
-      {
-        goal_reached = true;
-      }
-      return !interrupted_ && !invalid_geometry_;
-    };
+    const int new_idx = static_cast<int>(tree_.size());
+    tree_.push_back({new_x, new_y, best_parent, best_cost});
+    if (!rewire(new_idx, near, costmap)) {
+      return false;
+    }
+    if (std::hypot(new_x - goal_x, new_y - goal_y) <= parameters_.goal_threshold &&
+      collisionFree(new_x, new_y, goal_x, goal_y, costmap))
+    {
+      goal_reached = true;
+    }
+    return !interrupted_ && !invalid_geometry_;
+  };
 
   if (std::hypot(goal_x - start_x, goal_y - start_y) <= parameters_.goal_threshold &&
     collisionFree(start_x, start_y, goal_x, goal_y, costmap))
