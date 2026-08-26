@@ -21,6 +21,10 @@ def topic_value(display, topic_name='Topic'):
     return display[topic_name]['Value']
 
 
+def display_topic_value(display):
+    return display.get('Topic', {}).get('Value')
+
+
 def test_default_rviz_profile_is_preserved_byte_for_byte():
     assert hashlib.sha256(DEFAULT_RVIZ_FILE.read_bytes()).hexdigest() == (
         '17a331f5878bde3a5f0c7f13692871f79552ec3cd053f670c1efccb9673ddcfc'
@@ -54,6 +58,28 @@ def test_demo_rviz_profile_is_the_dedicated_colregs_derivative():
         display for display in planner['Displays']
         if topic_value(display) != 'global_costmap/voxel_layer'
     ]
+
+    # The demo profile replaces the two legacy TS displays with the merged
+    # COLREGS decision marker display published by the local planner server.
+    top_displays = default_config['Visualization Manager']['Displays']
+    top_displays[:] = [
+        display for display in top_displays
+        if display_topic_value(display) not in (
+            'avoidance_point_marker', 'barrier_markers')
+    ] + [{
+        'Class': 'rviz_default_plugins/MarkerArray',
+        'Enabled': True,
+        'Name': 'COLREGS Decision (avoidance arrow + barrier lines)',
+        'Namespaces': {'avoidance': True, 'barrier': True},
+        'Topic': {
+            'Depth': 5,
+            'Durability Policy': 'Volatile',
+            'History Policy': 'Keep Last',
+            'Reliability Policy': 'Reliable',
+            'Value': 'colregs_decision_markers',
+        },
+        'Value': True,
+    }]
 
     assert demo_config == default_config
     assert 'global_costmap/' not in demo_text
