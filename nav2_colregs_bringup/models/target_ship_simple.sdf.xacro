@@ -35,7 +35,7 @@
     </link>
 
     <link name="left_wheel">
-      <pose>0 0.24 -0.02 1.5708 0 0</pose>
+      <pose>0 0.24 -0.02 -1.5708 0 0</pose>
       <inertial>
         <mass>0.3</mass>
         <inertia>
@@ -63,7 +63,7 @@
     </link>
 
     <link name="right_wheel">
-      <pose>0 -0.24 -0.02 1.5708 0 0</pose>
+      <pose>0 -0.24 -0.02 -1.5708 0 0</pose>
       <inertial>
         <mass>0.3</mass>
         <inertia>

@@ -13,6 +13,7 @@ import threading
 
 from geometry_msgs.msg import Twist
 import rclpy
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 
 
@@ -25,7 +26,12 @@ class TargetShipMotionCommander(Node):
         self.declare_parameter('publish_period_sec', 0.1)
         self.declare_parameter('reverse_cooldown_sec', 0.6)
         self.declare_parameter('reverse_rearm_distance', 0.5)
-        self.declare_parameter('motion_axis_mode', 'auto')
+        # dynamic_typing: YAML 1.1 parses an unquoted `y` as boolean True, so
+        # the declared STRING type must not reject the override at declare
+        # time; it is normalized below.
+        self.declare_parameter(
+            'motion_axis_mode', 'auto',
+            ParameterDescriptor(name='motion_axis_mode', dynamic_typing=True))
         self.declare_parameter('motion_axis_angle_rad', 0.0)
         self.declare_parameter('gz_pose_topic', '/world/default/pose/info')
         self.declare_parameter('target_model_name', 'target_ship')
@@ -35,7 +41,15 @@ class TargetShipMotionCommander(Node):
         self.publish_period_sec = float(self.get_parameter('publish_period_sec').value)
         self.reverse_cooldown_sec = float(self.get_parameter('reverse_cooldown_sec').value)
         self.reverse_rearm_distance = float(self.get_parameter('reverse_rearm_distance').value)
-        self.motion_axis_mode = str(self.get_parameter('motion_axis_mode').value)
+        raw_axis_mode = self.get_parameter('motion_axis_mode').value
+        if raw_axis_mode is True:
+            raw_axis_mode = 'y'  # unquoted y in YAML 1.1
+        if not isinstance(raw_axis_mode, str) or \
+                raw_axis_mode not in ('auto', 'x', 'y', 'angle'):
+            raise ValueError(
+                'motion_axis_mode must be one of auto/x/y/angle '
+                f'(quote the value in YAML files), got {raw_axis_mode!r}')
+        self.motion_axis_mode = raw_axis_mode
         self.motion_axis_angle_rad = float(self.get_parameter('motion_axis_angle_rad').value)
         self.gz_pose_topic = str(self.get_parameter('gz_pose_topic').value)
         self.target_model_name = str(self.get_parameter('target_model_name').value)
