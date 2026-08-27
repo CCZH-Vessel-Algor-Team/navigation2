@@ -73,8 +73,6 @@ void TSStateManager::trackedShipCallback(
 
     TSEntry e;
     e.radius = ship.radius;
-    e.vx = ship.twist.linear.x;
-    e.vy = ship.twist.linear.y;
     e.last_seen = now;
 
     geometry_msgs::msg::PoseStamped ts_in, ts_out;
@@ -85,9 +83,22 @@ void TSStateManager::trackedShipCallback(
       ts_out = tf_->transform(ts_in, global_frame_, tf2::durationFromSec(1.0));
       e.x = ts_out.pose.position.x;
       e.y = ts_out.pose.position.y;
+
+      auto tf_stamped = tf_->lookupTransform(
+        global_frame_, msg->header.frame_id, tf2::TimePointZero);
+      const auto & q = tf_stamped.transform.rotation;
+      const double yaw = std::atan2(
+        2.0 * (q.w * q.z + q.x * q.y),
+        1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+      const double c = std::cos(yaw);
+      const double s = std::sin(yaw);
+      e.vx = c * ship.twist.linear.x - s * ship.twist.linear.y;
+      e.vy = s * ship.twist.linear.x + c * ship.twist.linear.y;
     } catch (const tf2::TransformException & ex) {
       e.x = ship.pose.position.x;
       e.y = ship.pose.position.y;
+      e.vx = ship.twist.linear.x;
+      e.vy = ship.twist.linear.y;
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
         "TSStateManager: TF from '%s' to '%s' failed for %s: %s",
         msg->header.frame_id.c_str(), global_frame_.c_str(), key.c_str(), ex.what());
