@@ -85,6 +85,14 @@ def declared_argument(tree, name):
     )
 
 
+def declared_argument_defaults(tree):
+    for call in calls_named(tree, 'DeclareLaunchArgument'):
+        yield (
+            ast.literal_eval(call.args[0]),
+            ast.unparse(keyword(call, 'default_value')),
+        )
+
+
 def launch_arguments(call):
     return ast.unparse(keyword(call, 'launch_arguments'))
 
@@ -289,10 +297,15 @@ def test_custom_bringup_normalizes_effective_namespace(
 
 
 def test_log_level_is_forwarded_across_all_bringup_edges():
-    projection_tree = launch_tree('colregs_ts_projection_validation_launch.py')
-    assert 'log_level' in declared_argument_names(projection_tree)
-    projection_includes = calls_named(projection_tree, 'IncludeLaunchDescription')
-    assert "'log_level': log_level" in launch_arguments(projection_includes[0])
+    demo_tree = launch_tree('colregs_local_planner_demo_launch.py')
+    assert 'log_level' in declared_argument_names(demo_tree)
+    demo_includes = calls_named(demo_tree, 'IncludeLaunchDescription')
+    assert "'log_level': log_level" in launch_arguments(demo_includes[0])
+
+    # The restored legacy projection launch predates log-level forwarding; it
+    # must stay faithful to its historical shape.
+    legacy_tree = launch_tree('colregs_ts_projection_validation_launch.py')
+    assert 'log_level' not in declared_argument_names(legacy_tree)
 
     simulation_tree = launch_tree('colregs_ts_simulation_launch.py')
     assert 'log_level' in declared_argument_names(simulation_tree)
@@ -329,60 +342,82 @@ def test_simulation_defaults_to_standard_bringup_and_accepts_override():
     assert ast.unparse(bringup.args[0].args[0]) == 'bringup_launch_file'
 
 
-def test_rviz_defaults_keep_base_generic_and_projection_colregs_specific():
+def test_rviz_defaults_keep_base_generic_and_demo_colregs_specific():
     simulation_tree = launch_tree('colregs_ts_simulation_launch.py')
     simulation_rviz = declared_argument(simulation_tree, 'rviz_config_file')
     assert ast.unparse(keyword(simulation_rviz, 'default_value')) == (
         "os.path.join(bringup_dir, 'rviz', 'nav2_default_view.rviz')"
     )
 
-    projection_tree = launch_tree('colregs_ts_projection_validation_launch.py')
-    projection_rviz = declared_argument(projection_tree, 'rviz_config_file')
-    assert ast.unparse(keyword(projection_rviz, 'default_value')) == (
+    demo_tree = launch_tree('colregs_local_planner_demo_launch.py')
+    demo_rviz = declared_argument(demo_tree, 'rviz_config_file')
+    assert ast.unparse(keyword(demo_rviz, 'default_value')) == (
         "os.path.join(bringup_dir, 'rviz', "
         "'colregs_local_planner_demo.rviz')"
     )
 
+    # The restored legacy launch never declared an rviz override; it uses the
+    # simulation default (nav2_default_view.rviz).
+    legacy_tree = launch_tree('colregs_ts_projection_validation_launch.py')
+    assert 'rviz_config_file' not in declared_argument_names(legacy_tree)
 
-def test_projection_validation_has_only_ts_and_simulation_includes():
-    module = load_launch_module('colregs_ts_projection_validation_launch.py')
-    module.get_package_share_directory = lambda _: str(PACKAGE_DIR)
-    entities = module.generate_launch_description().entities
-    includes = [
-        entity for entity in entities if isinstance(entity, IncludeLaunchDescription)
-    ]
-    assert len(includes) == 1
-    assert all(
-        isinstance(entity, (DeclareLaunchArgument, IncludeLaunchDescription))
-        for entity in entities
-    )
 
+def test_projection_validation_restores_legacy_ts_subsystem_topology():
     tree = launch_tree('colregs_ts_projection_validation_launch.py')
     source = ast.unparse(tree)
     assert 'LifecycleNode' not in source
     assert 'OnStateTransition' not in source
     assert 'RegisterEventHandler' not in source
     assert 'lifecycle_manager_colregs_local_planner' not in source
-    # The TS subsystem runs inside colregs_local_planner_server as the
-    # colregs_ts_state sub-node; no standalone TS launch remains.
+
+    includes = calls_named(tree, 'IncludeLaunchDescription')
+    assert [included_launch_filename(call) for call in includes] == [
+        'colregs_ts_simulation_launch.py',
+        'ts_subsystem_launch.py',
+    ]
+    simulation_arguments = ast.unparse(keyword(includes[0], 'launch_arguments'))
+    for argument in ('params_file', 'use_sim_time', 'autostart', 'headless'):
+        assert f"'{argument}': {argument}" in simulation_arguments
+    # The legacy stack runs the standard bringup (planner_server chain); no
+    # custom bringup injection and no colregs server nodes.
+    assert 'bringup_launch_file' not in simulation_arguments
+
+    ts_arguments = ast.unparse(keyword(includes[1], 'launch_arguments'))
+    assert "'params_file': params_file" in ts_arguments
+    assert "'use_sim_time': use_sim_time" in ts_arguments
+
+
+def test_local_planner_demo_launch_wires_server_stack_and_open_world():
+    tree = launch_tree('colregs_local_planner_demo_launch.py')
+    source = ast.unparse(tree)
     assert 'ts_subsystem' not in source
     assert 'ts_state_manager' not in source
+    assert 'LifecycleNode' not in source
 
     includes = calls_named(tree, 'IncludeLaunchDescription')
     assert [included_launch_filename(call) for call in includes] == [
         'colregs_ts_simulation_launch.py',
     ]
     simulation_arguments = ast.unparse(keyword(includes[0], 'launch_arguments'))
-    for argument in (
-        'params_file',
-        'use_sim_time',
-        'autostart',
-        'headless',
-        'use_composition',
-        'use_rviz',
-        'rviz_config_file',
-    ):
-        assert f"'{argument}': {argument}" in simulation_arguments
     assert "'bringup_launch_file': colregs_bringup_launch_file" in (
         simulation_arguments
     )
+    for argument in (
+        'world', 'map', 'x_pose', 'y_pose', 'yaw',
+        'ts_x_pose', 'ts_y_pose', 'ts_yaw', 'ts_speed', 'ts_pingpong_distance',
+        'ts_motion_axis_mode',
+    ):
+        assert f"'{argument}': {argument}" in simulation_arguments
+
+    defaults = dict(declared_argument_defaults(tree))
+    assert 'nav2_colregs_params_local_planner_demo.yaml' in defaults['params_file']
+    assert 'colregs_open_world.sdf.xacro' in defaults['world']
+    assert 'colregs_open_map.yaml' in defaults['map']
+    assert (defaults['x_pose'], defaults['y_pose'], defaults['yaw']) == (
+        "'6.00'", "'0.00'", "'0.00'")
+    assert (defaults['ts_x_pose'], defaults['ts_y_pose']) == (
+        "'8.00'", "'9.00'")
+    assert defaults['ts_speed'] == "'0.4'"
+    assert defaults['ts_pingpong_distance'] == "'10.0'"
+    assert defaults['ts_motion_axis_mode'] == "'y'"
+    assert "'ts_motion_axis_mode': ts_motion_axis_mode" in simulation_arguments

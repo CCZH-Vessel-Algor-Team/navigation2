@@ -85,6 +85,8 @@ def generate_launch_description():
     ts_speed = LaunchConfiguration('ts_speed', default='0.3')
     ts_pingpong_distance = LaunchConfiguration('ts_pingpong_distance',
                                                default='6.0')
+    ts_motion_axis_mode = LaunchConfiguration('ts_motion_axis_mode',
+                                              default='auto')
     enable_ts_motion = LaunchConfiguration('enable_ts_motion')
 
     remappings = [('/tf', 'tf'), ('/tf_static', 'tf_static')]
@@ -164,6 +166,12 @@ def generate_launch_description():
     declare_ts_pingpong_distance_cmd = DeclareLaunchArgument(
         'ts_pingpong_distance', default_value='6.0',
         description='TS one-way distance before reverse (m)')
+    declare_ts_motion_axis_mode_cmd = DeclareLaunchArgument(
+        'ts_motion_axis_mode', default_value='auto',
+        description=(
+            'Ping-pong travel axis: auto (first Gazebo pose yaw), '
+            'x, y, or angle (see motion commander). Use y for a '
+            'wall-safe vertical corridor independent of spawn yaw capture.'))
     declare_enable_ts_motion_cmd = DeclareLaunchArgument(
         'enable_ts_motion', default_value='True',
         description='Enable ping-pong motion command publisher for target ship')
@@ -290,6 +298,7 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'speed': ts_speed,
             'pingpong_distance': ts_pingpong_distance,
+            'motion_axis_mode': ts_motion_axis_mode,
         }],
     )
 
@@ -360,6 +369,7 @@ def generate_launch_description():
     ld.add_action(declare_ts_yaw_cmd)
     ld.add_action(declare_ts_speed_cmd)
     ld.add_action(declare_ts_pingpong_distance_cmd)
+    ld.add_action(declare_ts_motion_axis_mode_cmd)
     ld.add_action(declare_enable_ts_motion_cmd)
 
     ld.add_action(set_env_models)

@@ -7,6 +7,9 @@ import yaml
 
 PACKAGE_DIR = Path(__file__).parents[1]
 PARAMS_FILE = (
+    PACKAGE_DIR / 'params' / 'nav2_colregs_params_local_planner_demo.yaml'
+)
+LEGACY_PARAMS_FILE = (
     PACKAGE_DIR / 'params' / 'nav2_colregs_params_ts_projection_validation.yaml'
 )
 DEFAULT_RVIZ_FILE = PACKAGE_DIR / 'rviz' / 'nav2_default_view.rviz'
@@ -15,6 +18,10 @@ DEMO_RVIZ_FILE = PACKAGE_DIR / 'rviz' / 'colregs_local_planner_demo.rviz'
 
 def load_params():
     return yaml.safe_load(PARAMS_FILE.read_text())
+
+
+def load_legacy_params():
+    return yaml.safe_load(LEGACY_PARAMS_FILE.read_text())
 
 
 def topic_value(display, topic_name='Topic'):
@@ -216,6 +223,37 @@ def test_ts_state_sub_node_replaces_standalone_ts_manager():
         'robot_base_frame': 'base_link',
         'odom_topic': 'odom',
         'tracked_ship_topic': '/tracked_ship',
+    }
+
+
+def test_legacy_projection_profile_restores_vo_rrt_star_stack():
+    params = load_legacy_params()
+
+    assert 'planner_server' in params
+    planner_params = params['planner_server']['ros__parameters']
+    assert planner_params['planner_plugins'] == ['GridBased', 'VORRTStar']
+    assert planner_params['VORRTStar']['plugin'] == (
+        'nav2_colregs_vo_rrt_star_planner::VORRTStarPlanner'
+    )
+    assert 'global_costmap' in params
+    assert 'ts_state_manager' in params
+    assert 'colregs_local_planner_server' not in params
+    assert 'colregs_ts_state' not in params
+
+    follow_path = params['controller_server']['ros__parameters']['FollowPath']
+    assert follow_path['reset_beta_on_new_goal'] is True
+    assert follow_path['beta_reset_goal_dist_tolerance'] == 0.05
+    assert 'reset_beta_on_new_path' not in follow_path
+    assert 'path_handler_plugins' not in params['controller_server']['ros__parameters']
+
+
+def test_demo_profile_auto_initializes_amcl_at_spawn_pose():
+    params = load_params()
+
+    amcl_params = params['amcl']['ros__parameters']
+    assert amcl_params['set_initial_pose'] is True
+    assert amcl_params['initial_pose'] == {
+        'x': 6.0, 'y': 0.0, 'z': 0.0, 'yaw': 0.0,
     }
 
 

@@ -25,7 +25,7 @@ RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值�
 - 作用：COLREGS 场景的 launch、参数、地图、世界、模型、脚本。
 - 主要 launch：
   - `colregs_ts_simulation_launch.py`：基础 TS 仿真（不含 Nav2 定制）。
-  - `colregs_ts_projection_validation_launch.py`：**主开发 launch**（自定义 RRT* Server + `colregs_costmap` + TSProjectionLayer + ALOS）。
+  - `colregs_local_planner_demo_launch.py`：**主开发 launch**（自定义 RRT* Server + `colregs_costmap` + TSProjectionLayer + ALOS）。
   - `colregs_ts_behavior_validation_launch.py`：Behavior plugin 独立验证。
 - 脚本：
   - `target_ship_state_publisher.py`：从 Gazebo 位姿生成 `TrackedShipList`，`target_id` 用 UUID5 确定性推导，广播 `map → ts_virtual_base_link`。
@@ -137,12 +137,12 @@ ros2 launch nav2_colregs_bringup colregs_ts_simulation_launch.py
 ```
 作用：单船 + 目标船（TS）仿真，含 TS 状态发布与运动控制。不含 Nav2 定制组件。
 
-### 2) `colregs_ts_projection_validation_launch.py` ★ 主开发入口
+### 2) `colregs_local_planner_demo_launch.py` ★ 主开发入口（colregs server 链）
 ```bash
-ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py
+ros2 launch nav2_colregs_bringup colregs_local_planner_demo_launch.py
 ```
-作用：COLREGS 全套开发 launch。组件链：
-- **COLREGS Local Planner Server**（标准 `/compute_path_to_pose`，发布 `/plan`）
+作用：COLREGS server 全栈开发 launch（开阔水域场景）。组件链：
+- **COLREGS Local Planner Server**（标准 `/compute_path_to_pose`，发布 `/plan`；进程内 VO-RRT 决策与 `colregs_decision_markers`）
 - Server 自有 **`/colregs_costmap`**（map-fixed，Static/Obstacle/TSProjection/Inflation 四层）
 - **TSProjectionLayer**（在规划与控制 costmap 内标记 TS 障碍物）
 - **`colregs_ts_state` TS 状态子节点**（Server 进程内，CPA/TCPA/碰撞锥计算，发布 `/cpa_markers`）
@@ -151,7 +151,18 @@ ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py
 - 使用专用 RViz：`colregs_local_planner_demo.rviz`
 - 不含 vector_object_server / keepout 链路。
 
-本入口不启动 `/planner_server` 或 `/global_costmap`。RRT* 仅依据请求时的静态 costmap 快照做栅格碰撞规划；虽然快照可含 TS 投影，但当前仍不是基于航行规则的动态 COLREGS 规划器。
+场景与便利特性：
+- 默认 **放大围墙场景**：`colregs_open_world`（围墙 ±15 m，场地 30×30 m，比原 24×24 m 参考场景略大；3 根外扩特征柱 (-8,6)/(4,-7)/(11,10)）+ 36×36 m 地图 `colregs_open_map`。围墙为 AMCL 提供连续定位特征，柱间中央走廊用于 VO-RRT 避障观测。
+- TS 默认 spawn (8, 9)、0.4 m/s、往返 10 m，走廊锁定世界 y 轴（`ts_motion_axis_mode:=y`，x=8 竖向走廊 y∈[-1,9]），不依赖首帧 yaw 捕获，端点距墙 ≥6 m；与东西向巡逻构成交叉会遇。`colregs_ts_simulation_launch.py` 新增 `ts_motion_axis_mode` 参数（默认 `auto` 保持旧行为，可选 `x`/`y`/`angle`）。
+- **AMCL 自动初始位姿**：`set_initial_pose` 预置与默认 spawn (6, 0, 0°) 一致，启动后无需手点 2D Pose Estimate；如覆盖 `x_pose/y_pose/yaw`，需同步修改 params 中 `amcl.initial_pose` 或在 RViz 手动指定。
+
+本入口不启动 `/planner_server` 或 `/global_costmap`。RRT* 依据请求时的静态 costmap 快照 + 决策几何约束（避让点/barrier）规划；当前不含 encounter 分类与航行规则推理，不能宣称完整 COLREGS 合规。
+
+### 2b) `colregs_ts_projection_validation_launch.py`（legacy 链，A/B 对照）
+```bash
+ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py
+```
+作用：恢复的 legacy 验证入口——标准 `planner_server`（NavFn + VORRTStar 插件）+ 独立 TS 三节点子系统（`ts_state_manager`/`avoidance_point_node`/`barrier_node`，经 `/processed_ts_list` 与两个 service 交互）+ 标准 Nav2 bringup。用于新旧链路 A/B 对照；参数文件为 `nav2_colregs_params_ts_projection_validation.yaml`（legacy 版）。TS 节点与 server 链互不干扰，可与新入口并行分析，但同一 ROS domain 内不要同时运行两套导航栈。
 
 ### 3) `colregs_ts_behavior_validation_launch.py`
 ```bash
@@ -240,8 +251,8 @@ colcon test-result --verbose
 分别验证 composed 与 non-composed 模式：
 
 ```bash
-ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py use_composition:=True
-ros2 launch nav2_colregs_bringup colregs_ts_projection_validation_launch.py use_composition:=False
+ros2 launch nav2_colregs_bringup colregs_local_planner_demo_launch.py use_composition:=True
+ros2 launch nav2_colregs_bringup colregs_local_planner_demo_launch.py use_composition:=False
 ```
 
 发送 NavigateToPose goal 后，在其他已 source workspace 的终端采集。以下命令应有输出，并且四个 lifecycle 节点均应为 `active`：

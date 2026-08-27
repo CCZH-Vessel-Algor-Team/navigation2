@@ -15,48 +15,43 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
     headless = LaunchConfiguration('headless')
-    use_composition = LaunchConfiguration('use_composition')
-    use_rviz = LaunchConfiguration('use_rviz')
-    rviz_config_file = LaunchConfiguration('rviz_config_file')
-    log_level = LaunchConfiguration('log_level')
-    colregs_bringup_launch_file = os.path.join(
-        bringup_dir, 'launch', 'colregs_bringup_launch.py')
 
-    # The TS state subsystem runs inside colregs_local_planner_server as the
-    # colregs_ts_state lifecycle sub-node (CPA markers on /cpa_markers).
-    simulation = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(
-            bringup_dir, 'launch', 'colregs_ts_simulation_launch.py')),
+    declare_params_file = DeclareLaunchArgument(
+        'params_file',
+        default_value=os.path.join(
+            bringup_dir, 'params', 'nav2_colregs_params_ts_projection_validation.yaml'))
+    declare_use_sim_time = DeclareLaunchArgument('use_sim_time', default_value='true')
+    declare_autostart = DeclareLaunchArgument('autostart', default_value='true')
+    declare_headless = DeclareLaunchArgument(
+        'headless',
+        default_value='False',
+        description='Whether to execute gzclient')
+
+    base_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(bringup_dir, 'launch', 'colregs_ts_simulation_launch.py')),
         launch_arguments={
             'params_file': params_file,
             'use_sim_time': use_sim_time,
             'autostart': autostart,
             'headless': headless,
-            'use_composition': use_composition,
-            'use_rviz': use_rviz,
-            'rviz_config_file': rviz_config_file,
-            'bringup_launch_file': colregs_bringup_launch_file,
-            'log_level': log_level,
         }.items(),
     )
 
-    return LaunchDescription([
-        DeclareLaunchArgument(
-            'params_file',
-            default_value=os.path.join(
-                bringup_dir, 'params',
-                'nav2_colregs_params_ts_projection_validation.yaml')),
-        DeclareLaunchArgument('use_sim_time', default_value='true'),
-        DeclareLaunchArgument('autostart', default_value='true'),
-        DeclareLaunchArgument(
-            'headless', default_value='False',
-            description='Whether to execute gzclient'),
-        DeclareLaunchArgument('use_composition', default_value='True'),
-        DeclareLaunchArgument('use_rviz', default_value='True'),
-        DeclareLaunchArgument(
-            'rviz_config_file',
-            default_value=os.path.join(
-                bringup_dir, 'rviz', 'colregs_local_planner_demo.rviz')),
-        DeclareLaunchArgument('log_level', default_value='info'),
-        simulation,
-    ])
+    ts_subsystem = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(bringup_dir, 'launch', 'ts_subsystem_launch.py')),
+        launch_arguments={
+            'params_file': params_file,
+            'use_sim_time': use_sim_time,
+        }.items(),
+    )
+
+    ld = LaunchDescription()
+    ld.add_action(declare_params_file)
+    ld.add_action(declare_use_sim_time)
+    ld.add_action(declare_autostart)
+    ld.add_action(declare_headless)
+    ld.add_action(base_launch)
+    ld.add_action(ts_subsystem)
+    return ld
