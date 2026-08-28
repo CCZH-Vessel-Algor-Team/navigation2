@@ -27,6 +27,7 @@
 #include "nav2_colregs_local_planner_server/local_planner_server.hpp"
 #include "nav2_colregs_ts_manager/ts_core.hpp"
 #include "nav2_costmap_2d/cost_values.hpp"
+#include "nav2_msgs/action/compute_path_through_poses.hpp"
 #include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
@@ -157,6 +158,8 @@ class LocalPlannerServerTest : public ::testing::Test
 protected:
   using Action = nav2_msgs::action::ComputePathToPose;
   using GoalHandle = rclcpp_action::ClientGoalHandle<Action>;
+  using ActionThroughPoses = nav2_msgs::action::ComputePathThroughPoses;
+  using ThroughPosesGoalHandle = rclcpp_action::ClientGoalHandle<ActionThroughPoses>;
 
   static void SetUpTestSuite()
   {
@@ -176,6 +179,8 @@ protected:
     server_ = std::make_shared<TestPlannerServer>(options);
     client_node_ = std::make_shared<rclcpp::Node>("client", "/colregs_planner_test");
     client_ = rclcpp_action::create_client<Action>(client_node_, "compute_path_to_pose");
+    through_poses_client_ = rclcpp_action::create_client<ActionThroughPoses>(
+      client_node_, "compute_path_through_poses");
     plan_subscription_ = client_node_->create_subscription<nav_msgs::msg::Path>(
       "plan", 1, [this](nav_msgs::msg::Path::SharedPtr message) {published_plan_ = message;});
     decision_markers_subscription_ =
@@ -215,6 +220,7 @@ protected:
       server_->shutdown();
     }
     client_.reset();
+    through_poses_client_.reset();
     client_node_.reset();
     server_.reset();
   }
@@ -319,9 +325,56 @@ protected:
     }
   }
 
+  static ActionThroughPoses::Goal makeThroughPosesGoal(
+    std::initializer_list<std::pair<double, double>> goals)
+  {
+    ActionThroughPoses::Goal goal;
+    goal.use_start = true;
+    goal.planner_id = "RRTStar";
+    goal.start.header.frame_id = "map";
+    goal.start.pose.position.x = 1.0;
+    goal.start.pose.position.y = 1.0;
+    goal.start.pose.orientation.w = 1.0;
+    for (const auto & [x, y] : goals) {
+      geometry_msgs::msg::PoseStamped pose;
+      pose.header.frame_id = "map";
+      pose.pose.position.x = x;
+      pose.pose.position.y = y;
+      pose.pose.orientation.w = 1.0;
+      goal.goals.push_back(pose);
+    }
+    return goal;
+  }
+
+  ThroughPosesGoalHandle::WrappedResult runThroughPosesGoal(
+    const ActionThroughPoses::Goal & goal)
+  {
+    auto goal_future = through_poses_client_->async_send_goal(goal);
+    const auto goal_status =
+      rclcpp::spin_until_future_complete(client_node_, goal_future, 2s);
+    EXPECT_EQ(goal_status, rclcpp::FutureReturnCode::SUCCESS);
+    if (goal_status != rclcpp::FutureReturnCode::SUCCESS) {
+      return {};
+    }
+    auto handle = goal_future.get();
+    EXPECT_NE(handle, nullptr);
+    if (!handle) {
+      return {};
+    }
+    auto result_future = through_poses_client_->async_get_result(handle);
+    const auto result_status = rclcpp::spin_until_future_complete(
+      client_node_, result_future, 5s);
+    EXPECT_EQ(result_status, rclcpp::FutureReturnCode::SUCCESS);
+    if (result_status != rclcpp::FutureReturnCode::SUCCESS) {
+      return {};
+    }
+    return result_future.get();
+  }
+
   std::shared_ptr<TestPlannerServer> server_;
   rclcpp::Node::SharedPtr client_node_;
   rclcpp_action::Client<Action>::SharedPtr client_;
+  rclcpp_action::Client<ActionThroughPoses>::SharedPtr through_poses_client_;
   rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr plan_subscription_;
   rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr
     decision_markers_subscription_;
@@ -808,6 +861,104 @@ TEST_F(LocalPlannerServerTest, invalidAvoidDirectionFailsConfiguration)
 {
   server_->set_parameter(rclcpp::Parameter("avoid_direction", "up"));
   EXPECT_EQ(server_->configure().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+}
+
+TEST_F(LocalPlannerServerTest, throughPosesRejectsEmptyGoals)
+{
+  activate();
+  ASSERT_TRUE(through_poses_client_->wait_for_action_server(2s));
+
+  const auto result = runThroughPosesGoal(ActionThroughPoses::Goal());
+  EXPECT_EQ(result.code, rclcpp_action::ResultCode::ABORTED);
+  ASSERT_NE(result.result, nullptr);
+  EXPECT_TRUE(result.result->path.poses.empty());
+}
+
+TEST_F(LocalPlannerServerTest, throughPosesSingleGoalReachesGoal)
+{
+  activate();
+  ASSERT_TRUE(through_poses_client_->wait_for_action_server(2s));
+
+  const auto goal = makeThroughPosesGoal({{8.0, 1.0}});
+  const auto result = runThroughPosesGoal(goal);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_NE(result.result, nullptr);
+  ASSERT_GT(result.result->path.poses.size(), 2u);
+  EXPECT_EQ(result.result->path.poses.front().pose, goal.start.pose);
+  EXPECT_EQ(result.result->path.poses.back().pose, goal.goals[0].pose);
+  EXPECT_LT(result.result->planning_time.nanosec, 1000000000u);
+}
+
+TEST_F(LocalPlannerServerTest, throughPosesAppliesColregsOnlyToFirstSegment)
+{
+  server_->set_parameter(rclcpp::Parameter("prune_path", false));
+  activate();
+  ASSERT_TRUE(through_poses_client_->wait_for_action_server(2s));
+  server_->setInjectedTsInput(headOnThreatInput());
+
+  // The head-on threat sits on the first segment (start (1,1) -> vp (4,1));
+  // the second segment (vp -> (8,3)) is a plain barrier-free preview.
+  const auto goal = makeThroughPosesGoal({{4.0, 1.0}, {8.0, 3.0}});
+  const auto result = runThroughPosesGoal(goal);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_NE(result.result, nullptr);
+  const auto & path = result.result->path.poses;
+  ASSERT_GT(path.size(), 2u);
+  EXPECT_EQ(path.front().pose, goal.start.pose);
+  EXPECT_EQ(path.back().pose, goal.goals.back().pose);
+
+  // The first segment is the active two-segment VO-RRT plan: the path must
+  // pass exactly through its avoidance point.
+  const auto input = headOnThreatInput();
+  const auto & params = server_->tsCoreParams();
+  const auto snapshot = processTs(input.ts, input.os, params);
+  const auto decision = evaluateColregs(
+    snapshot, input.os, goal.goals[0].pose.position.x,
+    goal.goals[0].pose.position.y, "right", params);
+  ASSERT_TRUE(decision.active);
+  bool found_avoidance_point = false;
+  for (const auto & pose : path) {
+    if (std::abs(pose.pose.position.x - decision.avoidance_point.x) < 1e-9 &&
+      std::abs(pose.pose.position.y - decision.avoidance_point.y) < 1e-9)
+    {
+      found_avoidance_point = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found_avoidance_point);
+}
+
+TEST_F(LocalPlannerServerTest, throughPosesPassesExactlyThroughViapoints)
+{
+  activate();
+  ASSERT_TRUE(through_poses_client_->wait_for_action_server(2s));
+
+  const auto goal = makeThroughPosesGoal({{4.0, 1.0}, {8.0, 3.0}});
+  const auto result = runThroughPosesGoal(goal);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_NE(result.result, nullptr);
+  const auto & path = result.result->path.poses;
+  ASSERT_GT(path.size(), 2u);
+  EXPECT_EQ(path.front().pose, goal.start.pose);
+  EXPECT_EQ(path.back().pose, goal.goals.back().pose);
+
+  bool found_viapoint = false;
+  for (const auto & pose : path) {
+    if (std::abs(pose.pose.position.x - goal.goals[0].pose.position.x) < 1e-9 &&
+      std::abs(pose.pose.position.y - goal.goals[0].pose.position.y) < 1e-9)
+    {
+      found_viapoint = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found_viapoint);
+  // No duplicated junction poses remain after concatenation.
+  for (size_t index = 1; index < path.size(); ++index) {
+    const double spacing = std::hypot(
+      path[index].pose.position.x - path[index - 1].pose.position.x,
+      path[index].pose.position.y - path[index - 1].pose.position.y);
+    EXPECT_GT(spacing, 1e-9);
+  }
 }
 
 }  // namespace nav2_colregs_local_planner_server

@@ -54,6 +54,7 @@ Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humb
 - 标准 Action：`/compute_path_to_pose`；成功路径发布到 `/plan`。
 - Server 自有 `colregs_costmap`（map-fixed 四层全局图），并编排 `colregs_ts_state` TS 子节点（lifecycle 顺序 costmap → TS）。
 - Humble 适配：`Costmap2DROS` 三参构造 + 参数注入 `use_sim_time`；`nav2_util::SimpleActionServer` 打入 goal 取消原子性补丁。
+- 标准 Action（双入口）：`/compute_path_to_pose` 与 `/compute_path_through_poses`。ThroughPoses 逐段规划（段起点=前段路径终点，拼接跳过接合重复点，精确保留请求 start 与最终 goal），共享单次 costmap/TS 快照与整请求规划时限；**COLREGS 决策仅作用于首段**——碰撞锥与安全航向由快照锚定的 OS 当前速度/航向导出，只对 OS 正在循迹的段有物理意义；后续段为 preview 路线（无 barrier 纯 RRT*），随 OS 推进由重规划重新锚定并刷新。决策 markers 取首段；空 goals 直接中止。两 action server 并存（同上游 planner_server 模式），与 to-pose 行为完全兼容。
 - 阶段 3 已接入 VO-RRT 语义：每次请求先经 `getPlanningInput` 取一致快照并做 `processTs`/`evaluateColregs` 决策；存在威胁且安全航向可行时执行两段式规划（start→避让点确定性段不做碰撞检查 + 避让点→goal 的 RRT*，barrier 线段进入 RRT* 碰撞判定），决策不激活或 OS 速度不可用时回退纯 RRT*；两段式 RRT* 段失败直接报错。`avoid_direction` 参数化（默认 `right`，即向右/starboard 过）。
 - 决策可视化：`colregs_decision_markers`（MarkerArray，与 server 同命名空间）随每次决策发布——active 时为避让点 ARROW（ns `avoidance`）与屏障 LINE_LIST（ns `barrier`）的同帧组合，inactive 时发布 DELETE 立即清除；marker lifetime 7 s 自动过期。发布在决策计算后、任何锁外，频率等于重规划频率，不影响规划性能。
 - 已知限制：避让点若落在 costmap 膨胀区或图外，两段式将报 `NO_VALID_PATH`（不回退，沿用 VO-RRT 语义）；VRX 调参需保证避让距离与膨胀半径兼容。
