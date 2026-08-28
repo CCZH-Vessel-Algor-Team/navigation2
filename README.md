@@ -52,7 +52,6 @@ RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值�
 - 规划期接口：`getPlanningInput(os_x, os_y)` 单锁返回一致快照；阶段 3 起 `computePlan` 经 `processTs`/`evaluateColregs` 消费。
 - 超时参数：`ts_timeout: 3.0`（自动清除失联船舶）。
 - 兼容共存（过渡期）：三个旧独立节点 `ts_state_manager`/`avoidance_point_node`/`barrier_node` 与 `ts_subsystem_launch.py` 已自 `feat/colregs-humble` 恢复，编译为独立 `ts_manager_core` 库（与 `ts_core`/`colregs_ts_state_ros` 无符号/头重叠），仅供 legacy `planner_server + VORRTStar` 栈（`/processed_ts_list`、`/get_avoidance_point`、`/get_barrier_lines`）使用；legacy 栈迁移到新链路后应整体移除。
-- 兼容共存（过渡期）：三个旧独立节点 `ts_state_manager`/`avoidance_point_node`/`barrier_node` 与 `ts_subsystem_launch.py` 已自 `feat/colregs-humble` 恢复，编译为独立 `ts_manager_core` 库（与 `ts_core`/`colregs_ts_state_ros` 无符号/头重叠），仅供 legacy `planner_server + VORRTStar` 栈（`/processed_ts_list`、`/get_avoidance_point`、`/get_barrier_lines`）使用；legacy 栈迁移到新链路后应整体移除。
 
 ### 8) `nav2_colregs_los_controller`
 - 作用：最简 LOS 制导 Controller 插件。
@@ -73,6 +72,7 @@ RRT* 和 COLREGS VO-RRT* 成功规划（包括近似回退）在裁剪和插值�
 - 作用：生命周期管理的 RRT* 路径规划 Server，替代主开发入口中的标准 PlannerServer。
 - 生命周期节点：`/colregs_local_planner_server`。
 - 标准 Action：`/compute_path_to_pose`（`nav2_msgs/action/ComputePathToPose`）；成功路径发布到 `/plan`。
+- 标准 Action（双入口）：`/compute_path_to_pose` 与 `/compute_path_through_poses`。ThroughPoses 逐段规划（段起点=前段路径终点，拼接跳过接合重复点，精确保留请求 start 与最终 goal），共享单次 costmap/TS 快照与整请求规划时限；**COLREGS 决策仅作用于首段**——碰撞锥与安全航向由快照锚定的 OS 当前速度/航向导出，只对 OS 正在循迹的段有物理意义；后续段为 preview 路线（无 barrier 纯 RRT*），随 OS 推进由重规划重新锚定并刷新。决策 markers 取首段；空 goals 直接中止。两 action server 并存（同上游 planner_server 模式），与 to-pose 行为完全兼容。
 - Server 内部持有固定 `map` 坐标系、非滚动的 `/colregs_costmap`，不由 Lifecycle Manager 单独管理。
 - Server 同时编排 `colregs_ts_state` TS 状态子节点（独立 NodeThread，lifecycle 顺序固定为 costmap → TS）。
 - 每次请求在 costmap mutex 内深拷贝快照，释放锁后对静态快照执行确定性 RRT*；接受空 `planner_id` 或 `RRTStar`。

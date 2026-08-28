@@ -159,6 +159,10 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_configure(
       shared_from_this(), "compute_path_to_pose",
       std::bind(&ColregsLocalPlannerServer::computePlan, this), nullptr,
       std::chrono::milliseconds(500), true, server_options);
+    action_server_poses_ = std::make_unique<ActionServerThroughPoses>(
+      shared_from_this(), "compute_path_through_poses",
+      std::bind(&ColregsLocalPlannerServer::computePlanThroughPoses, this), nullptr,
+      std::chrono::milliseconds(500), true, server_options);
   } catch (const std::exception & error) {
     RCLCPP_ERROR(get_logger(), "Failed to configure planner server: %s", error.what());
     on_cleanup(state);
@@ -173,7 +177,9 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_activate(
   plan_publisher_->on_activate();
   decision_markers_publisher_->on_activate();
   action_server_->activate();
+  action_server_poses_->activate();
   if (costmap_ros_->activate().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+    action_server_poses_->deactivate();
     action_server_->deactivate();
     plan_publisher_->on_deactivate();
     decision_markers_publisher_->on_deactivate();
@@ -183,6 +189,7 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_activate(
     lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE)
   {
     costmap_ros_->deactivate();
+    action_server_poses_->deactivate();
     action_server_->deactivate();
     plan_publisher_->on_deactivate();
     decision_markers_publisher_->on_deactivate();
@@ -196,6 +203,7 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_deactivate(
   const rclcpp_lifecycle::State &)
 {
   action_server_->deactivate();
+  action_server_poses_->deactivate();
   plan_publisher_->on_deactivate();
   decision_markers_publisher_->on_deactivate();
   costmap_ros_->deactivate();
@@ -208,6 +216,7 @@ nav2_util::CallbackReturn ColregsLocalPlannerServer::on_cleanup(
   const rclcpp_lifecycle::State &)
 {
   action_server_.reset();
+  action_server_poses_.reset();
   plan_publisher_.reset();
   decision_markers_publisher_.reset();
   if (costmap_ros_->get_current_state().id() !=
@@ -520,68 +529,31 @@ void ColregsLocalPlannerServer::computePlan()
         std::chrono::duration_cast<std::chrono::steady_clock::duration>(
         std::chrono::duration<double>(max_planning_time_));
 
-      // COLREGS TS decision: consistent snapshot from the TS sub-node, pure
-      // evaluation with the sub-node's CPA/cone parameters. An inactive
-      // decision (no threat, infeasible safe heading, or invalid OS velocity)
-      // falls back to plain RRT* per design decision D5.
+      // One TS snapshot per request, anchored at the transformed planning
+      // start (map frame).
       const auto ts_input = getTsPlanningInput(
         transformed_start.pose.position.x, transformed_start.pose.position.y);
-      const auto & ts_params = ts_state_ros_->coreParams();
-      const auto ts_snapshot = processTs(ts_input.ts, ts_input.os, ts_params);
-      const auto decision = evaluateColregs(
-        ts_snapshot, ts_input.os,
-        transformed_goal.pose.position.x, transformed_goal.pose.position.y,
-        avoid_direction_, ts_params);
-      if (interrupted()) {
-        continue;
-      }
-      publishDecisionMarkers(decision, transformed_start);
 
-      RRTStar planner(planner_parameters_);
-      std::vector<RRTStarNode> nodes;
-      PlanStatus status = PlanStatus::NO_PATH;
-      if (decision.active) {
-        // Two-segment plan: the deterministic start→avoidance-point leg is
-        // prepended as a raw node and only densified by makePath (no
-        // collision check — VO-RRT semantics, design limitation L2); RRT*
-        // runs from the avoidance point to the goal under the barriers.
-        std::vector<RRTStarNode> rrt_nodes;
-        status = planner.planPath(
-          decision.avoidance_point.x, decision.avoidance_point.y,
-          transformed_goal.pose.position.x, transformed_goal.pose.position.y,
-          snapshot, decision.barrier_points, interrupted, planning_deadline,
-          rrt_nodes);
-        if (status == PlanStatus::SUCCESS && !rrt_nodes.empty()) {
-          rrt_nodes.insert(
-            rrt_nodes.begin(),
-            {transformed_start.pose.position.x,
-              transformed_start.pose.position.y, -1, 0.0});
-        }
-        nodes = std::move(rrt_nodes);
-      } else {
-        const std::vector<geometry_msgs::msg::Point> no_barriers;
-        status = planner.planPath(
-          transformed_start.pose.position.x, transformed_start.pose.position.y,
-          transformed_goal.pose.position.x, transformed_goal.pose.position.y,
-          snapshot, no_barriers, interrupted, planning_deadline, nodes);
-      }
-      if (status == PlanStatus::CANCELED) {
+      const auto segment = planSegment(
+        transformed_start, goal->goal, snapshot, ts_input, interrupted,
+        planning_deadline, true, true);
+      if (segment.status == PlanStatus::CANCELED) {
         continue;
       }
-      if (status == PlanStatus::TIMEOUT) {
-        abortGoal(result, Action::Result::TIMEOUT, "RRT* planning timed out");
+      if (segment.status == PlanStatus::TIMEOUT) {
+        abortGoal(result, Action::Result::TIMEOUT, segment.error);
         return;
       }
-      if (status == PlanStatus::INVALID_INPUT) {
-        abortGoal(result, Action::Result::UNKNOWN, "RRT* rejected the planning input");
+      if (segment.status == PlanStatus::INVALID_INPUT) {
+        abortGoal(result, Action::Result::UNKNOWN, segment.error);
         return;
       }
-      if (status != PlanStatus::SUCCESS || nodes.empty()) {
-        abortGoal(result, Action::Result::NO_VALID_PATH, "RRT* failed to find a valid path");
+      if (segment.status != PlanStatus::SUCCESS) {
+        abortGoal(result, Action::Result::NO_VALID_PATH, segment.error);
         return;
       }
 
-      result->path = makePath(nodes, transformed_start, transformed_goal);
+      result->path = segment.path;
       const auto elapsed = std::chrono::steady_clock::now() - started;
       const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed);
       const auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -601,6 +573,326 @@ void ColregsLocalPlannerServer::computePlan()
         continue;
       }
       abortGoal(result, Action::Result::UNKNOWN, error.what());
+      return;
+    }
+  }
+}
+
+void ColregsLocalPlannerServer::abortThroughPosesGoal(
+  const std::shared_ptr<ActionThroughPoses::Result> & result,
+  const std::string & message)
+{
+  RCLCPP_WARN(
+    get_logger(), "Aborting ComputePathThroughPoses goal: %s", message.c_str());
+  action_server_poses_->terminate_current(result);
+}
+
+ColregsLocalPlannerServer::SegmentPlan ColregsLocalPlannerServer::planSegment(
+  const geometry_msgs::msg::PoseStamped & seg_start,
+  const geometry_msgs::msg::PoseStamped & seg_goal,
+  const nav2_costmap_2d::Costmap2D & snapshot,
+  const nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput & ts_input,
+  const std::function<bool()> & interrupted,
+  const std::chrono::steady_clock::time_point & deadline,
+  bool apply_colregs,
+  bool publish_markers)
+{
+  SegmentPlan outcome;
+
+  // Contract: seg_start is already in the costmap global frame (the caller
+  // transformed it for the request-wide TS snapshot anchor); only the goal is
+  // transformed here.
+  const geometry_msgs::msg::PoseStamped & transformed_start = seg_start;
+  geometry_msgs::msg::PoseStamped transformed_goal;
+  if (!transformPoseToGlobalFrame(seg_goal, transformed_goal)) {
+    outcome.status = PlanStatus::INVALID_INPUT;
+    outcome.error = "Unable to transform poses to costmap frame";
+    return outcome;
+  }
+  if (!std::isfinite(transformed_start.pose.position.x) ||
+    !std::isfinite(transformed_start.pose.position.y) ||
+    !std::isfinite(transformed_goal.pose.position.x) ||
+    !std::isfinite(transformed_goal.pose.position.y))
+  {
+    outcome.status = PlanStatus::INVALID_INPUT;
+    outcome.error = "Transformed start or goal pose contains non-finite x/y coordinates";
+    return outcome;
+  }
+  unsigned int start_mx;
+  unsigned int start_my;
+  unsigned int goal_mx;
+  unsigned int goal_my;
+  if (!snapshot.worldToMap(
+      transformed_start.pose.position.x, transformed_start.pose.position.y,
+      start_mx, start_my))
+  {
+    outcome.status = PlanStatus::INVALID_INPUT;
+    outcome.error = "Start pose is outside the costmap";
+    return outcome;
+  }
+  if (!snapshot.worldToMap(
+      transformed_goal.pose.position.x, transformed_goal.pose.position.y,
+      goal_mx, goal_my))
+  {
+    outcome.status = PlanStatus::INVALID_INPUT;
+    outcome.error = "Goal pose is outside the costmap";
+    return outcome;
+  }
+  if (snapshot.getCost(start_mx, start_my) >=
+    nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
+  {
+    outcome.status = PlanStatus::INVALID_INPUT;
+    outcome.error = "Start pose is occupied";
+    return outcome;
+  }
+  if (snapshot.getCost(goal_mx, goal_my) >=
+    nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE)
+  {
+    outcome.status = PlanStatus::INVALID_INPUT;
+    outcome.error = "Goal pose is occupied";
+    return outcome;
+  }
+
+  // COLREGS TS decision only for the OS-anchored segment: the collision
+  // cone and safe heading derive from the OS velocity captured in the
+  // request-wide TS snapshot, which is physically meaningful only for the
+  // first segment. Later segments are previews and always plan plain
+  // barrier-free RRT*; re-planning re-anchors the OS as it advances.
+  nav2_colregs_ts_manager::ColregsDecision decision;
+  if (apply_colregs) {
+    const auto & ts_params = ts_state_ros_->coreParams();
+    const auto ts_snapshot = processTs(ts_input.ts, ts_input.os, ts_params);
+    decision = evaluateColregs(
+      ts_snapshot, ts_input.os,
+      transformed_goal.pose.position.x, transformed_goal.pose.position.y,
+      avoid_direction_, ts_params);
+  }
+  if (interrupted()) {
+    outcome.status = PlanStatus::CANCELED;
+    return outcome;
+  }
+  if (publish_markers && apply_colregs) {
+    publishDecisionMarkers(decision, transformed_start);
+  }
+
+  RRTStar planner(planner_parameters_);
+  std::vector<RRTStarNode> nodes;
+  PlanStatus status = PlanStatus::NO_PATH;
+  if (decision.active) {
+    // Two-segment plan: the deterministic start→avoidance-point leg is
+    // prepended as a raw node and only densified by makePath (no collision
+    // check — VO-RRT semantics, design limitation L2); RRT* runs from the
+    // avoidance point to the segment goal under the barriers.
+    std::vector<RRTStarNode> rrt_nodes;
+    status = planner.planPath(
+      decision.avoidance_point.x, decision.avoidance_point.y,
+      transformed_goal.pose.position.x, transformed_goal.pose.position.y,
+      snapshot, decision.barrier_points, interrupted, deadline,
+      rrt_nodes);
+    if (status == PlanStatus::SUCCESS && !rrt_nodes.empty()) {
+      rrt_nodes.insert(
+        rrt_nodes.begin(),
+        {transformed_start.pose.position.x,
+          transformed_start.pose.position.y, -1, 0.0});
+    }
+    nodes = std::move(rrt_nodes);
+  } else {
+    const std::vector<geometry_msgs::msg::Point> no_barriers;
+    status = planner.planPath(
+      transformed_start.pose.position.x, transformed_start.pose.position.y,
+      transformed_goal.pose.position.x, transformed_goal.pose.position.y,
+      snapshot, no_barriers, interrupted, deadline, nodes);
+  }
+  if (status == PlanStatus::CANCELED) {
+    outcome.status = PlanStatus::CANCELED;
+    return outcome;
+  }
+  if (status == PlanStatus::TIMEOUT) {
+    outcome.status = PlanStatus::TIMEOUT;
+    outcome.error = "RRT* planning timed out";
+    return outcome;
+  }
+  if (status == PlanStatus::INVALID_INPUT) {
+    outcome.status = PlanStatus::INVALID_INPUT;
+    outcome.error = "RRT* rejected the planning input";
+    return outcome;
+  }
+  if (status != PlanStatus::SUCCESS || nodes.empty()) {
+    outcome.status = PlanStatus::NO_PATH;
+    outcome.error = "RRT* failed to find a valid path";
+    return outcome;
+  }
+
+  outcome.status = PlanStatus::SUCCESS;
+  outcome.path = makePath(nodes, transformed_start, transformed_goal);
+  return outcome;
+}
+
+void ColregsLocalPlannerServer::computePlanThroughPoses()
+{
+  if (!action_server_poses_ || !action_server_poses_->is_server_active()) {
+    return;
+  }
+  auto goal = action_server_poses_->get_current_goal();
+  if (!goal) {
+    return;
+  }
+
+  while (goal) {
+    auto result = std::make_shared<ActionThroughPoses::Result>();
+    const auto started = std::chrono::steady_clock::now();
+    auto current_canceled = [this]() {
+        return action_server_poses_->is_cancel_requested();
+      };
+    auto interrupted = [this]() {
+        if (action_server_poses_->is_cancel_requested() &&
+          action_server_poses_->is_preempt_requested())
+        {
+          action_server_poses_->terminate_pending_goal();
+        }
+        return action_server_poses_->is_cancel_requested() ||
+               action_server_poses_->is_preempt_requested();
+      };
+
+    if (current_canceled()) {
+      if (action_server_poses_->is_preempt_requested()) {
+        action_server_poses_->terminate_pending_goal();
+        continue;
+      }
+      action_server_poses_->terminate_current(result);
+      return;
+    }
+    if (action_server_poses_->is_preempt_requested()) {
+      action_server_poses_->terminate_current(result);
+      goal = action_server_poses_->accept_pending_goal();
+      continue;
+    }
+
+    try {
+      if (!goal->planner_id.empty() && goal->planner_id != "RRTStar") {
+        abortThroughPosesGoal(result, "Planner ID must be empty or RRTStar");
+        return;
+      }
+      if (goal->goals.empty()) {
+        abortThroughPosesGoal(result, "No viapoints given");
+        return;
+      }
+
+      const auto costmap_deadline = started +
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(costmap_update_timeout_));
+      while (!isCostmapCurrent()) {
+        if (interrupted()) {
+          break;
+        }
+        if (std::chrono::steady_clock::now() >= costmap_deadline) {
+          abortThroughPosesGoal(result, "Costmap timed out waiting for an update");
+          return;
+        }
+        std::this_thread::sleep_for(10ms);
+      }
+      if (interrupted()) {
+        continue;
+      }
+
+      geometry_msgs::msg::PoseStamped start;
+      if (goal->use_start) {
+        start = goal->start;
+      } else if (!getRobotPose(start)) {
+        abortThroughPosesGoal(result, "Unable to obtain robot pose");
+        return;
+      }
+      geometry_msgs::msg::PoseStamped transformed_start;
+      if (!transformPoseToGlobalFrame(start, transformed_start)) {
+        abortThroughPosesGoal(result, "Unable to transform poses to costmap frame");
+        return;
+      }
+      if (interrupted()) {
+        continue;
+      }
+
+      nav2_costmap_2d::Costmap2D snapshot;
+      {
+        std::lock_guard<nav2_costmap_2d::Costmap2D::mutex_t> lock(*costmap_->getMutex());
+        snapshot = *costmap_;
+      }
+
+      // One static costmap snapshot, one TS snapshot and one planning-time
+      // budget are shared by all segments of this request. Segment k > 0
+      // starts at the exact end of segment k-1 (upstream planner_server
+      // chaining semantics).
+      const auto ts_input = getTsPlanningInput(
+        transformed_start.pose.position.x, transformed_start.pose.position.y);
+      const auto planning_deadline = std::chrono::steady_clock::now() +
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(max_planning_time_));
+
+      nav_msgs::msg::Path concat_path;
+      concat_path.header.frame_id = costmap_ros_->getGlobalFrameID();
+      concat_path.header.stamp = now();
+      bool canceled = false;
+      for (size_t index = 0; index < goal->goals.size(); ++index) {
+        if (interrupted()) {
+          canceled = true;
+          break;
+        }
+        geometry_msgs::msg::PoseStamped seg_start;
+        if (index == 0) {
+          seg_start = transformed_start;
+        } else {
+          seg_start = concat_path.poses.back();
+          seg_start.header = concat_path.header;
+        }
+        const auto segment = planSegment(
+          seg_start, goal->goals[index], snapshot, ts_input, interrupted,
+          planning_deadline, index == 0, index == 0);
+        if (segment.status == PlanStatus::CANCELED) {
+          canceled = true;
+          break;
+        }
+        if (segment.status != PlanStatus::SUCCESS) {
+          abortThroughPosesGoal(
+            result, "segment " + std::to_string(index) + ": " + segment.error);
+          return;
+        }
+        const auto & seg_poses = segment.path.poses;
+        if (seg_poses.empty()) {
+          abortThroughPosesGoal(
+            result, "segment " + std::to_string(index) + ": empty segment path");
+          return;
+        }
+        if (index == 0) {
+          concat_path.poses.insert(
+            concat_path.poses.end(), seg_poses.begin(), seg_poses.end());
+        } else {
+          // Skip the junction pose: it duplicates the previous segment end.
+          const size_t skip = seg_poses.size() > 1u ? 1u : 0u;
+          concat_path.poses.insert(
+            concat_path.poses.end(), seg_poses.begin() + skip, seg_poses.end());
+        }
+      }
+      if (canceled) {
+        continue;
+      }
+
+      result->path = concat_path;
+      const auto elapsed = std::chrono::steady_clock::now() - started;
+      const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(elapsed);
+      const auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        elapsed - seconds);
+      result->planning_time.sec = static_cast<int32_t>(seconds.count());
+      result->planning_time.nanosec = static_cast<uint32_t>(nanoseconds.count());
+      if (!action_server_poses_->succeed_current_if_not_interrupted(
+          result, [this, &result]() {plan_publisher_->publish(result->path);}))
+      {
+        continue;
+      }
+      return;
+    } catch (const std::exception & error) {
+      if (interrupted()) {
+        continue;
+      }
+      abortThroughPosesGoal(result, error.what());
       return;
     }
   }
