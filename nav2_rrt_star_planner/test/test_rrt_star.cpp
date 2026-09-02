@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 #include "nav2_costmap_2d/costmap_2d.hpp"
+#include "nav2_costmap_2d/cost_values.hpp"
 #include "nav2_rrt_star_planner/rrt_star.hpp"
 
 namespace
@@ -65,6 +67,59 @@ TEST(RRTStar, does_not_duplicate_existing_goal_node)
       return node.x == goal_x && node.y == goal_y;
     });
   EXPECT_EQ(goal_count, 1);
+}
+
+double pathLength(const std::vector<RRTStarNode> & path)
+{
+  double total = 0.0;
+  for (size_t i = 1; i < path.size(); ++i) {
+    total += std::hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+  }
+  return total;
+}
+
+TEST(RRTStar, optimization_phase_extends_and_never_worsens_path)
+{
+  // 10 m x 10 m map with a vertical wall at x = 5 leaving a gap at the top:
+  // extra optimization iterations must never lengthen the extracted path.
+  auto costmap = nav2_costmap_2d::Costmap2D(100, 100, 0.1, 0.0, 0.0, 0);
+  for (unsigned int my = 0; my < 60; ++my) {
+    costmap.setCost(50, my, nav2_costmap_2d::LETHAL_OBSTACLE);
+  }
+  constexpr double goal_x = 9.0;
+  constexpr double goal_y = 1.0;
+
+  // Same seed => identical exploration prefix; the optimized variant only
+  // appends rewire/compete iterations, so its best solution can only improve.
+  RRTStar baseline(1.0, 250, 0.1, 0.8, 0.0, 0.0, 0, 5.0);
+  baseline.seedForTesting(42u);
+  std::vector<RRTStarNode> path_baseline;
+  ASSERT_TRUE(baseline.planPath(1.0, 1.0, goal_x, goal_y, &costmap, path_baseline));
+
+  RRTStar optimized(1.0, 250, 0.1, 0.8, 0.0, 0.0, 500, 5.0);
+  optimized.seedForTesting(42u);
+  std::vector<RRTStarNode> path_optimized;
+  ASSERT_TRUE(optimized.planPath(1.0, 1.0, goal_x, goal_y, &costmap, path_optimized));
+
+  EXPECT_LE(pathLength(path_optimized), pathLength(path_baseline) + 1e-9);
+}
+
+TEST(RRTStar, extracted_path_costs_are_chain_consistent)
+{
+  auto costmap = makeCostmap();
+  RRTStar planner(0.8, 800, 0.05, 0.8, 0.0, 0.0, 300, 6.0);
+  planner.seedForTesting(7u);
+  std::vector<RRTStarNode> path;
+  ASSERT_TRUE(planner.planPath(1.0, 1.0, 8.5, 5.0, &costmap, path));
+  ASSERT_GT(path.size(), 2u);
+
+  // cost_weight = 0 => edge cost is exact euclidean length. Every extracted
+  // hop must satisfy cost(i) == cost(i-1) + |edge|; stale subtree costs from
+  // rewiring (without propagation) break this invariant.
+  for (size_t i = 1; i < path.size(); ++i) {
+    const double edge = std::hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+    EXPECT_NEAR(path[i].cost_from_root - path[i - 1].cost_from_root, edge, 1e-6);
+  }
 }
 
 }  // namespace

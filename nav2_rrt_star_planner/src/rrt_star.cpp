@@ -81,10 +81,12 @@ bool RRTStar::planPath(
 
   int total_iters = max_iterations_;
   for (int iter = 0; iter < total_iters; ++iter) {
-    
-
-    if (goal_reached_ && iter >= max_iterations_) {
-      // reached early, continue optimizing up to max_optimize_iters_ more.
+    // Once a solution exists, extend the budget to keep optimizing (rewiring,
+    // best-parent selection, best-goal competition) for max_optimize_iters_
+    // more iterations. Idempotent assignment; the old guard
+    // `iter >= max_iterations_` was unreachable because total_iters capped
+    // the loop at max_iterations_, so the optimization phase never ran.
+    if (goal_reached_) {
       total_iters = max_iterations_ + max_optimize_iters_;
     }
 
@@ -136,14 +138,28 @@ bool RRTStar::planPath(
     // 8) Rewire near nodes.
     rewire(new_idx, near, costmap);
 
-    // 9) Check goal.
+    // 9) Check goal. Compete on the TOTAL projected path cost including the
+    // final candidate->goal connection edge; comparing bare root costs lets
+    // a node nearer the root but farther from the goal win and lengthen the
+    // extracted path.
     double dist_to_goal = std::hypot(new_x - goal_x, new_y - goal_y);
     if ((dist_to_goal <= goal_threshold_) &&
         collisionFree(new_x, new_y, goal_x, goal_y, costmap))
     {
-      if (!goal_reached_ || best_cost < tree_[best_goal_node_idx_].cost_from_root) {
+      const double total_cost =
+        best_cost + edgeCost(new_x, new_y, goal_x, goal_y, costmap);
+      if (!goal_reached_) {
         best_goal_node_idx_ = new_idx;
         goal_reached_ = true;
+      } else {
+        const double best_total =
+          tree_[best_goal_node_idx_].cost_from_root +
+          edgeCost(
+          tree_[best_goal_node_idx_].x, tree_[best_goal_node_idx_].y,
+          goal_x, goal_y, costmap);
+        if (total_cost < best_total) {
+          best_goal_node_idx_ = new_idx;
+        }
       }
     }
   }
@@ -186,6 +202,11 @@ bool RRTStar::planPath(
   std::reverse(path_nodes.begin(), path_nodes.end());
 
   return true;
+}
+
+void RRTStar::seedForTesting(uint32_t seed)
+{
+  rng_.seed(seed);
 }
 
 void RRTStar::prunePath(
@@ -397,6 +418,16 @@ void RRTStar::rewire(
 {
   auto & node = tree_[new_idx];
 
+  // Child adjacency for this call, kept consistent across re-parentings so
+  // cost deltas can be propagated to whole subtrees.
+  std::vector<std::vector<int>> children(tree_.size());
+  for (size_t j = 0; j < tree_.size(); ++j) {
+    const int p = tree_[j].parent_idx;
+    if (p >= 0) {
+      children[p].push_back(static_cast<int>(j));
+    }
+  }
+
   for (int idx : near) {
     if (idx == node.parent_idx) {
       continue;
@@ -413,9 +444,29 @@ void RRTStar::rewire(
       continue;
     }
 
-    // Rewire: idx now reaches through new_idx at lower cost.
+    // Rewire: idx now reaches through new_idx at lower cost. Propagate the
+    // exact cost delta to idx's subtree so descendant costs, later
+    // best-parent selections and the best-goal comparison stay consistent
+    // (and the cost-dominance cycle guard stays sound).
+    const int old_parent = tree_[idx].parent_idx;
+    const double delta = new_cost - tree_[idx].cost_from_root;
     tree_[idx].parent_idx = new_idx;
     tree_[idx].cost_from_root = new_cost;
+    children[new_idx].push_back(idx);
+    if (old_parent >= 0) {
+      auto & siblings = children[old_parent];
+      siblings.erase(std::remove(siblings.begin(), siblings.end(), idx), siblings.end());
+    }
+
+    std::vector<int> stack{idx};
+    while (!stack.empty()) {
+      const int cur = stack.back();
+      stack.pop_back();
+      for (const int child : children[cur]) {
+        tree_[child].cost_from_root += delta;
+        stack.push_back(child);
+      }
+    }
   }
 }
 
