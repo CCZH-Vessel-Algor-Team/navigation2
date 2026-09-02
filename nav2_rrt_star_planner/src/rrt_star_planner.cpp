@@ -56,6 +56,8 @@ void RRTStarPlanner::configure(
     node, name_ + ".tolerance", rclcpp::ParameterValue(0.5));
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".prune_path", rclcpp::ParameterValue(true));
+  nav2_util::declare_parameter_if_not_declared(
+    node, name_ + ".use_informed_sampling", rclcpp::ParameterValue(true));
 
   node->get_parameter(name_ + ".step_size", step_size_);
   node->get_parameter(name_ + ".max_iterations", max_iterations_);
@@ -67,16 +69,18 @@ void RRTStarPlanner::configure(
   node->get_parameter(name_ + ".eta", eta_);
   node->get_parameter(name_ + ".tolerance", tolerance_);
   node->get_parameter(name_ + ".prune_path", prune_path_);
+  node->get_parameter(name_ + ".use_informed_sampling", use_informed_sampling_);
 
   rrt_star_ = std::make_unique<RRTStar>(
     step_size_, max_iterations_, goal_bias_, goal_threshold_,
-    safety_dist_, cost_weight_, max_optimize_iters_, eta_);
+    safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
 
   RCLCPP_INFO(logger_, "RRTStarPlanner configured: step=%.1f max_iter=%d "
     "goal_bias=%.2f goal_thresh=%.2f safety_dist=%.2f cost_weight=%.1f "
-    "optimize_iters=%d eta=%.1f",
+    "optimize_iters=%d eta=%.1f informed=%s",
     step_size_, max_iterations_, goal_bias_, goal_threshold_, safety_dist_,
-    cost_weight_, max_optimize_iters_, eta_);
+    cost_weight_, max_optimize_iters_, eta_,
+    use_informed_sampling_ ? "true" : "false");
 }
 
 void RRTStarPlanner::cleanup()
@@ -241,46 +245,52 @@ nav2_rrt_star_planner::RRTStarPlanner::dynamicParametersCallback(
       step_size_ = param.as_double();
       rrt_star_ = std::make_unique<RRTStar>(
         step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_);
+        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
     } else if (pname == name_ + ".max_iterations") {
       max_iterations_ = param.as_int();
       rrt_star_ = std::make_unique<RRTStar>(
         step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_);
+        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
     } else if (pname == name_ + ".goal_bias") {
       goal_bias_ = param.as_double();
       rrt_star_ = std::make_unique<RRTStar>(
         step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_);
+        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
     } else if (pname == name_ + ".goal_threshold") {
       goal_threshold_ = param.as_double();
       rrt_star_ = std::make_unique<RRTStar>(
         step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_);
+        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
     } else if (pname == name_ + ".safety_dist") {
       safety_dist_ = param.as_double();
       rrt_star_ = std::make_unique<RRTStar>(
         step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_);
+        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
     } else if (pname == name_ + ".cost_weight") {
       cost_weight_ = param.as_double();
       rrt_star_ = std::make_unique<RRTStar>(
         step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_);
+        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
     } else if (pname == name_ + ".max_optimize_iters") {
       max_optimize_iters_ = param.as_int();
       rrt_star_ = std::make_unique<RRTStar>(
         step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_);
+        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
     } else if (pname == name_ + ".eta") {
       eta_ = param.as_double();
       rrt_star_ = std::make_unique<RRTStar>(
         step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_);
+        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
     } else if (pname == name_ + ".tolerance") {
       tolerance_ = param.as_double();
     } else if (pname == name_ + ".prune_path") {
       prune_path_ = param.as_bool();
+    } else if (pname == name_ + ".use_informed_sampling") {
+      use_informed_sampling_ = param.as_bool();
+      rrt_star_ = std::make_unique<RRTStar>(
+        step_size_, max_iterations_, goal_bias_, goal_threshold_,
+        safety_dist_, cost_weight_, max_optimize_iters_, eta_,
+        use_informed_sampling_);
     }
   }
 

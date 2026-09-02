@@ -156,4 +156,34 @@ TEST(VORRTStar, extracted_path_costs_are_chain_consistent)
   }
 }
 
+TEST(VORRTStar, informed_sampling_improves_wall_gap_scenario)
+{
+  // 100 m x 100 m map, vertical wall at x = 50 m with a gap at the top.
+  // Same seeds => deterministic; informed ellipsoidal sampling (seeded from
+  // the fallback chord) must beat uniform box sampling on total length.
+  auto costmap = nav2_costmap_2d::Costmap2D(1000, 1000, 0.1, 0.0, 0.0, 0);
+  for (unsigned int my = 0; my < 700; ++my) {
+    costmap.setCost(500, my, nav2_costmap_2d::LETHAL_OBSTACLE);
+  }
+  const std::vector<geometry_msgs::msg::Point> barriers;
+
+  double uniform_total = 0.0;
+  double informed_total = 0.0;
+  for (uint32_t seed = 1; seed <= 10u; ++seed) {
+    std::vector<RRTStarNode> path_uniform;
+    RRTStar uniform(2.0, 600, 0.1, 1.0, 0.0, 0.0, 0, 5.0, false);
+    uniform.seedForTesting(seed);
+    ASSERT_TRUE(uniform.planPath(2.0, 2.0, 98.0, 2.0, &costmap, barriers, path_uniform));
+
+    std::vector<RRTStarNode> path_informed;
+    RRTStar informed(2.0, 600, 0.1, 1.0, 0.0, 0.0, 0, 5.0, true);
+    informed.seedForTesting(seed);
+    ASSERT_TRUE(informed.planPath(2.0, 2.0, 98.0, 2.0, &costmap, barriers, path_informed));
+
+    uniform_total += pathLength(path_uniform);
+    informed_total += pathLength(path_informed);
+  }
+  EXPECT_LT(informed_total, uniform_total);
+}
+
 }  // namespace
