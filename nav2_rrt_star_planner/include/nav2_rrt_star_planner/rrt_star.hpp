@@ -31,7 +31,8 @@ public:
     double safety_dist,
     double cost_weight,
     int max_optimize_iters,
-    double eta);
+    double eta,
+    bool use_informed_sampling = true);
 
   bool planPath(
     double start_x, double start_y,
@@ -51,6 +52,12 @@ private:
     double & x, double & y,
     double goal_x, double goal_y,
     double min_x, double max_x, double min_y, double max_y);
+
+  /// Update c_best_ from the best goal candidate or, when the goal region
+  /// was never reached, from the nearest line-of-sight fallback chord.
+  void refreshBestCost(
+    double goal_x, double goal_y,
+    const nav2_costmap_2d::Costmap2D * costmap);
 
   int nearestNode(double x, double y);
 
@@ -80,6 +87,21 @@ private:
   double cost_weight_;
   int max_optimize_iters_;
   double eta_;
+  bool use_informed_sampling_;
+
+  // Informed-sampling state (Gammell et al. 2014). c_best_ is the best
+  // known feasible solution cost; the sampling ellipse has its foci at the
+  // segment endpoints, a transverse axis of c_best_ and a conjugate axis of
+  // sqrt(c_best_^2 - c_min_^2). Admissibility under cost_weight_: the edge
+  // multiplier (1 + w * occupancy) >= 1 implies weighted cost >= geometric
+  // length, so the Euclidean straight line stays an admissible heuristic and
+  // the plain ellipse never excludes improving solutions.
+  double c_best_;
+  double c_min_;
+  double ellipse_center_x_;
+  double ellipse_center_y_;
+  double ellipse_cos_;
+  double ellipse_sin_;
 
   std::mt19937 rng_;
   bool goal_reached_;

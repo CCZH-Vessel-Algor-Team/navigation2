@@ -277,16 +277,17 @@ planner_server:
       allow_unknown: true
     VORRTStar:
       plugin: "nav2_colregs_vo_rrt_star_planner::VORRTStarPlanner"
-      step_size: 1.0
-      max_iterations: 1000
+      step_size: 4.0
+      max_iterations: 5000
       goal_bias: 0.1
       goal_threshold: 0.5
       safety_dist: 0.3
       cost_weight: 1.0
-      max_optimize_iters: 200
-      eta: 1.1
+      max_optimize_iters: 5000
+      eta: 50.0
       tolerance: 0.5
       prune_path: true
+      use_informed_sampling: true
 
 smoother_server:
   ros__parameters:

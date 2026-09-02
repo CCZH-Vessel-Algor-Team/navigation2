@@ -58,6 +58,7 @@ private:
   double eta_{1.1};
   double tolerance_{0.5};
   bool prune_path_{true};
+  bool use_informed_sampling_{true};
 
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
     dyn_params_handler_;

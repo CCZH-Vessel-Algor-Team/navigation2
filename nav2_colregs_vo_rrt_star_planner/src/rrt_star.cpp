@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 
 #include "nav2_costmap_2d/cost_values.hpp"
 #include "nav2_costmap_2d/costmap_2d.hpp"
@@ -18,7 +19,8 @@ RRTStar::RRTStar(
   double safety_dist,
   double cost_weight,
   int max_optimize_iters,
-  double eta)
+  double eta,
+  bool use_informed_sampling)
 : step_size_(step_size),
   max_iterations_(max_iterations),
   goal_bias_(goal_bias),
@@ -27,6 +29,13 @@ RRTStar::RRTStar(
   cost_weight_(cost_weight),
   max_optimize_iters_(max_optimize_iters),
   eta_(eta),
+  use_informed_sampling_(use_informed_sampling),
+  c_best_(std::numeric_limits<double>::infinity()),
+  c_min_(0.0),
+  ellipse_center_x_(0.0),
+  ellipse_center_y_(0.0),
+  ellipse_cos_(1.0),
+  ellipse_sin_(0.0),
   rng_(std::random_device{}()),
   goal_reached_(false),
   best_goal_node_idx_(-1)
@@ -47,6 +56,15 @@ bool RRTStar::planPath(
   tree_.clear();
   goal_reached_ = false;
   best_goal_node_idx_ = -1;
+  c_best_ = std::numeric_limits<double>::infinity();
+
+  // Informed-ellipse geometry for this segment (foci at start and goal).
+  c_min_ = std::hypot(goal_x - start_x, goal_y - start_y);
+  ellipse_center_x_ = 0.5 * (start_x + goal_x);
+  ellipse_center_y_ = 0.5 * (start_y + goal_y);
+  const double axis = std::atan2(goal_y - start_y, goal_x - start_x);
+  ellipse_cos_ = std::cos(axis);
+  ellipse_sin_ = std::sin(axis);
 
   // Root at start.
   RRTStarNode root;
@@ -89,6 +107,14 @@ bool RRTStar::planPath(
     // the loop at max_iterations_, so the optimization phase never ran.
     if (goal_reached_) {
       total_iters = max_iterations_ + max_optimize_iters_;
+    }
+    // Keep the informed ellipse fed: seed c_best_ from the fallback chord
+    // (tree chain to a line-of-sight node + chord to goal) so sampling is
+    // focused even when the tree never reaches the goal region.
+    if (use_informed_sampling_ &&
+      (iter % 50 == 0 || !std::isfinite(c_best_)))
+    {
+      refreshBestCost(goal_x, goal_y, costmap, barriers);
     }
 
     // 1) Random sample.
@@ -152,6 +178,7 @@ bool RRTStar::planPath(
       if (!goal_reached_) {
         best_goal_node_idx_ = new_idx;
         goal_reached_ = true;
+        c_best_ = total_cost;
       } else {
         const double best_total =
           tree_[best_goal_node_idx_].cost_from_root +
@@ -160,6 +187,7 @@ bool RRTStar::planPath(
           goal_x, goal_y, costmap);
         if (total_cost < best_total) {
           best_goal_node_idx_ = new_idx;
+          c_best_ = total_cost;
         }
       }
     }
@@ -251,6 +279,45 @@ void RRTStar::prunePath(
 // Sampling
 // ---------------------------------------------------------------------------
 
+void RRTStar::refreshBestCost(
+  double goal_x, double goal_y,
+  const nav2_costmap_2d::Costmap2D * costmap,
+  const std::vector<geometry_msgs::msg::Point> & barriers)
+{
+  if (goal_reached_) {
+    const auto & node = tree_[best_goal_node_idx_];
+    const double cand =
+      node.cost_from_root + edgeCost(node.x, node.y, goal_x, goal_y, costmap);
+    c_best_ = std::min(c_best_, cand);
+    return;
+  }
+
+  // Distance-ordered scan for the nearest line-of-sight node: with a cape
+  // occluding the direct corridor the nearest LOS node measured on the 5 km
+  // CCS scenario ranked ~246th, so a small fixed candidate set would never
+  // activate the ellipse. Bounded to keep the refresh cheap early on.
+  std::vector<int> order(tree_.size());
+  std::iota(order.begin(), order.end(), 0);
+  std::sort(
+    order.begin(), order.end(),
+    [this, goal_x, goal_y](int i, int j) {
+      const double di = std::hypot(tree_[i].x - goal_x, tree_[i].y - goal_y);
+      const double dj = std::hypot(tree_[j].x - goal_x, tree_[j].y - goal_y);
+      return di < dj;
+    });
+  const size_t limit = std::min(order.size(), static_cast<size_t>(400));
+  for (size_t k = 0; k < limit; ++k) {
+    const int i = order[k];
+    if (!collisionFree(tree_[i].x, tree_[i].y, goal_x, goal_y, costmap, barriers)) {
+      continue;
+    }
+    const double cand = tree_[i].cost_from_root +
+      edgeCost(tree_[i].x, tree_[i].y, goal_x, goal_y, costmap);
+    c_best_ = std::min(c_best_, cand);
+    break;
+  }
+}
+
 void RRTStar::randomSample(
   double & x, double & y,
   double goal_x, double goal_y,
@@ -260,6 +327,21 @@ void RRTStar::randomSample(
   if (dist(rng_) < goal_bias_) {
     x = goal_x;
     y = goal_y;
+  } else if (use_informed_sampling_ && c_min_ < c_best_ &&
+    std::isfinite(c_best_))
+  {
+    // Uniform unit-disk sample scaled to the informed ellipse, rotated to
+    // the start-goal axis and translated to its center.
+    constexpr double kTwoPi = 6.28318530717958647692;
+    const double rr = std::sqrt(dist(rng_));
+    const double th = kTwoPi * dist(rng_);
+    const double a = 0.5 * c_best_;
+    const double c = 0.5 * c_min_;
+    const double b = std::max(std::sqrt(std::max(a * a - c * c, 0.0)), 1e-6);
+    const double ex = a * rr * std::cos(th);
+    const double ey = b * rr * std::sin(th);
+    x = ellipse_center_x_ + ex * ellipse_cos_ - ey * ellipse_sin_;
+    y = ellipse_center_y_ + ex * ellipse_sin_ + ey * ellipse_cos_;
   } else {
     x = std::uniform_real_distribution<double>(min_x, max_x)(rng_);
     y = std::uniform_real_distribution<double>(min_y, max_y)(rng_);

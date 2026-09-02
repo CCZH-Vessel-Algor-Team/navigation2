@@ -60,6 +60,7 @@ private:
   double eta_{1.1};
   double tolerance_{0.5};
   bool prune_path_{true};
+  bool use_informed_sampling_{true};
 
   rclcpp::Client<nav2_colregs_msgs::srv::GetAvoidancePoint>::SharedPtr avoidance_client_;
   rclcpp::Client<nav2_colregs_msgs::srv::GetBarrierLines>::SharedPtr barrier_client_;
