@@ -12,8 +12,8 @@ import subprocess
 import threading
 
 from geometry_msgs.msg import Twist
-import rclpy
 from rcl_interfaces.msg import ParameterDescriptor
+import rclpy
 from rclpy.node import Node
 
 
