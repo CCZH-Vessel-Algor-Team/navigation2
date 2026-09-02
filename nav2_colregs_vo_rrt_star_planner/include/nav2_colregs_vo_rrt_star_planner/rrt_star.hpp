@@ -1,6 +1,7 @@
 #ifndef NAV2_COLREGS_VO_RRT_STAR_PLANNER__RRT_STAR_HPP_
 #define NAV2_COLREGS_VO_RRT_STAR_PLANNER__RRT_STAR_HPP_
 
+#include <cstdint>
 #include <functional>
 #include <random>
 #include <vector>
@@ -45,6 +46,9 @@ public:
     std::vector<RRTStarNode> & path,
     const nav2_costmap_2d::Costmap2D * costmap,
     const std::vector<geometry_msgs::msg::Point> & barriers);
+
+  /// Test-only: deterministic RNG seeding for reproducible unit tests.
+  void seedForTesting(uint32_t seed);
 
 private:
   void randomSample(
