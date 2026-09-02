@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <vector>
 
@@ -184,6 +185,30 @@ TEST(VORRTStar, informed_sampling_improves_wall_gap_scenario)
     informed_total += pathLength(path_informed);
   }
   EXPECT_LT(informed_total, uniform_total);
+}
+
+TEST(VORRTStar, informed_planning_completes_quickly)
+{
+  // 600 m x 600 m map, wall at x = 300 m with a top gap: informed sampling
+  // with a full optimize budget must stay far below interactive latencies.
+  // Guards against the historical regressions of per-iteration LOS scans
+  // and per-rewire-call adjacency rebuilds.
+  auto costmap = nav2_costmap_2d::Costmap2D(600, 600, 1.0, 0.0, 0.0, 0);
+  for (unsigned int my = 0; my < 450; ++my) {
+    costmap.setCost(300, my, nav2_costmap_2d::LETHAL_OBSTACLE);
+  }
+  const std::vector<geometry_msgs::msg::Point> barriers;
+
+  RRTStar informed(2.0, 5000, 0.1, 2.0, 1.5, 0.3, 5000, 50.0, true);
+  informed.seedForTesting(42u);
+  std::vector<RRTStarNode> path;
+  const auto t0 = std::chrono::steady_clock::now();
+  ASSERT_TRUE(informed.planPath(10.0, 10.0, 590.0, 10.0, &costmap, barriers, path));
+  const double elapsed = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - t0).count();
+  EXPECT_GT(path.size(), 2u);
+  std::cout << "informed plan elapsed: " << elapsed << " s\n";
+  EXPECT_LT(elapsed, 1.5);
 }
 
 }  // namespace
