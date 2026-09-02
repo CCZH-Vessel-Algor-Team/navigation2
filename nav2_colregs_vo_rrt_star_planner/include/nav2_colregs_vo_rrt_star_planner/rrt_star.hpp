@@ -66,7 +66,7 @@ private:
 
   int nearestNode(double x, double y);
 
-  std::vector<int> findNear(double x, double y);
+  std::vector<int> findNear(int precomputed_nearest, double x, double y);
 
   bool collisionFree(
     double x1, double y1, double x2, double y2,
@@ -90,6 +90,10 @@ private:
     const std::vector<geometry_msgs::msg::Point> & barriers);
 
   std::vector<RRTStarNode> tree_;
+  // Incrementally maintained child adjacency for rewire cost propagation:
+  // rebuilt per call would cost O(n) allocations per iteration, which
+  // dominates planning time at large iteration budgets.
+  std::vector<std::vector<int>> children_;
   double step_size_;
   int max_iterations_;
   double goal_bias_;

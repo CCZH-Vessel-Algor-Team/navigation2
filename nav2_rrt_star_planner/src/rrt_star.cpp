@@ -8,6 +8,35 @@
 #include "nav2_costmap_2d/cost_values.hpp"
 #include "nav2_costmap_2d/costmap_2d.hpp"
 
+namespace
+{
+
+// Cheap centerline pre-filter for line-of-sight candidate rejection: single
+// cell lookup per resolution step, no footprint disk. Occluded chords are
+// usually rejected at their first blocked cell, making the fallback-chord
+// scan orders of magnitude cheaper than full footprint collisionFree calls.
+bool centerlineFree(
+  const nav2_costmap_2d::Costmap2D * costmap,
+  double x1, double y1, double x2, double y2)
+{
+  const double res = costmap->getResolution();
+  const int n = std::max(
+    1, static_cast<int>(std::hypot(x2 - x1, y2 - y1) / res));
+  for (int i = 0; i <= n; ++i) {
+    const double t = static_cast<double>(i) / n;
+    unsigned int mx, my;
+    if (!costmap->worldToMap(x1 + t * (x2 - x1), y1 + t * (y2 - y1), mx, my)) {
+      return false;
+    }
+    if (costmap->getCost(mx, my) >= nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 namespace nav2_rrt_star_planner
 {
 
@@ -53,6 +82,7 @@ bool RRTStar::planPath(
   std::vector<RRTStarNode> & path_nodes)
 {
   tree_.clear();
+  children_.clear();
   goal_reached_ = false;
   best_goal_node_idx_ = -1;
   c_best_ = std::numeric_limits<double>::infinity();
@@ -72,6 +102,7 @@ bool RRTStar::planPath(
   root.parent_idx = -1;
   root.cost_from_root = 0.0;
   tree_.push_back(root);
+  children_.emplace_back();
 
   // Sampling bounds from costmap size.
   double min_x, max_x, min_y, max_y;
@@ -109,10 +140,10 @@ bool RRTStar::planPath(
     }
     // Keep the informed ellipse fed: seed c_best_ from the fallback chord
     // (tree chain to a line-of-sight node + chord to goal) so sampling is
-    // focused even when the tree never reaches the goal region.
-    if (use_informed_sampling_ &&
-      (iter % 50 == 0 || !std::isfinite(c_best_)))
-    {
+    // focused even when the tree never reaches the goal region. Strictly
+    // rate-limited: the LOS scan is expensive, so it must never run every
+    // iteration (activation may lag by <50 iterations, which is negligible).
+    if (use_informed_sampling_ && iter % 50 == 0) {
       refreshBestCost(goal_x, goal_y, costmap);
     }
 
@@ -133,7 +164,7 @@ bool RRTStar::planPath(
     }
 
     // 5) Find near nodes.
-    auto near = findNear(new_x, new_y);
+    auto near = findNear(nearest, new_x, new_y);
 
     // 6) Choose best parent among near nodes.
     int best_parent = nearest;
@@ -160,6 +191,8 @@ bool RRTStar::planPath(
     node.cost_from_root = best_cost;
     int new_idx = static_cast<int>(tree_.size());
     tree_.push_back(node);
+    children_.emplace_back();
+    children_[best_parent].push_back(new_idx);
 
     // 8) Rewire near nodes.
     rewire(new_idx, near, costmap);
@@ -218,6 +251,7 @@ bool RRTStar::planPath(
       edgeCost(selected_node.x, selected_node.y, goal_x, goal_y, costmap);
     best_goal_node_idx_ = static_cast<int>(tree_.size());
     tree_.push_back(goal_node);
+    children_.emplace_back();
   }
 
   // Extract path by walking parent pointers.
@@ -303,6 +337,9 @@ void RRTStar::refreshBestCost(
   const size_t limit = std::min(order.size(), static_cast<size_t>(400));
   for (size_t k = 0; k < limit; ++k) {
     const int i = order[k];
+    if (!centerlineFree(costmap, tree_[i].x, tree_[i].y, goal_x, goal_y)) {
+      continue;
+    }
     if (!collisionFree(tree_[i].x, tree_[i].y, goal_x, goal_y, costmap)) {
       continue;
     }
@@ -361,7 +398,7 @@ int RRTStar::nearestNode(double x, double y)
   return best;
 }
 
-std::vector<int> RRTStar::findNear(double x, double y)
+std::vector<int> RRTStar::findNear(int precomputed_nearest, double x, double y)
 {
   std::vector<int> result;
 
@@ -373,8 +410,9 @@ std::vector<int> RRTStar::findNear(double x, double y)
 
   double r2 = radius * radius;
 
-  // Nearest node first (always included).
-  int nn = nearestNode(x, y);
+  // Nearest node first (always included); the caller passes the nearest
+  // node it already computed, avoiding a duplicate O(n) scan per iteration.
+  const int nn = precomputed_nearest;
   if (nn >= 0) {
     result.push_back(nn);
   }
@@ -499,16 +537,8 @@ void RRTStar::rewire(
 {
   auto & node = tree_[new_idx];
 
-  // Child adjacency for this call, kept consistent across re-parentings so
-  // cost deltas can be propagated to whole subtrees.
-  std::vector<std::vector<int>> children(tree_.size());
-  for (size_t j = 0; j < tree_.size(); ++j) {
-    const int p = tree_[j].parent_idx;
-    if (p >= 0) {
-      children[p].push_back(static_cast<int>(j));
-    }
-  }
-
+  // children_ is maintained incrementally (insertion + re-parenting), so no
+  // per-call O(n) rebuild is needed here.
   for (int idx : near) {
     if (idx == node.parent_idx) {
       continue;
@@ -533,9 +563,9 @@ void RRTStar::rewire(
     const double delta = new_cost - tree_[idx].cost_from_root;
     tree_[idx].parent_idx = new_idx;
     tree_[idx].cost_from_root = new_cost;
-    children[new_idx].push_back(idx);
+    children_[new_idx].push_back(idx);
     if (old_parent >= 0) {
-      auto & siblings = children[old_parent];
+      auto & siblings = children_[old_parent];
       siblings.erase(std::remove(siblings.begin(), siblings.end(), idx), siblings.end());
     }
 
@@ -543,7 +573,7 @@ void RRTStar::rewire(
     while (!stack.empty()) {
       const int cur = stack.back();
       stack.pop_back();
-      for (const int child : children[cur]) {
+      for (const int child : children_[cur]) {
         tree_[child].cost_from_root += delta;
         stack.push_back(child);
       }
