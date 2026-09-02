@@ -535,7 +535,7 @@ void ColregsLocalPlannerServer::computePlan()
         transformed_start.pose.position.x, transformed_start.pose.position.y);
 
       const auto segment = planSegment(
-        transformed_start, goal->goal, snapshot, ts_input, interrupted,
+        transformed_start, transformed_goal, snapshot, ts_input, interrupted,
         planning_deadline, true, true);
       if (segment.status == PlanStatus::CANCELED) {
         continue;
@@ -600,11 +600,14 @@ ColregsLocalPlannerServer::SegmentPlan ColregsLocalPlannerServer::planSegment(
   SegmentPlan outcome;
 
   // Contract: seg_start is already in the costmap global frame (the caller
-  // transformed it for the request-wide TS snapshot anchor); only the goal is
-  // transformed here.
+  // transformed it for the request-wide TS snapshot anchor); the goal is
+  // transformed here unless the caller already did (same-frame shortcut
+  // avoids counting a redundant identity transform per replan cycle).
   const geometry_msgs::msg::PoseStamped & transformed_start = seg_start;
   geometry_msgs::msg::PoseStamped transformed_goal;
-  if (!transformPoseToGlobalFrame(seg_goal, transformed_goal)) {
+  if (seg_goal.header.frame_id == costmap_ros_->getGlobalFrameID()) {
+    transformed_goal = seg_goal;
+  } else if (!transformPoseToGlobalFrame(seg_goal, transformed_goal)) {
     outcome.status = PlanStatus::INVALID_INPUT;
     outcome.error = "Unable to transform poses to costmap frame";
     return outcome;
