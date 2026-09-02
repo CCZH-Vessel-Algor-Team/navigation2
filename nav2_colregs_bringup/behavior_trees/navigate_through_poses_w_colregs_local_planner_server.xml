@@ -1,0 +1,46 @@
+<!--
+  COLREGS local planner server demo: NavigateThroughPoses tree.
+  ComputePathThroughPoses sends the remaining viapoints to the dedicated
+  RRT star server (planner_id "RRTStar") which plans segment by segment
+  (segment start = previous segment end) and applies the COLREGS decision
+  only to the first, OS-anchored segment. RemovePassedGoals prunes viapoints
+  the robot already passed (radius 2 m); replanning runs at 1 Hz matching
+  the to-pose demo tree.
+  In Jazzy, RemovePassedGoals resolves global_frame/robot_base_frame via
+  BT::deconflictPortAndParamFrame against the bt_navigator parameters, so no
+  explicit frame ports are required in non-namespaced setups.
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
+        <RateController hz="1.0" name="RateControllerComputePathThroughPoses">
+          <RecoveryNode number_of_retries="1" name="RecoveryComputePathThroughPoses">
+            <ReactiveSequence name="ComputePathThroughPosesWithPruning">
+              <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="2.0"/>
+              <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="RRTStar" error_code_id="{compute_path_error_code}"/>
+            </ReactiveSequence>
+            <ClearEntireCostmap name="ClearColregsCostmap-Context" service_name="colregs_costmap/clear_entirely_colregs_costmap"/>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="1" name="RecoveryFollowPath">
+          <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
+          <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>
+        </RecoveryNode>
+      </PipelineSequence>
+      <ReactiveFallback name="RecoveryFallback">
+        <GoalUpdated/>
+        <RoundRobin name="RecoveryActions">
+          <Sequence name="ClearingActions">
+            <ClearEntireCostmap name="ClearLocalCostmap-Subtree" service_name="local_costmap/clear_entirely_local_costmap"/>
+            <ClearEntireCostmap name="ClearColregsCostmap-Subtree" service_name="colregs_costmap/clear_entirely_colregs_costmap"/>
+          </Sequence>
+          <Spin name="SpinRecovery" spin_dist="1.57"/>
+          <Wait name="WaitRecovery" wait_duration="5.0"/>
+          <BackUp name="BackUpRecovery" backup_dist="0.30" backup_speed="0.15"/>
+        </RoundRobin>
+      </ReactiveFallback>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

@@ -160,9 +160,13 @@ def test_projection_validation_parameters_route_to_rrt_star_server():
     params = load_params()
     bt_params = params['bt_navigator']['ros__parameters']
 
-    assert bt_params['navigators'] == ['navigate_to_pose']
-    assert 'navigate_through_poses' not in bt_params
-    assert 'default_nav_through_poses_bt_xml' not in bt_params
+    assert bt_params['navigators'] == ['navigate_to_pose', 'navigate_through_poses']
+    assert bt_params['navigate_through_poses']['plugin'] == (
+        'nav2_bt_navigator::NavigateThroughPosesNavigator'
+    )
+    assert bt_params['default_nav_through_poses_bt_xml'].endswith(
+        '/behavior_trees/navigate_through_poses_w_colregs_local_planner_server.xml'
+    )
     assert bt_params['default_nav_to_pose_bt_xml'].endswith(
         '/behavior_trees/navigate_w_colregs_local_planner_server.xml'
     )
@@ -176,7 +180,7 @@ def test_projection_validation_parameters_route_to_rrt_star_server():
         'use_sim_time': True,
         'action_server_result_timeout': 10.0,
         'costmap_update_timeout': 1.0,
-        'max_planning_time': 0.8,
+        'max_planning_time': 5.0,
         'step_size': 1.0,
         'max_iterations': 1000,
         'goal_bias': 0.1,
@@ -484,12 +488,12 @@ def test_local_planner_server_interrupts_for_cancel_or_preemption_before_publica
 
     compute_plan = source[source.index('void ColregsLocalPlannerServer::computePlan()'):]
     first_cancel = compute_plan.index('if (current_canceled())')
-    plan = compute_plan.index('status = planner.planPath(')
+    plan = compute_plan.index('planSegment(')
     interruption_callback = compute_plan.index(
-        'interrupted, planning_deadline,', plan
+        'snapshot, ts_input, interrupted,', plan
     )
     success_gate = compute_plan.index(
-        'if (status != PlanStatus::SUCCESS || nodes.empty())', plan
+        'if (segment.status != PlanStatus::SUCCESS)', plan
     )
     failure_return = compute_plan.index('return;', success_gate)
     atomic_success = compute_plan.index(
