@@ -58,6 +58,8 @@ void VORRTStarPlanner::configure(
     node, name_ + ".prune_path", rclcpp::ParameterValue(true));
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".use_informed_sampling", rclcpp::ParameterValue(true));
+  nav2_util::declare_parameter_if_not_declared(
+    node, name_ + ".colregs_anchor_max_dist", rclcpp::ParameterValue(3.0));
 
   node->get_parameter(name_ + ".step_size", step_size_);
   node->get_parameter(name_ + ".max_iterations", max_iterations_);
@@ -70,6 +72,10 @@ void VORRTStarPlanner::configure(
   node->get_parameter(name_ + ".tolerance", tolerance_);
   node->get_parameter(name_ + ".prune_path", prune_path_);
   node->get_parameter(name_ + ".use_informed_sampling", use_informed_sampling_);
+  node->get_parameter(name_ + ".colregs_anchor_max_dist", colregs_anchor_max_dist_);
+  if (!std::isfinite(colregs_anchor_max_dist_) || colregs_anchor_max_dist_ < 0.0) {
+    throw std::invalid_argument("colregs_anchor_max_dist must be finite and nonnegative");
+  }
 
   avoidance_client_ = node->create_client<nav2_colregs_msgs::srv::GetAvoidancePoint>(
     "/get_avoidance_point");
@@ -93,6 +99,7 @@ void VORRTStarPlanner::cleanup()
 {
   RCLCPP_INFO(logger_, "Cleaning up VORRTStarPlanner: %s", name_.c_str());
   rrt_star_.reset();
+  costmap_ros_.reset();
 }
 
 void VORRTStarPlanner::activate()
@@ -148,8 +155,39 @@ nav_msgs::msg::Path VORRTStarPlanner::createPlan(
   geometry_msgs::msg::Point avoidance_point;
   std::vector<geometry_msgs::msg::Point> barrier_points;
 
-  // COLREGS: call Avoidance Point + Barrier.
+  // COLREGS anchor guard: the VO decision (CPA, collision cone, avoidance
+  // point) is only physically meaningful for the segment anchored at the
+  // live robot pose. Under NavigateThroughPoses the standard planner_server
+  // calls createPlan per segment; preview segments start at future goal
+  // positions where the ts_manager's pose-anchored data would be
+  // inconsistent. Skip the COLREGS service chain for those segments and
+  // plan plain informed RRT* instead.
+  bool anchored_to_robot = false;
   {
+    geometry_msgs::msg::PoseStamped live_pose;
+    if (costmap_ros_->getRobotPose(live_pose)) {
+      anchored_to_robot = isColregsAnchored(
+        start.pose.position.x, start.pose.position.y,
+        live_pose.pose.position.x, live_pose.pose.position.y,
+        colregs_anchor_max_dist_);
+      const double dist_to_live = std::hypot(
+        start.pose.position.x - live_pose.pose.position.x,
+        start.pose.position.y - live_pose.pose.position.y);
+      if (!anchored_to_robot) {
+        RCLCPP_DEBUG(logger_,
+          "VORRTStarPlanner: start (%.2f, %.2f) is %.2f m from live pose "
+          "(> %.2f m): plain RRT* (preview segment)",
+          start.pose.position.x, start.pose.position.y, dist_to_live,
+          colregs_anchor_max_dist_);
+      }
+    } else {
+      RCLCPP_WARN(logger_,
+        "VORRTStarPlanner: cannot get robot pose; treating as non-anchored");
+    }
+  }
+
+  // COLREGS: call Avoidance Point + Barrier (only for live-pose segments).
+  if (anchored_to_robot) {
     auto request = std::make_shared<nav2_colregs_msgs::srv::GetAvoidancePoint::Request>();
     request->os_pose = start.pose;
     request->goal = goal.pose;

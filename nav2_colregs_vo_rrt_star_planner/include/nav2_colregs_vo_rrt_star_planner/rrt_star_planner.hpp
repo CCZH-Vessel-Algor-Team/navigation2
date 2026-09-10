@@ -1,6 +1,7 @@
 #ifndef NAV2_COLREGS_VO_RRT_STAR_PLANNER__VO_RRT_STAR_PLANNER_HPP_
 #define NAV2_COLREGS_VO_RRT_STAR_PLANNER__VO_RRT_STAR_PLANNER_HPP_
 
+#include <cmath>
 #include <memory>
 #include <string>
 #include <vector>
@@ -36,6 +37,18 @@ public:
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal) override;
 
+  /// Testable pure helper: should this start pose use the COLREGS service
+  /// chain? Only segments anchored at the live robot pose produce
+  /// physically meaningful VO decisions; preview segments (NavigateThroughPoses
+  /// calls with future goal starts) fall back to plain RRT*.
+  static bool isColregsAnchored(
+    double start_x, double start_y,
+    double robot_x, double robot_y,
+    double max_dist)
+  {
+    return std::hypot(start_x - robot_x, start_y - robot_y) <= max_dist;
+  }
+
 private:
   static nav_msgs::msg::Path linearInterpolation(
     const std::vector<RRTStarNode> & raw_path,
@@ -46,6 +59,7 @@ private:
   rclcpp::Clock::SharedPtr clock_;
   rclcpp::Logger logger_{rclcpp::get_logger("VORRTStarPlanner")};
   std::string global_frame_, name_;
+  std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
 
   std::unique_ptr<RRTStar> rrt_star_;
   nav2_costmap_2d::Costmap2D * costmap_{nullptr};
@@ -61,6 +75,7 @@ private:
   double tolerance_{0.5};
   bool prune_path_{true};
   bool use_informed_sampling_{true};
+  double colregs_anchor_max_dist_{3.0};
 
   rclcpp::Client<nav2_colregs_msgs::srv::GetAvoidancePoint>::SharedPtr avoidance_client_;
   rclcpp::Client<nav2_colregs_msgs::srv::GetBarrierLines>::SharedPtr barrier_client_;

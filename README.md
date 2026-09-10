@@ -160,6 +160,11 @@ controller_server:
 
 Reference parameter sets: `nav2_colregs_bringup/params/*.yaml` (merge the sections you need into your own Nav2 params — none of them is a standalone drop-in file).
 
+### Known Limitations
+
+- **Skeleton planners** (`SkeletonRRTPlanner`, `VOSkeletonPlanner`) do not support NavigateThroughPoses: the persistent goal-rooted tree anchors to a single final goal, and per-segment calls would repeatedly rebuild it, defeating the warm-start mechanism.
+- **`VORRTStarPlanner` under NavigateThroughPoses** applies COLREGS avoidance only to the segment anchored at the live robot pose (within `colregs_anchor_max_dist`, default 3.0 m); preview segments plan plain informed RRT*.
+
 ## Tests
 
 Each added package ships GTest regressions (supercover traversal, capacity recycling, recovery invariants, budget-interruption consistency, resolution-change safety distance, shortcut certification, etc.):

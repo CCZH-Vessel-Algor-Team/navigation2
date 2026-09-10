@@ -64,8 +64,11 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
   ament_add_gtest(test_rrt_star test/test_rrt_star.cpp)
+  ament_add_gtest(test_anchor_guard test/test_anchor_guard.cpp)
   target_link_libraries(test_rrt_star ${library_name})
   ament_target_dependencies(test_rrt_star geometry_msgs nav2_costmap_2d)
+  target_link_libraries(test_anchor_guard ${library_name})
+  ament_target_dependencies(test_anchor_guard geometry_msgs nav2_costmap_2d)
 endif()
 
 ament_export_include_directories(include)
