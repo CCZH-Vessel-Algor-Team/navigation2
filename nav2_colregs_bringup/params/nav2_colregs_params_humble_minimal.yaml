@@ -120,8 +120,8 @@ ts_state_manager:
   ros__parameters:
     frequency: 10.0
     ts_timeout: 3.0
-    tcpa_horizon: 20.0
-    safety_factor: 1.5
+    tcpa_horizon: 40.0
+    safety_factor: 5.0
     os_radius: 5.0
     global_frame: "map"
     robot_base_frame: "base_link"

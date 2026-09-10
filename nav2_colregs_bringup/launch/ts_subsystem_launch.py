@@ -47,9 +47,9 @@ def generate_launch_description():
                 'tracked_ship_topic': tracked_ship_topic,
                 'robot_base_frame': robot_base_frame,
                 'odom_topic': odom_topic,
-                'tcpa_horizon': 20.0,
-                'safety_factor': 1.5,
-                'os_radius': 5.0,
+                'tcpa_horizon': 40.0,
+                'safety_factor': 3.0,
+                'os_radius': 15.0,
             }],
         ),
         Node(
@@ -59,8 +59,8 @@ def generate_launch_description():
             output='screen',
             parameters=[params_file, {
                 'use_sim_time': use_sim_time,
-                'os_radius': 5.0,
-                'safety_factor': 1.5,
+                'os_radius': 15.0,
+                'safety_factor': 3.0,
             }],
         ),
         Node(
