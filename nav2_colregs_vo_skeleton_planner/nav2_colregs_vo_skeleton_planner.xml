@@ -1,0 +1,8 @@
+<library path="nav2_colregs_vo_skeleton_planner">
+  <class name="nav2_colregs_vo_skeleton_planner/VOSkeletonPlanner"
+         type="nav2_colregs_vo_skeleton_planner::VOSkeletonPlanner"
+         base_class_type="nav2_core::GlobalPlanner">
+    <description>Persistent goal-rooted skeleton RRT* planner with COLREGS
+    avoidance-point/barrier integration.</description>
+  </class>
+</library>
