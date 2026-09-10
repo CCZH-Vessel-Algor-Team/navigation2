@@ -1,0 +1,8 @@
+<library path="nav2_skeleton_planner">
+  <class name="nav2_skeleton_planner/SkeletonRRTPlanner"
+         type="nav2_skeleton_planner::SkeletonRRTPlanner"
+         base_class_type="nav2_core::GlobalPlanner">
+    <description>Persistent goal-rooted skeleton RRT* planner (standalone,
+    no COLREGS service chain).</description>
+  </class>
+</library>
