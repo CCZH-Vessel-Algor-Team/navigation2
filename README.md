@@ -1,272 +1,170 @@
-# navigation2（Humble + COLREGS 插件级移植）
+# navigation2 — COLREGS / Maritime Extensions
 
-本仓库基于官方 `humble` 分支，移植了 `feat/colregs` 中与 COLREGS 插件链路相关的核心功能包。
+This repository extends the official [navigation2](https://github.com/ros-navigation/navigation2) `humble` branch with COLREGS-compliant maritime navigation capabilities: velocity-obstacle RRT* planning, persistent skeleton-based replanning, target-ship state management, and LOS/ALOS guidance controllers.
 
-当前 Humble 分支定位为 **COLREGS plugin MVP**：保留消息、规划器、控制器、TS 状态管理、TSProjectionLayer 代价图层、vector object server，以及最小 bringup 参数/BT XML/TS 子系统 launch；不移植完整 Gazebo/目标船仿真链路。
+For upstream Nav2 documentation, see [docs.nav2.org](https://docs.nav2.org/). This README covers only the packages added in this fork.
 
-Jazzy 完整开发分支见 `feat/colregs`。Humble 移植状态详见 `doc/humble_colregs_port.md`。
+## Added Packages
 
-## 一、相对官方新增的包
+### Global Planner Plugins
 
-### 1) `nav2_colregs_msgs`
-- 作用：定义 COLREGS 扩展消息与服务接口。
-- 消息：
-  - `TrackedShip.msg`：单条目标船（含 `target_id: UUID`、位姿、速度、半径）。
-  - `TrackedShipList.msg`：批量目标船列表（`Header` + `TrackedShip[]`），统一发布到 `/tracked_ship`。
-  - `ProcessedTS.msg`：经 TS State Manager 处理后的目标船快照（含 `target_id`、CPA/TCPA、威胁标识）。
-  - `CircleObject.msg`、`PolygonObject.msg`：矢量障碍物形状接口，保留给 vector-object/keepout 链路。
-- 服务：
-  - `AddShapes.srv`、`GetShapes.srv`、`RemoveShapes.srv`：矢量对象增删查接口。
+| Plugin ID | Package | Summary |
+|---|---|---|
+| `nav2_rrt_star_planner/RRTStarPlanner` | `nav2_rrt_star_planner` | Standard RRT* with corrected optimize phase, subtree cost propagation, goal competition on total path cost, and informed ellipsoidal sampling. |
+| `nav2_colregs_vo_rrt_star_planner/VORRTStarPlanner` | `nav2_colregs_vo_rrt_star_planner` | COLREGS VO-RRT*: two-segment plan (deterministic leg to avoidance point + informed RRT* to goal), barrier-line collision constraints, decision marker visualization. |
+| `nav2_skeleton_planner/SkeletonRRTPlanner` | `nav2_skeleton_planner` | Standalone skeleton RRT* — persistent goal-rooted tree with skeleton/prefix separation. No COLREGS service dependencies; query is the passed-in start pose. |
+| `nav2_colregs_vo_skeleton_planner/VOSkeletonPlanner` | `nav2_colregs_vo_skeleton_planner` | COLREGS skeleton planner. The core search (Space, BoundedInformedRRT, SkeletonPlanner) is exported from this package and reused by `nav2_skeleton_planner`. |
 
-### 2) `nav2_rrt_star_planner`
-- 作用：RRT* 全局规划器插件。
-- 路径端点：成功规划（包括近似回退）在裁剪和插值前均以请求目标的精确 x/y 坐标结束。
-- Humble 适配：使用 Humble `nav2_core::GlobalPlanner::createPlan(start, goal)` 接口，不使用 Jazzy `cancel_checker` 参数。
+**Skeleton planner mechanism** (shared by both skeleton plugins):
 
-### 3) `nav2_colregs_vo_rrt_star_planner`
-- 作用：COLREGS VO-RRT* 全局规划器插件。
-- 特点：在 RRT* 基础上接入目标船状态/速度障碍逻辑，用于生成符合 COLREGS 约束的候选路径。
-- 路径端点：成功规划（包括近似回退）在 barrier-aware 裁剪和插值前均以请求目标的精确 x/y 坐标结束。
-- Humble 适配：同样使用 Humble two-argument planner API，并使用 Humble `nav2_core::PlannerException`。
+- Goal-rooted persistent tree with bounded node capacity and leaf recycling
+- Skeleton (anchor chain) / prefix (query-to-active-anchor) separation; 3% switch margin (hysteresis locks the corridor)
+- Recovery ladder: reanchor → direct connect → skip-ahead → tree near-connect → global recovery
+- Random ancestor shortcuts (equal-cost non-increasing reparenting, gated by cost certification)
+- Per-stage atomic adoption — budget interruption never leaves inconsistent state
+- Per-query costmap snapshot under mutex; world-revision-driven incremental tree pruning with cost refresh
 
-### 4) `nav2_colregs_costmap_layers`
-- 作用：自定义 Costmap Layer 插件。
-- `TSProjectionLayer`：订阅 `tracked_ship_topic`（默认 `/dynamic_ship/tracked_ships`，消息类型 `TrackedShipList`），逐 `target_id` 维护状态，在 `master_grid` 上标注目标船 LETHAL 圆。
-- 特性：支持多船、超时清理（默认 3s）、移动目标尾迹 bounds 累积清除、TF 坐标变换。
-- 对标 `ObstacleLayer` 的 "topic -> 标记 master_grid" 模式，不通过 keepout mask 中转。
+**RRT* correctness fixes** (apply to `RRTStarPlanner` and `VORRTStarPlanner`):
 
-### 5) `nav2_colregs_vector_object_server`
-- 作用：发布矢量对象栅格化后的 keepout mask（默认 `/keepout_filter_mask`）。
-- 特点：LifecycleNode，支持 `circle` / `polygon`，内置指数梯度膨胀，可通过 `AddShapes` / `GetShapes` / `RemoveShapes` 服务动态维护矢量对象。
-- Humble 适配：替换 Jazzy 参数 helper，使用 Humble timer API，补充 `uuid` 链接和 component 注册。
-- 注意：包已移植并可 build，但 Humble 分支尚未恢复 Jazzy 的完整 keepout/vector-object validation launch 链路。
+- Optimize phase: `iter >= max_iterations_` was unreachable — the post-first-solution refinement loop never ran
+- Rewire: subtree `cost_from_root` was not propagated after re-parenting
+- Goal competition: compared bare root costs without the final candidate→goal edge
+- Performance: rate-limited LOS scans with centerline pre-filter, incremental children adjacency
 
-### 6) `nav2_colregs_ts_manager`
-- 作用：TS 状态管理节点（LifecycleNode）。订阅 `/tracked_ship`（`TrackedShipList`）和 `/odom`，逐 `target_id` 维护多 TS 状态，计算 CPA/TCPA，发布 `/processed_ts_list` topic。
-- TS 位姿通过 TF 从消息 `frame_id` 变换到 `global_frame`（通常为 `map`），确保多坐标系兼容。
-- 与 `TSProjectionLayer` 配合：前者判断 TS 是否危险，后者将 TS 位姿画入 costmap。
-- 超时参数：`ts_timeout: 3.0`（自动清除失联船舶）。
+### Controller Plugins
 
-### 7) `nav2_colregs_los_controller`
-- 作用：最简 LOS 制导 Controller 插件。
-- 算法：沿路径找前视点，使用 `atan2` 计算目标艏向，再做角/线速度限制和 footprint 碰撞检测。
-- Humble 适配：移除 Jazzy RPP `PathHandler` 依赖，内部保存并变换/prune 全局路径。
-- 注意：`/lookahead_point` 发布的是原始全局路径上的前视点，仅做坐标变换，不包含 COLREGS 修正。
+| Plugin ID | Package | Summary |
+|---|---|---|
+| `nav2_colregs_los_controller::LOSController` | `nav2_colregs_los_controller` | Line-of-sight guidance controller. |
+| `nav2_colregs_alos_controller::ALOSController` | `nav2_colregs_alos_controller` | Adaptive LOS (Fossen 2023) with sideslip estimation (β̂). |
 
-### 8) `nav2_colregs_alos_controller`
-- 作用：Adaptive LOS（ALOS）制导 Controller 插件，在 LOS 基础上加入侧滑角自适应估计。
-- 算法：基于 Fossen (2023)，找最近点和前推点，计算路径切线角、侧偏和自适应侧滑估计，输出目标航向和速度指令。
-- 关键参数：`forward_dist`, `gamma`, `beta_hat0`, `reset_beta_on_new_goal`, `beta_reset_goal_dist_tolerance`。
-- Humble 适配：移除 Jazzy RPP `PathHandler` 依赖，使用 Humble RPP 风格的路径变换逻辑。
-- 注意：`/lookahead_point` 和 `/closest_point` 是原始全局路径上的调试/可视化点。COLREGS/ALOS 修正只作用于速度指令输出。
+### Supporting Components
 
-### 9) `nav2_colregs_bringup`
-- 作用：Humble 移植分支中保留参数、Behavior Tree XML 资源，以及不依赖 Gazebo 的 TS 子系统 launch。
-- 当前安装内容：
-  - `params/`
-  - `behavior_trees/`
-  - `launch/ts_subsystem_launch.py`
-- 重点文件：
-  - `params/nav2_colregs_params_humble_minimal.yaml`：Humble 插件接线示例，供合并到已有 Humble Nav2 params 使用。
-  - `launch/ts_subsystem_launch.py`：启动 `ts_state_manager`、`avoidance_point_node`、`barrier_node`。
-- 注意：该包在 Humble 分支不是完整仿真 bringup 包，不包含 Gazebo worlds/models/scripts/RViz 资源。
+| Component | Package | Summary |
+|---|---|---|
+| TS State Manager | `nav2_colregs_ts_manager` | `ts_state_manager` (TS snapshots, CPA/TCPA, collision cones), `avoidance_point_node`, `barrier_node`. Also embeddable as `colregs_ts_state` lifecycle child. |
+| TS Projection Layer | `nav2_colregs_ts_projection_layer` | Costmap layer projecting TS positions as occupied regions. |
+| Vector Object Server | `nav2_colregs_vector_object_server` | RViz-based target-ship placement. |
+| Costmap Layers | `nav2_colregs_costmap_layers` | COLREGS-specific costmap layer plugins. |
+| Maritime Situation Monitor | `nav2_maritime_situation_monitor` | Standalone CPA/TCPA / encounter classification reporting. |
+| Messages | `nav2_colregs_msgs` | `TrackedShip`/`TrackedShipList` messages; `GetAvoidancePoint`, `GetBarrierLines`, `GetPrimaryThreat` services. |
 
-### 10) `nav2_maritime_situation_msgs`
-- 作用：定义独立的海事态势输出接口 `SituationReport` 和 `SituationReportArray`。
-- 单船报告包含目标 UUID、`cpa_valid`、DCPA、TCPA、会遇类型和风险等级；数组消息使用 `Header` 标识统一评估坐标系和时间。
+## Build
 
-### 11) `nav2_maritime_situation_monitor`
-- 作用：订阅 `/tracked_ship` (`nav2_colregs_msgs/TrackedShipList`) 和 `/odom` (`nav_msgs/Odometry`)，在 ENU 平面计算所有有效目标的 CPA、风险等级和 COLREGS 会遇类型，并发布 `/maritime_situation` (`nav2_maritime_situation_msgs/SituationReportArray`)。
-- 输出仅用于态势展示、记录和上层决策输入，不发送速度、路径或其他控制命令，也不加入 Nav2 lifecycle manager。
-- 该包提供独立参数文件和 launch，不启动或 include Nav2 bringup、TS subsystem 或 lifecycle manager。
+Prerequisites: ROS 2 Humble (apt or RoboStack), colcon, and the standard Nav2 dependencies.
 
-## 二、Humble 移植状态
-
-### 已移植并在 Humble apt 环境 build 验证
-- `nav2_colregs_msgs`
-- `nav2_rrt_star_planner`
-- `nav2_colregs_ts_manager`
-- `nav2_colregs_vo_rrt_star_planner`
-- `nav2_colregs_costmap_layers`
-- `nav2_colregs_vector_object_server`
-- `nav2_colregs_los_controller`
-- `nav2_colregs_alos_controller`
-- `nav2_colregs_bringup`（params + behavior tree XML + TS subsystem launch）
-
-验证命令：
+**Important**: this repo is a full fork of navigation2. Do NOT clone it into a workspace that already contains upstream navigation2 packages (duplicate package names). Either use a clean workspace, or source upstream Nav2 as an underlay and build this fork as an overlay.
 
 ```bash
-cd ~/navigation2
-source /opt/ros/humble/setup.sh
-colcon build --symlink-install --packages-select \
-  nav2_colregs_msgs \
-  nav2_rrt_star_planner \
-  nav2_colregs_ts_manager \
-  nav2_colregs_vo_rrt_star_planner \
-  nav2_colregs_costmap_layers \
-  nav2_colregs_vector_object_server \
-  nav2_colregs_los_controller \
-  nav2_colregs_alos_controller \
-  nav2_colregs_bringup
-```
+# clean workspace
+mkdir -p ~/colregs_ws/src && cd ~/colregs_ws/src
+git clone -b feat/rrt-star-informed-humble \
+  git@github.com:CCZH-Vessel-Algor-Team/navigation2.git
 
-最新验证结果：
-
-```text
-Summary: 9 packages finished
-```
-
-### 暂未移植
-- 完整 Gazebo / 目标船仿真 launch 文件。
-- Gazebo worlds、models、bridge config、RViz 配置、地图和仿真脚本。
-- keepout / vector-object validation launch chain。
-- `nav2_colregs_local_path_behavior`。
-- `nav2_colregs_local_path_bt_nodes`。
-
-其中 `nav2_colregs_local_path_bt_nodes` 在 Jazzy 分支中主要用于 behavior-validation：从 blackboard 读取 `{path}`，调用 `CreateLocalPath` action，打印路径信息后透传为 `{local_path}`。它不是 Humble plugin MVP 的必要组件。
-
-### Humble API 适配点
-- Humble `nav2_core::GlobalPlanner::createPlan()` 不包含 Jazzy 的 `cancel_checker` 参数。
-- Humble `nav2_core/exceptions.hpp` 使用 `PlannerException`，未使用 Jazzy-specific planner/controller exception subclasses。
-- Humble RPP 不暴露 Jazzy 分支使用的 `PathHandler` helper，LOS/ALOS 控制器改为内部保存、变换和裁剪路径。
-
-## 三、编译
-
-### 仅编译 COLREGS Humble MVP 包
-
-```bash
-colcon build --symlink-install \
-  --packages-select \
-  nav2_colregs_msgs \
-  nav2_rrt_star_planner \
-  nav2_colregs_ts_manager \
-  nav2_colregs_vo_rrt_star_planner \
-  nav2_colregs_costmap_layers \
-  nav2_colregs_vector_object_server \
-  nav2_colregs_los_controller \
-  nav2_colregs_alos_controller \
-  nav2_colregs_bringup
-```
-
-### 加载环境
-
-```bash
+cd ~/colregs_ws
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install
 source install/setup.bash
 ```
 
-### 全量编译说明
-
-全 workspace build 可能在 `nav2_system_tests` 处因缺少 Gazebo 测试依赖（例如 `gazebo_ros_pkgs`）失败。该失败不代表 COLREGS Humble plugin MVP 构建失败。
-
-## 四、使用方式
-
-Humble 分支当前不提供完整 COLREGS 仿真 launch。推荐从已有 Humble Nav2 bringup/仿真配置开始，将 `nav2_colregs_bringup/params/nav2_colregs_params_humble_minimal.yaml` 中的片段合并到工作参数文件。
-
-最小接线包含：
-- `planner_server`：`RRTStar`、`VORRTStar` 插件配置。
-- `controller_server`：默认使用 `nav2_colregs_alos_controller::ALOSController`。
-- `local_costmap` / `global_costmap`：`nav2_colregs_costmap_layers::TSProjectionLayer`，显式配置 `tracked_ship_topic`。
-- `ts_state_manager`：CPA/TCPA 和威胁状态参数，显式配置 `tracked_ship_topic`、`robot_base_frame`、`odom_topic`。
-- `bt_navigator`：保留默认 Humble Nav2 BT XML/plugin set，不使用 Jazzy `CreateLocalPath` 诊断 BT 节点。
-
-TS 子系统可单独启动：
+To build only the planner packages (skips controllers, costmap layers, sim-related packages):
 
 ```bash
-ros2 launch nav2_colregs_bringup ts_subsystem_launch.py
+colcon build --symlink-install \
+  --packages-up-to nav2_skeleton_planner nav2_colregs_vo_skeleton_planner
 ```
 
-该 launch 默认使用 `nav2_colregs_params_humble_minimal.yaml`，会启动：
-- `ts_state_manager`
-- `avoidance_point_node`
-- `barrier_node`
+Note: `--packages-up-to` on the skeleton planners pulls in the core search plus `nav2_colregs_msgs` and `nav2_colregs_ts_manager` (service definitions). It does NOT build the LOS/ALOS controllers, TS projection layer, or vector object server — add those explicitly if needed.
 
-`ts_subsystem_launch.py` 暴露 `tracked_ship_topic`、`robot_base_frame`、`odom_topic` 作为便捷参数，只作用于 TS subsystem 进程。TSProjectionLayer 是 Nav2 costmap 插件，不由该 launch 启动；如果需要改目标船 topic，必须同步修改传给 Nav2 的 params 文件中 local/global `ts_projection_layer.tracked_ship_topic`。
+## Integration Guide
 
-### 海事态势监控器
+This repository does not ship a standalone simulation launch. Integrate the plugins into your own Nav2 bringup as follows.
 
-监控器可独立启动，不要求 Nav2 lifecycle 或 TS subsystem launch：
+### Register a planner plugin
+
+In your `planner_server` parameters (merge the relevant sections from `nav2_colregs_bringup/params/nav2_colregs_params_humble_minimal.yaml` into your own params):
+
+```yaml
+planner_server:
+  ros__parameters:
+    planner_plugins: ["VOSkeleton"]
+    VOSkeleton:
+      plugin: "nav2_colregs_vo_skeleton_planner/VOSkeletonPlanner"
+      step_size: 4.0
+      goal_bias: 0.1
+      eta: 50.0
+      safety_dist: 1.5
+      cost_weight: 0.3
+      goal_tolerance: 2.0
+      reuse_iterations: 64
+      switch_margin: 0.03
+      # ... full parameter list below
+```
+
+Point your BT XML at the registered planner and configure bt_navigator to load it:
+
+```xml
+<ComputePathToPose goal="{goal}" path="{path}" planner_id="VOSkeleton"/>
+```
+
+```yaml
+bt_navigator:
+  ros__parameters:
+    default_nav_to_pose_bt_xml: "/path/to/your_tree.xml"
+```
+
+### Skeleton planner parameters
+
+| Group | Parameters | Default |
+|---|---|---|
+| Search | `step_size` `goal_bias` `eta` `goal_tolerance` | 4.0 / 0.1 / 50.0 / 2.0 |
+| Capacity | `node_limit` `path_limit` `near_limit` `connector_limit` `recovery_near_limit` | 1024 / 256 / 16 / 128 / 16 |
+| Budget | `global_iterations` `local_iterations` `refine_iterations` `reuse_iterations` `max_work` `time_limit` | 2400 / 600 / 200 / 64 / 12M / 0 |
+| Behaviour | `allow_recovery` `allow_skip` `switch_margin` `safety_dist` `cost_weight` | true / true / 0.03 / 1.5 / 0.3 |
+
+### COLREGS service chain (VO plugins only)
+
+`VORRTStarPlanner` and `VOSkeletonPlanner` query two services from `nav2_colregs_ts_manager`. If either service times out (1 s), the planner falls back to plain RRT* from the robot pose — COLREGS avoidance is skipped but planning still succeeds. Decision is made against the **primary threat only** (minimum TCPA); multi-vessel simultaneous avoidance is not yet supported.
+
+- `/get_avoidance_point` (`nav2_colregs_msgs/srv/GetAvoidancePoint`) — VO collision-cone safe heading and avoidance point
+- `/get_barrier_lines` (`nav2_colregs_msgs/srv/GetBarrierLines`) — barrier segments around the primary threat
+
+Launch the TS subsystem (standalone nodes):
 
 ```bash
-ros2 launch nav2_maritime_situation_monitor maritime_situation_monitor.launch.py
+ros2 launch nav2_colregs_bringup ts_subsystem_launch.py \
+  tracked_ship_topic:=/your_ts_topic \
+  robot_base_frame:=base_link \
+  odom_topic:=odom
 ```
 
-launch 参数为 `params_file`、`use_sim_time` 和可选 `namespace`（默认为空）。默认接口为输入 `/tracked_ship`、`/odom`，输出 `/maritime_situation`；可在 `config/maritime_situation_monitor.yaml` 中修改。节点只发布信息性态势报告，不控制本船。
 
-`cpa_valid` 表示 DCPA/TCPA 是否由有效的非零相对速度预测得到。当相对速度严格小于 `relative_speed_epsilon`（默认 `1e-6 m/s`）时，CPA 预测退化：`cpa_valid=false`、`tcpa=0.0`、`dcpa` 为当前距离，并强制报告 `RISK_SAFE`。消费者必须先检查 `cpa_valid`，不得把该 `tcpa` 当作有效预测时间。
 
-默认风险阈值（DCPA 单位 m，TCPA 单位 s）为：
+### TS conservative-avoidance tuning
 
-| 等级 | DCPA | TCPA |
-|---|---:|---:|
-| INFO | 30.0 | 120.0 |
-| WARNING | 20.0 | 30.0 |
-| CRITICAL | 10.0 | 10.0 |
+The avoidance point conservatism is governed by three parameters on `ts_state_manager` / `avoidance_point_node` (set in `ts_subsystem_launch.py` or your params file):
 
-默认会遇分类阈值为：船首相遇方位 `6.0 deg`、反向航向容差 `15.0 deg`、追越船尾扇区 `112.5 deg`，航向速度下限为 `0.05 m/s`。输入超时默认值为目标船 `3.0 s`、本船里程计 `1.0 s`，TF 等待上限为 `0.2 s`，发布频率为 `0.5 Hz`。
+- `safety_factor` — multiplies the combined keep-out radius `(os_radius + ts_radius)`: controls both the DCPA threat-trigger threshold and the avoidance-point placement distance
+- `os_radius` — own-ship safety radius; the only parameter that widens the collision cone (lateral clearance)
+- `tcpa_horizon` — time window for threat qualification
 
-### 参数文件状态
+### Controller registration
 
-- `nav2_colregs_params_humble_minimal.yaml`：Humble 当前推荐配置片段，引用的 COLREGS 插件均已移植并 build 验证。
-- `vector_object_server_params.yaml` / `vector_object_server_params_behavior_validation.yaml`：vector object server 参数；对应包已移植并 build 验证。
-- `nav2_colregs_params_ts_projection_validation.yaml`：Jazzy 主开发配置。ALOS、VO-RRT*、TSProjectionLayer、`ts_state_manager` 对应组件已移植；但文件仍引用未移植的 `CreateLocalPath` Behavior/BT 节点，不能作为完整 Humble runtime 配置直接使用。
-- `nav2_colregs_params_behavior_validation.yaml`：Jazzy behavior/keepout 验证配置。ALOS、keepout filter、vector object server 相关组件已移植；但完整 validation launch 与 `CreateLocalPath` Behavior/BT 节点未移植。
-- `nav2_colregs_params.yaml` / `nav2_colregs_params_with_keepout.yaml`：Jazzy 基础/keepout 场景配置，保留作参考；未作为 Humble MVP runtime 配置验证。
+```yaml
+controller_server:
+  ros__parameters:
+    controller_plugins: ["FollowPath"]
+    FollowPath:
+      plugin: "nav2_colregs_alos_controller::ALOSController"
+```
 
-## 五、关键参数
+Reference parameter sets: `nav2_colregs_bringup/params/*.yaml` (merge the sections you need into your own Nav2 params — none of them is a standalone drop-in file).
 
-### TS State Manager
-- `ts_timeout: 3.0`：目标船超时（秒），超时后移除。
-- `tcpa_horizon: 10.0`：TCPA 预测窗口（秒）。
-- `safety_factor: 1.1`：安全距离缩放因子。
-- `os_radius: 0.3`：本船半径。
-- `global_frame: "map"`：TS 状态统一坐标系。
-- `robot_base_frame: "base_link"`：本船 base frame。
+## Tests
 
-### TSProjectionLayer
-- `track_timeout: 3.0`：目标船超时（秒），超时后从 costmap 移除。
-- `enabled: true`
-
-### Controller
-- ALOS: `forward_dist: 2.0`, `gamma: 0.0006`, `beta_hat0: 0.0`, `max_angle_for_motion: 1.047`。
-- LOS: 使用 `lookahead_dist` 替代 ALOS 的 `forward_dist/gamma/beta_hat0` 参数。
-
-## 六、常用诊断命令
+Each added package ships GTest regressions (supercover traversal, capacity recycling, recovery invariants, budget-interruption consistency, resolution-change safety distance, shortcut certification, etc.):
 
 ```bash
-# 检查 /tracked_ship 消息格式
-ros2 topic echo /tracked_ship --once
-
-# 检查 costmap 中 TS LETHAL 标记
-ros2 topic echo /local_costmap/costmap --once
-
-# 检查 TS 处理列表
-ros2 topic echo /processed_ts_list --once
-
-# TF 检查
-ros2 run tf2_ros tf2_echo map odom
-ros2 run tf2_ros tf2_echo map ts_virtual_base_link
-```
-
-## 七、目录结构（新增/移植包）
-
-```text
-nav2_colregs_msgs/
-nav2_rrt_star_planner/
-nav2_colregs_vo_rrt_star_planner/
-nav2_colregs_costmap_layers/
-  include/ src/ plugins.xml
-nav2_colregs_vector_object_server/
-  include/ src/ launch/ params/
-nav2_colregs_ts_manager/
-  include/ src/
-nav2_colregs_los_controller/
-  include/ src/ los_controller_plugin.xml
-nav2_colregs_alos_controller/
-  include/ src/ alos_controller_plugin.xml
-nav2_colregs_bringup/
-  params/ behavior_trees/ launch/
-nav2_maritime_situation_msgs/
-  msg/
-nav2_maritime_situation_monitor/
-  config/ launch/ nav2_maritime_situation_monitor/ test/
+colcon test --packages-select nav2_colregs_vo_skeleton_planner nav2_skeleton_planner
+colcon test-result --verbose
 ```
