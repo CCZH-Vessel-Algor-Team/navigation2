@@ -354,10 +354,11 @@ void BoundedInformedRRT::reparent(
 void BoundedInformedRRT::shortcutNodes(Budget & budget)
 {
   // R2-04: the non-increasing reparent criterion compares tree g values
-  // against fresh edge costs; with stale g (refresh failed / not yet run)
-  // an "equal-cost" shortcut could silently increase the true cost, so
-  // shortcuts are disabled until pruneInvalid certifies the costs.
-  if (!costs_fresh_) {
+  // against fresh edge costs; with stale g an "equal-cost" shortcut could
+  // silently increase the true cost. pruneInvalid certifies costs for the
+  // revision it ran under; a search in the SAME revision keeps shortcuts
+  // alive, a new revision requires re-certification (review PLAIN-02).
+  if (costs_revision_ != space_->revision()) {
     return;
   }
   const int count = std::min(n_, config_.connector_limit);
@@ -514,8 +515,6 @@ bool BoundedInformedRRT::search(
   const Pt & query, Budget & budget, int iterations,
   std::vector<Pt> & out, const std::vector<Pt> * incumbent)
 {
-  // costs captured under an older world revision are not certified anymore
-  costs_fresh_ = false;
   last_reason_ = nullptr;
   last_cost_ = HUGE_VAL;
   solution_terminal_ = -1;
@@ -650,8 +649,7 @@ int BoundedInformedRRT::pruneInvalid(Budget & budget)
     // Interruption must not leave a half-maintained tree: the traversal and
     // the cost refresh are discarded together and costs stay stale, which
     // disables cost-based shortcuts until a successful refresh (R2-04).
-    costs_fresh_ = false;
-    throw;
+    throw;  // costs_revision_ stays at the old value: not fresh for this world
   }
 
   const int remaining = static_cast<int>(keep_order.size());
@@ -661,7 +659,7 @@ int BoundedInformedRRT::pruneInvalid(Budget & budget)
     for (int i = 0; i < remaining; ++i) {
       cost_[keep_order[i]] = new_g[keep_order[i]];
     }
-    costs_fresh_ = true;
+    costs_revision_ = space_->revision();
     return 0;
   }
 
@@ -694,7 +692,7 @@ int BoundedInformedRRT::pruneInvalid(Budget & budget)
   }
   n_ = remaining;
   budget.pruned_nodes += removed;
-  costs_fresh_ = true;
+  costs_revision_ = space_->revision();
   return removed;
 }
 

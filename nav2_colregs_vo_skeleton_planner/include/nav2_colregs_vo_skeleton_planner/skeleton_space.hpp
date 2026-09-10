@@ -74,11 +74,15 @@ public:
   /** New query context: bump revision, reset the edge cache and barriers. */
   void beginQuery(uint64_t world_revision);
 
-  /** Point the space at a per-query stable costmap snapshot (R2-03). */
-  void updateCostmap(const nav2_costmap_2d::Costmap2D * costmap)
-  {
-    costmap_ = costmap;
-  }
+  /** Point the space at a per-query stable costmap snapshot (R2-03).
+   *
+   * The safety disk is derived from the map resolution; a resolution change
+   * silently shrinks the metric safety distance if the disk were reused
+   * (review PLAIN-03), so the offsets are rebuilt when it changes. The
+   * previous resolution is stored as a VALUE, never read through the old
+   * (possibly dangling) costmap pointer.
+   */
+  void updateCostmap(const nav2_costmap_2d::Costmap2D * costmap);
   void setBarriers(const std::vector<geometry_msgs::msg::Point> & barriers);
 
   uint64_t revision() const {return revision_;}
@@ -135,6 +139,7 @@ private:
     }
   };
 
+  void rebuildDisk();
   bool blockedDisk(int cx, int cy) const;
   double cellCost(int cx, int cy) const;
   bool inside(int cx, int cy) const
@@ -154,6 +159,7 @@ private:
   std::vector<geometry_msgs::msg::Point> barriers_;
   // safety disk offsets in cells (dy, dx)
   std::vector<std::pair<int, int>> disk_;
+  double disk_resolution_ = 0.0;  // resolution disk_ was built for
   std::unordered_map<EdgeKey, EdgeResult, EdgeKeyHash> cache_;
   static constexpr int kCacheLimit = 2048;
 };

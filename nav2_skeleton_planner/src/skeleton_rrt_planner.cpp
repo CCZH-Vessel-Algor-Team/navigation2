@@ -154,6 +154,13 @@ nav_msgs::msg::Path SkeletonRRTPlanner::createPlan(
   const nav2_costmap_2d::Costmap2D * query_map = &snapshot;
   space_->updateCostmap(query_map);
 
+  if (!std::isfinite(start.pose.position.x) ||
+    !std::isfinite(start.pose.position.y) ||
+    !std::isfinite(goal.pose.position.x) ||
+    !std::isfinite(goal.pose.position.y))
+  {
+    throw nav2_core::PlannerException("Start/goal coordinates must be finite.");
+  }
   unsigned int start_mx, start_my, goal_mx, goal_my;
   if (!query_map->worldToMap(start.pose.position.x, start.pose.position.y,
     start_mx, start_my))
@@ -210,9 +217,13 @@ nav_msgs::msg::Path SkeletonRRTPlanner::createPlan(
     stats.adopted_cost);
 
   nav_msgs::msg::Path plan = linearInterpolation(
-    path, query_map->getResolution());
-  plan.header.stamp = parent_node_.lock()->now();
+    path, query_map->getResolution(), costmap_ros_->getGlobalFrameID());
+  const auto stamp = parent_node_.lock()->now();
+  plan.header.stamp = stamp;
   plan.header.frame_id = costmap_ros_->getGlobalFrameID();
+  for (auto & p : plan.poses) {
+    p.header.stamp = stamp;
+  }
   if (!plan.poses.empty()) {
     plan.poses.back().pose.orientation = goal.pose.orientation;
   }
@@ -220,7 +231,8 @@ nav_msgs::msg::Path SkeletonRRTPlanner::createPlan(
 }
 
 nav_msgs::msg::Path SkeletonRRTPlanner::linearInterpolation(
-  const std::vector<Pt> & raw_path, double resolution)
+  const std::vector<Pt> & raw_path, double resolution,
+  const std::string & frame)
 {
   nav_msgs::msg::Path plan;
   if (raw_path.empty()) {
@@ -228,7 +240,7 @@ nav_msgs::msg::Path SkeletonRRTPlanner::linearInterpolation(
   }
   geometry_msgs::msg::PoseStamped pose;
   pose.pose.orientation.w = 1.0;
-  pose.header.frame_id = "map";
+  pose.header.frame_id = frame;
   auto push = [&](double x, double y) {
       pose.pose.position.x = x;
       pose.pose.position.y = y;

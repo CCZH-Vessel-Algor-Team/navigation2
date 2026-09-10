@@ -155,6 +155,13 @@ nav_msgs::msg::Path VOSkeletonPlanner::createPlan(
   const nav2_costmap_2d::Costmap2D * query_map = &snapshot;
   space_->updateCostmap(query_map);
 
+  if (!std::isfinite(start.pose.position.x) ||
+    !std::isfinite(start.pose.position.y) ||
+    !std::isfinite(goal.pose.position.x) ||
+    !std::isfinite(goal.pose.position.y))
+  {
+    throw nav2_core::PlannerException("Start/goal coordinates must be finite.");
+  }
   unsigned int start_mx, start_my, goal_mx, goal_my;
   if (!query_map->worldToMap(start.pose.position.x, start.pose.position.y,
     start_mx, start_my))
@@ -264,9 +271,14 @@ nav_msgs::msg::Path VOSkeletonPlanner::createPlan(
   }
 
   nav_msgs::msg::Path plan = linearInterpolation(
-    raw_path, query_map->getResolution());
-  plan.header.stamp = parent_node_.lock()->now();
+    raw_path, query_map->getResolution(),
+    costmap_ros_->getGlobalFrameID());
+  const auto stamp = parent_node_.lock()->now();
+  plan.header.stamp = stamp;
   plan.header.frame_id = costmap_ros_->getGlobalFrameID();
+  for (auto & p : plan.poses) {
+    p.header.stamp = stamp;
+  }
   if (!plan.poses.empty()) {
     plan.poses.back().pose.orientation = goal.pose.orientation;
   }
@@ -274,7 +286,8 @@ nav_msgs::msg::Path VOSkeletonPlanner::createPlan(
 }
 
 nav_msgs::msg::Path VOSkeletonPlanner::linearInterpolation(
-  const std::vector<Pt> & raw_path, double resolution)
+  const std::vector<Pt> & raw_path, double resolution,
+  const std::string & frame)
 {
   nav_msgs::msg::Path plan;
   if (raw_path.empty()) {
@@ -282,7 +295,7 @@ nav_msgs::msg::Path VOSkeletonPlanner::linearInterpolation(
   }
   geometry_msgs::msg::PoseStamped pose;
   pose.pose.orientation.w = 1.0;
-  pose.header.frame_id = "map";
+  pose.header.frame_id = frame;
   auto push = [&](double x, double y) {
       pose.pose.position.x = x;
       pose.pose.position.y = y;
@@ -294,7 +307,8 @@ nav_msgs::msg::Path VOSkeletonPlanner::linearInterpolation(
     const auto & a = raw_path[i - 1];
     const auto & b = raw_path[i];
     const double dist = std::hypot(b.first - a.first, b.second - a.second);
-    const int intervals = std::max(1, static_cast<int>(dist / resolution));
+    const int intervals =
+        std::max(1, static_cast<int>(std::ceil(dist / resolution)));
     for (int k = 1; k <= intervals; ++k) {
       const double t = static_cast<double>(k) / intervals;
       push(a.first + t * (b.first - a.first),

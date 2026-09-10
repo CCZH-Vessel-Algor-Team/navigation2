@@ -1,7 +1,9 @@
 #ifndef NAV2_SKELETON_PLANNER__SKELETON_RRT_PLANNER_HPP_
 #define NAV2_SKELETON_PLANNER__SKELETON_RRT_PLANNER_HPP_
 
+#include <cmath>
 #include <memory>
+#include <string>
 #include <string>
 
 #include "nav2_colregs_vo_skeleton_planner/skeleton_planner.hpp"
@@ -47,7 +49,7 @@ public:
 private:
   nav_msgs::msg::Path linearInterpolation(
     const std::vector<nav2_colregs_vo_skeleton_planner::Pt> & raw_path,
-    double resolution);
+    double resolution, const std::string & frame);
 
   std::string name_;
   rclcpp::Logger logger_{rclcpp::get_logger("SkeletonRRTPlanner")};

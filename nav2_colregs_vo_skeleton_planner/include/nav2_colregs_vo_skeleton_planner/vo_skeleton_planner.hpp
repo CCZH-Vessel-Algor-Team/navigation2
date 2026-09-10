@@ -1,7 +1,9 @@
 #ifndef NAV2_COLREGS_VO_SKELETON_PLANNER__VO_SKELETON_PLANNER_HPP_
 #define NAV2_COLREGS_VO_SKELETON_PLANNER__VO_SKELETON_PLANNER_HPP_
 
+#include <cmath>
 #include <memory>
+#include <string>
 #include <string>
 
 #include "nav2_core/exceptions.hpp"
@@ -36,7 +38,8 @@ public:
 
 private:
   nav_msgs::msg::Path linearInterpolation(
-    const std::vector<Pt> & raw_path, double resolution);
+    const std::vector<Pt> & raw_path, double resolution,
+    const std::string & frame);
 
   std::string name_;
   rclcpp::Logger logger_{rclcpp::get_logger("VOSkeletonPlanner")};

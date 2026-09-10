@@ -463,6 +463,32 @@ TEST(SkeletonPlannerRegress, BudgetInterruptLeavesConsistentState)
   }
 }
 
+
+TEST(SkeletonTreeRegress, PruneInvalidCertificationSurvivesSameRevisionSearch)
+{
+  // review PLAIN-02: a successful pruneInvalid certifies costs for the
+  // current revision; a subsequent search in the SAME revision must keep
+  // shortcuts enabled (the old unconditional costs_fresh_=false disabled
+  // every ancestor shortcut after the first maintenance).
+  Scene scene;
+  scene.space->beginQuery(1);
+  SkeletonConfig cfg = scene.config;
+  cfg.reuse_iterations = 64;
+  BoundedInformedRRT tree(scene.space.get(), Pt(100, 50), cfg, 5);
+  Budget budget(cfg.max_work);
+  const std::vector<Pt> chain{{10, 50}, {40, 50}, {70, 50}, {100, 50}};
+  ASSERT_TRUE(tree.seedPath(chain, budget));
+  // certify the freshly seeded costs for this revision
+  scene.space->beginQuery(2);
+  ASSERT_EQ(tree.pruneInvalid(budget), 0);
+  // same-revision search: shortcut machinery must be alive
+  const int64_t cand_before = budget.shortcut_candidates;
+  std::vector<Pt> out;
+  tree.search(Pt(10, 50), budget, 0, out);
+  EXPECT_GT(budget.shortcut_candidates, cand_before)
+    << "shortcuts disabled after same-revision pruneInvalid";
+}
+
 int main(int argc, char ** argv)
 {
   ::testing::InitGoogleTest(&argc, argv);

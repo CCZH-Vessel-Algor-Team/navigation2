@@ -87,7 +87,22 @@ Space::Space(
   safety_dist_(safety_dist),
   cost_weight_(cost_weight)
 {
+  rebuildDisk();
+}
+
+void Space::updateCostmap(const nav2_costmap_2d::Costmap2D * costmap)
+{
+  costmap_ = costmap;
+  const double res = costmap->getResolution();
+  if (res != disk_resolution_) {
+    rebuildDisk();
+  }
+}
+
+void Space::rebuildDisk()
+{
   const double res = costmap_->getResolution();
+  disk_.clear();
   const int r = static_cast<int>(std::ceil(safety_dist_ / res));
   for (int dy = -r; dy <= r; ++dy) {
     for (int dx = -r; dx <= r; ++dx) {
@@ -96,6 +111,7 @@ Space::Space(
       }
     }
   }
+  disk_resolution_ = res;
 }
 
 void Space::beginQuery(uint64_t world_revision)

@@ -110,7 +110,11 @@ private:
   std::vector<std::vector<int>> children_;
   int n_ = 1;
   int solution_terminal_ = -1;
-  bool costs_fresh_ = false;  // g values certified for the current revision
+  // revision for which g values were last certified by pruneInvalid;
+  // 0 = never. Shortcut gating compares against the current space revision
+  // so a successful maintenance keeps shortcuts alive until the world
+  // changes, and a failed/interrupted one disables them (review PLAIN-02).
+  uint64_t costs_revision_ = 0;
   const char * last_reason_ = nullptr;
   double last_cost_ = HUGE_VAL;
 };
