@@ -58,7 +58,7 @@ Prerequisites: ROS 2 Humble (apt or RoboStack), colcon, and the standard Nav2 de
 ```bash
 # clean workspace
 mkdir -p ~/colregs_ws/src && cd ~/colregs_ws/src
-git clone -b feat/rrt-star-informed-humble \
+git clone -b feat/ntp-colregs-anchor \
   git@github.com:CCZH-Vessel-Algor-Team/navigation2.git
 
 cd ~/colregs_ws
@@ -113,6 +113,37 @@ bt_navigator:
     default_nav_to_pose_bt_xml: "/path/to/your_tree.xml"
 ```
 
+### NavigateThroughPoses with VORRTStar
+
+The standard Humble `planner_server` calls `createPlan(start, goal)` for each segment. `VORRTStarPlanner` compares each segment start with the live robot pose from `Costmap2DROS`. It calls the COLREGS services only when that distance is within `colregs_anchor_max_dist` (default **3.0 m**, finite and nonnegative, read at configure time). More distant starts use plain informed RRT* without barrier constraints. If the live pose cannot be obtained, it logs a warning and also skips COLREGS.
+
+This is a distance-based gate, not a segment-index check: a later waypoint within the threshold can also enable COLREGS. `configure()` retains the `Costmap2DROS` object until cleanup; this fixes a null-pointer crash on the first planning request, including ordinary single-goal navigation.
+
+Example planner settings (the iteration budgets are tuned USV values, not plugin defaults):
+
+```yaml
+planner_server:
+  ros__parameters:
+    planner_plugins: [VORRTStar]
+    VORRTStar:
+      plugin: "nav2_colregs_vo_rrt_star_planner::VORRTStarPlanner"
+      colregs_anchor_max_dist: 3.0
+      max_iterations: 1500
+      max_optimize_iters: 500
+      use_informed_sampling: true
+```
+
+The iteration budget is **per segment**, not per NavigateThroughPoses request or a wall-clock deadline. Once a solution is found, the loop can extend to `max_iterations + max_optimize_iters`. The example reduces the previous USV budget of 2000 + 2000 to 1500 + 500; each COLREGS service can still add up to 1 s of waiting.
+
+Bringup requirements:
+
+- Set `bt_navigator.default_nav_through_poses_bt_xml` to a tree using `ComputePathThroughPoses` with `planner_id="VORRTStar"`.
+- Give `RemovePassedGoals` explicit frames matching the vehicle, e.g. `global_frame="map" robot_base_frame="usv_1/base_link"`. Its default `base_link` does not inherit the navigator's parameter.
+- For the standard planner server, use `global_costmap/clear_entirely_global_costmap` in recovery nodes.
+- Add `nav2_rviz_plugins/GoalTool` to the RViz Tools list. Select **Waypoint / Nav Through Poses Mode**, collect poses using **Nav2 Goal**, then click **Start Nav Through Poses**. The ordinary **2D Goal Pose** tool publishes a single goal and does not populate the panel's waypoint list.
+
+The tested local companion setup in `USV_Simulation` (`feat/colregs-local-planner-bringup`) uses `usv_sim_full/config/navigate_through_poses_vorrt_star.xml` and the corresponding `radar_nav2_param.yaml` / `three_vision_one_mmwave.rviz` configuration. Those simulation changes are maintained separately from this Nav2 repository. Reload the bringup after changing its default tree or RViz configuration.
+
 ### Skeleton planner parameters
 
 | Group | Parameters | Default |
@@ -163,7 +194,7 @@ Reference parameter sets: `nav2_colregs_bringup/params/*.yaml` (merge the sectio
 ### Known Limitations
 
 - **Skeleton planners** (`SkeletonRRTPlanner`, `VOSkeletonPlanner`) do not support NavigateThroughPoses: the persistent goal-rooted tree anchors to a single final goal, and per-segment calls would repeatedly rebuild it, defeating the warm-start mechanism.
-- **`VORRTStarPlanner` under NavigateThroughPoses** applies COLREGS avoidance only to the segment anchored at the live robot pose (within `colregs_anchor_max_dist`, default 3.0 m); preview segments plan plain informed RRT*.
+- **`VORRTStarPlanner` under NavigateThroughPoses** uses the start-to-live-pose distance gate described above; it does not guarantee that only segment zero uses COLREGS.
 
 ## Tests
 
@@ -173,3 +204,14 @@ Each added package ships GTest regressions (supercover traversal, capacity recyc
 colcon test --packages-select nav2_colregs_vo_skeleton_planner nav2_skeleton_planner
 colcon test-result --verbose
 ```
+
+For the VORRTStar planner, build the plugin and standard planner server, source the workspace, then run:
+
+```bash
+colcon build --symlink-install --packages-up-to nav2_colregs_vo_rrt_star_planner nav2_planner
+source install/setup.bash
+colcon test --packages-select nav2_colregs_vo_rrt_star_planner
+colcon test-result --test-result-base build/nav2_colregs_vo_rrt_star_planner --verbose
+```
+
+Coverage includes 8 core GTests, 6 anchor-distance GTests, and `test_planner_actions.py`: a real planner-server subprocess with TF, costmap, and counted mock COLREGS services. The action test checks single-goal planning, near/far and threshold-boundary service gating, three-waypoint planning, and planning after cleanup/reconfiguration. It uses ROS domain 91 by default (override with `NTP_TEST_ROS_DOMAIN_ID`) and cleans up its own subprocess. These tests passed in Docker Humble; the user also confirmed the companion simulation test passed after the RViz/BT configuration and budget adjustments. The automated test does not exercise real target-ship decision calculations or full vessel control.

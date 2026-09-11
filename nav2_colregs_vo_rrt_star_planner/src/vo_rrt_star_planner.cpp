@@ -33,6 +33,7 @@ void VORRTStarPlanner::configure(
   parent_node_ = parent;
   clock_ = node->get_clock();
   logger_ = node->get_logger();
+  costmap_ros_ = costmap_ros;
   costmap_ = costmap_ros->getCostmap();
   global_frame_ = costmap_ros->getGlobalFrameID();
 

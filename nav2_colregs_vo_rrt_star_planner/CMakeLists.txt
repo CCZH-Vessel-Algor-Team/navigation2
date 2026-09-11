@@ -62,6 +62,9 @@ install(FILES vo_rrt_star_planner.xml
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
+
+  ament_add_pytest_test(test_planner_actions test/test_planner_actions.py TIMEOUT 90)
 
   ament_add_gtest(test_rrt_star test/test_rrt_star.cpp)
   ament_add_gtest(test_anchor_guard test/test_anchor_guard.cpp)
