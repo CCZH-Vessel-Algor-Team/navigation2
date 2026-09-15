@@ -44,11 +44,11 @@ private:
   nav2_colregs_msgs::msg::ProcessedTSList::ConstSharedPtr last_ts_list_;
   std::deque<nav2_colregs_msgs::msg::ProcessedTSList::ConstSharedPtr> snapshots_;
   rclcpp::TimerBase::SharedPtr expiry_timer_;
-  double state_timeout_{1.0};
-  double max_pose_delta_{3.0};
+  double snapshot_timeout_{1.0};
+  double max_request_position_delta_{3.0};
 
-  double ray_length_{999.0};
-  double os_radius_{0.3};
+  double closing_segment_length_{999.0};
+  double lateral_margin_{0.3};
 };
 
 }  // namespace nav2_colregs_ts_manager

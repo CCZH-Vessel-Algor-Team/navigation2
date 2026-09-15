@@ -73,11 +73,11 @@ private:
   bool tracks_valid_{false};
   std::mt19937_64 snapshot_rng_{std::random_device{}()};
 
-  double frequency_{10.0};
-  double ts_timeout_{1.0};
-  double odom_timeout_{1.0};
-  double tcpa_horizon_{3.0};
-  double safety_factor_{1.1};
+  double update_frequency_{10.0};
+  double track_list_timeout_{1.0};
+  double own_ship_state_timeout_{1.0};
+  double threat_tcpa_horizon_{3.0};
+  double threat_radius_scale_{1.1};
   double os_radius_{0.3};
   std::string global_frame_{"map"};
   std::string robot_base_frame_{"base_link"};

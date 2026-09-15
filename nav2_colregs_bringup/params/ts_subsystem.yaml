@@ -2,26 +2,24 @@
 # Launch overrides use_sim_time and input topic/base-frame wiring explicitly.
 ts_state_manager:
   ros__parameters:
-    frequency: 10.0           # wall-timer Hz; startup-only
-    ts_timeout: 1.0          # maximum receipt AND measurement age [s]
-    odom_timeout: 1.0        # maximum own-ship odometry/TF age [s]
-    tcpa_horizon: 40.0       # threat eligibility horizon in seconds
-    safety_factor: 3.0       # OS/TS radius inflation for detection and diagnostic cones
-    os_radius: 5.0           # metres; cone and threat radius
+    update_frequency: 10.0      # wall-timer Hz; startup-only
+    track_list_timeout: 1.0     # maximum receipt AND measurement age [s]
+    own_ship_state_timeout: 1.0 # maximum own-ship odometry/TF age [s]
+    threat_tcpa_horizon: 40.0   # threat eligibility horizon [s]
+    threat_radius_scale: 3.0    # combined-radius scale for detection and diagnostic cones
+    os_radius: 5.0              # physical own-ship radius [m], shared in ProcessedTSList
     global_frame: map
 
 avoidance_point_node:
   ros__parameters:
-    state_timeout: 1.0       # maximum processed snapshot age [s]
-    max_pose_delta: 3.0      # request OS pose must be near snapshot OS pose [m]
-    os_radius: 5.0           # physical own-ship collision radius [m]
-    safety_factor: 1.5       # OS/TS radius inflation for actual heading selection
+    snapshot_timeout: 1.0          # maximum processed snapshot age [s]
+    max_request_position_delta: 3.0 # request/snapshot OS XY distance limit [m]
+    avoidance_radius_scale: 1.5    # combined-radius scale; OS radius comes from the snapshot
     point_extension_distance: 20.0  # independent endpoint range extension [m]
 
 barrier_node:
   ros__parameters:
-    state_timeout: 1.0
-    max_pose_delta: 3.0
-    ray_length: 999.0        # metres; third barrier segment only
-    # Preserve legacy geometry here; radius unification is a separate change.
-    os_radius: 0.3
+    snapshot_timeout: 1.0
+    max_request_position_delta: 3.0
+    closing_segment_length: 999.0 # third barrier segment length [m]
+    lateral_margin: 0.3           # first segment length = TS radius + this offset [m]

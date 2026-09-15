@@ -70,14 +70,14 @@ inline bool validSnapshot(const nav2_colregs_msgs::msg::ProcessedTSList & state)
 }
 
 inline bool headingSafe(const nav2_colregs_msgs::msg::ProcessedTSList & state,
-  double ox, double oy, double heading, double os_radius, double safety_factor)
+  double ox, double oy, double heading, double avoidance_radius_scale)
 {
   const double speed = std::hypot(state.os_twist.linear.x, state.os_twist.linear.y);
   for (const auto & ship : state.ships) {
     if (collisionCourse(ship.pose.position.x - ox, ship.pose.position.y - oy,
       ship.twist.linear.x - speed * std::cos(heading),
       ship.twist.linear.y - speed * std::sin(heading),
-      safety_factor * (os_radius + ship.radius)))
+      avoidance_radius_scale * (state.os_radius + ship.radius)))
     {
       return false;
     }

@@ -11,20 +11,20 @@ namespace nav2_colregs_ts_manager
 BarrierNode::BarrierNode()
 : rclcpp::Node("barrier_node")
 {
-  declare_parameter("ray_length", 999.0,
+  declare_parameter("closing_segment_length", 999.0,
     parameterDescription("Third barrier segment length [m].", true));
-  declare_parameter("os_radius", 0.3,
-    parameterDescription("Own-ship radius in first barrier segment [m].", true));
-  ray_length_ = get_parameter("ray_length").as_double();
-  os_radius_ = get_parameter("os_radius").as_double();
-  validateNumber("ray_length", ray_length_, true);
-  validateNumber("os_radius", os_radius_);
-  state_timeout_ = declare_parameter("state_timeout", 1.0,
+  declare_parameter("lateral_margin", 0.3,
+    parameterDescription("Additional lateral offset beyond the TS radius [m].", true));
+  closing_segment_length_ = get_parameter("closing_segment_length").as_double();
+  lateral_margin_ = get_parameter("lateral_margin").as_double();
+  validateNumber("closing_segment_length", closing_segment_length_, true);
+  validateNumber("lateral_margin", lateral_margin_);
+  snapshot_timeout_ = declare_parameter("snapshot_timeout", 1.0,
     parameterDescription("Maximum decision snapshot age [s].", true));
-  max_pose_delta_ = declare_parameter("max_pose_delta", 3.0,
-    parameterDescription("Maximum request/snapshot OS position difference [m].", true));
-  validateNumber("state_timeout", state_timeout_, true);
-  validateNumber("max_pose_delta", max_pose_delta_);
+  max_request_position_delta_ = declare_parameter("max_request_position_delta", 3.0,
+    parameterDescription("Maximum request/snapshot OS XY position difference [m].", true));
+  validateNumber("snapshot_timeout", snapshot_timeout_, true);
+  validateNumber("max_request_position_delta", max_request_position_delta_);
 
   ts_list_sub_ = create_subscription<nav2_colregs_msgs::msg::ProcessedTSList>(
     "processed_ts_list", rclcpp::SystemDefaultsQoS(),
@@ -38,14 +38,14 @@ BarrierNode::BarrierNode()
   barrier_markers_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("barrier_markers", 10);
   expiry_timer_ = create_wall_timer(std::chrono::milliseconds(200), [this]() {
       if (!last_ts_list_ || !validSnapshot(*last_ts_list_) ||
-        !fresh(last_ts_list_->header.stamp, now(), state_timeout_))
+        !fresh(last_ts_list_->header.stamp, now(), snapshot_timeout_))
       {
         clearMarkers();
       }
     });
 
-  RCLCPP_INFO(get_logger(), "BarrierNode started (ray_length=%.1f, os_radius=%.2f)",
-    ray_length_, os_radius_);
+  RCLCPP_INFO(get_logger(), "BarrierNode started (closing_segment_length=%.1f, lateral_margin=%.2f)",
+    closing_segment_length_, lateral_margin_);
 }
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ BarrierNode::BarrierNode()
 void BarrierNode::tsListCallback(
   nav2_colregs_msgs::msg::ProcessedTSList::ConstSharedPtr msg)
 {
-  if (last_ts_list_ && fresh(last_ts_list_->header.stamp, now(), state_timeout_) &&
+  if (last_ts_list_ && fresh(last_ts_list_->header.stamp, now(), snapshot_timeout_) &&
     rclcpp::Time(msg->header.stamp) < rclcpp::Time(last_ts_list_->header.stamp))
   {
     return;
@@ -103,7 +103,7 @@ void BarrierNode::handleService(
     return;
   }
   if (!validSnapshot(*last_ts_list_) ||
-    !fresh(last_ts_list_->header.stamp, now(), state_timeout_))
+    !fresh(last_ts_list_->header.stamp, now(), snapshot_timeout_))
   {
     fail(Response::STALE_STATE, "Latest TS state is invalid or expired");
     return;
@@ -119,7 +119,7 @@ void BarrierNode::handleService(
     fail(Response::SNAPSHOT_MISMATCH, "Avoidance snapshot is not in the barrier cache");
     return;
   }
-  if (!validSnapshot(*snapshot) || !fresh(snapshot->header.stamp, now(), state_timeout_)) {
+  if (!validSnapshot(*snapshot) || !fresh(snapshot->header.stamp, now(), snapshot_timeout_)) {
     fail(Response::STALE_STATE, "Requested avoidance snapshot has expired");
     return;
   }
@@ -127,7 +127,7 @@ void BarrierNode::handleService(
     !finitePoint(request->os_pose.position) ||
     (request->avoid_direction != "right" && request->avoid_direction != "left") ||
     std::hypot(request->os_pose.position.x - snapshot->os_pose.position.x,
-    request->os_pose.position.y - snapshot->os_pose.position.y) > max_pose_delta_)
+    request->os_pose.position.y - snapshot->os_pose.position.y) > max_request_position_delta_)
   {
     fail(Response::INVALID_REQUEST, "Invalid frame, direction or non-anchored OS pose");
     return;
@@ -190,7 +190,7 @@ void BarrierNode::handleService(
     lines.action = visualization_msgs::msg::Marker::ADD;
     lines.scale.x = 0.05;
     lines.color.r = 0.9;  lines.color.g = 0.2;  lines.color.b = 0.2;  lines.color.a = 0.8;
-    lines.lifetime = rclcpp::Duration::from_seconds(state_timeout_);
+    lines.lifetime = rclcpp::Duration::from_seconds(snapshot_timeout_);
     lines.points = response->barriers.points;
     markers.markers.push_back(lines);
     barrier_markers_pub_->publish(markers);
@@ -218,7 +218,7 @@ void BarrierNode::generateBarrierLines(
     perp -= M_PI_2;  // starboard side blockade → forces port passing
   }
 
-  const double line1_len = os_radius_ + ts_r;
+  const double line1_len = lateral_margin_ + ts_r;
   const double dist_os_ts = std::hypot(ts_x - os_x, ts_y - os_y);
   const double line2_len = std::max(dist_os_ts, 10.0) + 3.0 * ts_r;
 
@@ -238,8 +238,8 @@ void BarrierNode::generateBarrierLines(
 
   // Segment 3: opposite perpendicular (closes the U-shape).
   p4 = p3;
-  p5.x = p3.x - ray_length_ * std::cos(perp);
-  p5.y = p3.y - ray_length_ * std::sin(perp);
+  p5.x = p3.x - closing_segment_length_ * std::cos(perp);
+  p5.y = p3.y - closing_segment_length_ * std::sin(perp);
   p5.z = 0.0;
 
   barriers.points = {p0, p1, p2, p3, p4, p5};
