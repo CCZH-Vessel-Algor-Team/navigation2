@@ -50,16 +50,17 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
     share = Path(get_package_share_directory('nav2_colregs_bringup'))
     config = yaml.safe_load((share / 'params/ts_subsystem.yaml').read_text())
     config['ts_state_manager']['ros__parameters'].update(
-        frequency=20.0, ts_timeout=2.5, tcpa_horizon=40.0,
-        safety_factor=threat_scale, os_radius=4.0)
+        update_frequency=20.0, track_list_timeout=2.5, threat_tcpa_horizon=40.0,
+        threat_radius_scale=threat_scale, os_radius=4.0)
     config['avoidance_point_node']['ros__parameters'].update(
-        os_radius=4.0, safety_factor=1.5 if expected_threat else 1.0,
+        avoidance_radius_scale=1.5 if expected_threat else 1.0,
         point_extension_distance=20.0)
-    config['barrier_node']['ros__parameters'].update(os_radius=2.0, ray_length=20.0)
+    config['barrier_node']['ros__parameters'].update(
+        lateral_margin=2.0, closing_segment_length=20.0)
     params = tmp_path / 'custom_ts.yaml'
     params.write_text(yaml.safe_dump(config))
     decoy = tmp_path / 'nav2_params.yaml'
-    decoy.write_text('ts_state_manager:\n  ros__parameters:\n    tcpa_horizon: 999.0\n')
+    decoy.write_text('ts_state_manager:\n  ros__parameters:\n    threat_tcpa_horizon: 999.0\n')
     parent = tmp_path / 'parent.launch.py'
     parent.write_text(
         'from launch import LaunchDescription\n'
@@ -154,16 +155,16 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
             descriptors = call(DescribeParameters, '/' + name + '/describe_parameters',
                                DescribeParameters.Request(names=list(values))).descriptors
             assert all(d.description for d in descriptors)
-            assert all(d.read_only == (name != 'avoidance_point_node' or
-                                       d.name in ('state_timeout', 'max_pose_delta'))
-                       for d in descriptors)
+            assert all(
+                d.read_only == (name != 'avoidance_point_node' or
+                                d.name in ('snapshot_timeout', 'max_request_position_delta'))
+                for d in descriptors)
             print('YAML effective:', name, values, flush=True)
-        set_values('ts_state_manager', {'safety_factor': 9.0}, False)
-        set_values('ts_state_manager', {'frequency': 5.0}, False)
-        set_values('barrier_node', {'ray_length': 9.0}, False)
+        set_values('ts_state_manager', {'threat_radius_scale': 9.0}, False)
+        set_values('ts_state_manager', {'update_frequency': 5.0}, False)
+        set_values('barrier_node', {'closing_segment_length': 9.0}, False)
         for invalid in (-1.0, 0.0, 0.5, float('nan'), float('inf'), 'bad'):
-            set_values('avoidance_point_node', {'safety_factor': invalid}, False)
-        set_values('avoidance_point_node', {'os_radius': -1.0}, False)
+            set_values('avoidance_point_node', {'avoidance_radius_scale': invalid}, False)
         set_values('avoidance_point_node', {'point_extension_distance': -1.0}, False)
 
         deadline = time.monotonic() + 10
@@ -173,6 +174,7 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
                     abs(latest[-1].ships[0].tcpa - 30.0) < 1e-6):
                 break
         assert latest and latest[-1].ships
+        assert latest[-1].os_radius == pytest.approx(4.0)
         target = latest[-1].ships[0]
         assert target.tcpa == pytest.approx(30.0)
         assert target.dcpa == pytest.approx(7.0)
@@ -187,12 +189,16 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
             assert response.safe_heading == pytest.approx(math.radians(358))
             old_range = math.hypot(response.point.x, response.point.y)
             assert old_range == pytest.approx(math.sqrt(949) + 20.0)
-            set_values('avoidance_point_node', {'safety_factor': 2.0}, True)
+            set_values('avoidance_point_node', {'avoidance_radius_scale': 2.0}, True)
             response = call(GetAvoidancePoint, '/get_avoidance_point', req)
             assert response.safe_heading == pytest.approx(math.radians(354))
             assert math.hypot(response.point.x, response.point.y) == pytest.approx(old_range)
             print('REAL radius inflation 1.5->2: heading -2deg->-6deg; point range unchanged',
                   flush=True)
+            set_values('avoidance_point_node', {'point_extension_distance': 25.0}, True)
+            response = call(GetAvoidancePoint, '/get_avoidance_point', req)
+            assert response.safe_heading == pytest.approx(math.radians(354))
+            assert math.hypot(response.point.x, response.point.y) == pytest.approx(old_range + 5.0)
         barrier_req = GetBarrierLines.Request()
         barrier_req.header = response.header
         barrier_req.snapshot_id = response.snapshot_id
@@ -202,6 +208,8 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
         assert len(barrier) == 6
         assert math.hypot(barrier[1].x - barrier[0].x,
                           barrier[1].y - barrier[0].y) == pytest.approx(3.0)
+        assert math.hypot(barrier[3].x - barrier[2].x,
+                          barrier[3].y - barrier[2].y) == pytest.approx(math.sqrt(949) + 3.0)
         assert math.hypot(barrier[5].x - barrier[4].x,
                           barrier[5].y - barrier[4].y) == pytest.approx(20.0)
         print(f'REAL manager: TCPA=30 DCPA=7 scale={threat_scale} threat={expected_threat}; '
@@ -216,12 +224,12 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
 
 
 @pytest.mark.parametrize('executable,argument', [
-    ('ts_state_manager', 'frequency:=0.0'),
-    ('ts_state_manager', 'ts_timeout:=0.0'),
-    ('ts_state_manager', 'safety_factor:=-1.0'),
-    ('ts_state_manager', 'safety_factor:=0.5'),
-    ('avoidance_point_node', 'os_radius:=-1.0'),
-    ('barrier_node', 'ray_length:=0.0'),
+    ('ts_state_manager', 'update_frequency:=0.0'),
+    ('ts_state_manager', 'track_list_timeout:=0.0'),
+    ('ts_state_manager', 'threat_radius_scale:=-1.0'),
+    ('ts_state_manager', 'threat_radius_scale:=0.5'),
+    ('ts_state_manager', 'os_radius:=-1.0'),
+    ('barrier_node', 'closing_segment_length:=0.0'),
 ])
 def test_invalid_startup(tmp_path, monkeypatch, executable, argument):
     """Reject invalid startup overrides in real TS executables.

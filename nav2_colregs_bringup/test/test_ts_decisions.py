@@ -83,15 +83,16 @@ class Scene:
         self.broadcaster.sendTransform(transforms)
         config = {
             'ts_state_manager': {'ros__parameters': {
-                'use_sim_time': False, 'frequency': 20.0, 'ts_timeout': 0.5, 'odom_timeout': 0.5,
-                'tcpa_horizon': 30.0, 'safety_factor': 1.5, 'os_radius': 1.0,
+                'use_sim_time': False, 'update_frequency': 20.0,
+                'track_list_timeout': 0.5, 'own_ship_state_timeout': 0.5,
+                'threat_tcpa_horizon': 30.0, 'threat_radius_scale': 1.5, 'os_radius': 1.0,
                 'global_frame': 'map', 'robot_base_frame': 'test_base',
                 'odom_topic': '/decision/odom', 'tracked_ship_topic': '/decision/ships'}},
             'avoidance_point_node': {'ros__parameters': {
-                'os_radius': 1.0, 'safety_factor': 1.0, 'point_extension_distance': 3.0,
-                'state_timeout': 0.6}},
+                'avoidance_radius_scale': 1.0, 'point_extension_distance': 3.0,
+                'snapshot_timeout': 0.6}},
             'barrier_node': {'ros__parameters': {
-                'os_radius': 1.0, 'ray_length': 30.0, 'state_timeout': 0.6}}}
+                'lateral_margin': 1.0, 'closing_segment_length': 30.0, 'snapshot_timeout': 0.6}}}
         for name, values in (parameters or {}).items():
             config[name]['ros__parameters'].update(values)
         params = directory / 'ts.yaml'
@@ -589,7 +590,7 @@ def test_real_planner_failure_policy(scene, fault):
 
 
 @pytest.mark.parametrize('scene', [{'parameters': {
-    'ts_state_manager': {'safety_factor': 3.0}}}], indirect=True)
+    'ts_state_manager': {'threat_radius_scale': 3.0}}}], indirect=True)
 def test_vo_leg_crosses_current_moving_ship_occupancy(scene):
     """Accept a future-safe straight leg through the moving TS's current costmap disc.
 
@@ -660,8 +661,8 @@ def test_right_crossing_vo_leg_can_exit_search_barrier(scene):
 
 
 INFLATION_SETTINGS = {'parameters': {
-    'ts_state_manager': {'os_radius': 5.0, 'safety_factor': 3.0},
-    'avoidance_point_node': {'os_radius': 5.0, 'safety_factor': 2.0,
+    'ts_state_manager': {'os_radius': 5.0, 'threat_radius_scale': 3.0},
+    'avoidance_point_node': {'avoidance_radius_scale': 2.0,
                              'point_extension_distance': 20.0}}}
 
 
@@ -712,7 +713,7 @@ def test_recorded_13m_goal_requires_inflated_20m_clearance(scene):
                     0.20999429877731252, -2.992641374184522, 5.)]
     goal = (20 + 194.46487426757812 - ox, 20 - 56.257049560546875 - oy)
     scene.until(lambda: scene.state is not None and scene.state.valid and scene.state.ships)
-    set_avoidance(scene, safety_factor=1.0)
+    set_avoidance(scene, avoidance_radius_scale=1.0)
     uninflated = scene.avoid(goal=goal)
     assert uninflated.status == uninflated.SUCCESS
     goal_angle = math.atan2(goal[1] - 20, goal[0] - 20) % (2 * math.pi)
@@ -721,7 +722,7 @@ def test_recorded_13m_goal_requires_inflated_20m_clearance(scene):
     assert 13.0 < old_dcpa < 13.7
     assert old_extension == pytest.approx(20.)
 
-    set_avoidance(scene, safety_factor=2.0)
+    set_avoidance(scene, avoidance_radius_scale=2.0)
     inflated = scene.avoid(goal=goal)
     assert inflated.status == inflated.SUCCESS
     assert inflated.safe_heading != pytest.approx(goal_angle)
@@ -735,15 +736,9 @@ def test_recorded_13m_goal_requires_inflated_20m_clearance(scene):
     dcpa, extension = decision_measurements(scene, extended)
     assert dcpa > 20.0
     assert extension == pytest.approx(25.0)
-    # Radius is now also a geometry control, rather than an endpoint-range knob.
-    set_avoidance(scene, os_radius=6.0)
-    larger = scene.avoid(goal=goal)
-    # At this recorded speed ratio the 22m requirement is no longer attainable;
-    # it must fail instead of returning the same heading with a farther point.
-    assert larger.status == larger.INESCAPABLE
     print('INFLATION REPLAY: factor=1 goal DCPA=', old_dcpa,
           '; factor=2 selected DCPA=', new_dcpa,
-          '; radius/endpoint controls independently verified', flush=True)
+          '; inflation/endpoint controls independently verified', flush=True)
 
 
 @pytest.mark.parametrize('scene', [INFLATION_SETTINGS], indirect=True)

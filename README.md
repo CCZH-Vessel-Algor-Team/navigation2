@@ -177,16 +177,67 @@ ros2 launch nav2_colregs_bringup ts_subsystem_launch.py \
 
 
 
-### TS conservative-avoidance tuning
+### TS subsystem parameter reference
 
 Use `ts_subsystem_launch.py ts_params_file:=/path/to/ts_subsystem.yaml`; the default is `nav2_colregs_bringup/params/ts_subsystem.yaml`. The parent Nav2 `params_file` is independent. Algorithm values come from YAML; launch overrides only simulation-time and input/base-frame wiring.
 
-- **Both nodes** interpret `safety_factor >= 1` as radius inflation: the effective collision radius is `safety_factor * (os_radius + ts_radius)`. Manager uses its factor for detection and diagnostic cones; avoidance uses its factor to validate the actual selected heading. Current YAML settings use physical radii 5m, manager factor 3 (30m detection domain), avoidance factor 1.5 (15m heading clearance), and a manager `tcpa_horizon` of 40s.
-- **Avoidance node** `point_extension_distance` independently sets point range to `distance(OS,TS) + point_extension_distance` (default 20m). Changing safety_factor changes angular conservatism, not this radial extension. Inside/on the avoidance node's inflated domain, no heading satisfies the strict clearance constraint, so planning fails; it does not silently shrink back to physical radii.
-- Manager/barrier application parameters and skeleton planner settings are startup-only and read-only. Avoidance parameters are validated and used on the next successful service call. RRT numeric/bool updates are validated as a batch and applied from committed values at the next planning boundary, including updates made while inactive.
-- RRT `tolerance` and skeleton `prune_period` are deprecated, ignored compatibility parameters with startup warnings; remove them from configurations.
+#### `ts_state_manager`
 
-Parameter descriptions are available through `ros2 param describe`. Changing a startup-only setting requires restarting the node with the updated YAML; accepted dynamic settings take effect at the decision/planning boundary described above.
+All application parameters on this node are startup-only/read-only. The declaration default applies when starting the executable without a YAML override; the shipped YAML supplies the USV settings.
+
+| Parameter | Declaration default | Shipped YAML | Unit / range | Effect |
+|---|---:|---:|---|---|
+| `os_radius` | 0.3 | 5.0 | m, >=0 | Physical OS radius; published in `ProcessedTSList.os_radius` and used by avoidance from that same snapshot. |
+| `threat_radius_scale` | 1.1 | 3.0 | dimensionless, >=1 | Scales the sum of OS/TS physical radii for threat detection and diagnostic cones. |
+| `threat_tcpa_horizon` | 3.0 | 40.0 | s, >=0 | Future TCPA eligibility window for threat detection. |
+| `update_frequency` | 10.0 | 10.0 | Hz, >0 | Wall-timer calculation/publication rate; must yield a representable positive timer period. |
+| `track_list_timeout` | 1.0 | 1.0 | s, >0 | Maximum complete tracked-list measurement age and receipt age. |
+| `own_ship_state_timeout` | 1.0 | 1.0 | s, >0 | Maximum OS odometry and dynamic-TF age; static TF is exempt from the age check. |
+| `global_frame` | `map` | `map` | nonempty string | Frame used for positions, velocities and decision snapshots. |
+| `robot_base_frame` | `base_link` | via launch | nonempty string | OS TF frame; set the launch argument for a namespaced vessel. |
+| `odom_topic` | `odom` | via launch | nonempty string | OS odometry input; twist is transformed from its child frame. |
+| `tracked_ship_topic` | `/dynamic_ship/tracked_ships` | via launch | nonempty string | Complete stamped `TrackedShipList` input. TS radii come from the individual tracked ships. |
+
+With `R_threat = threat_radius_scale * (r_OS + r_TS)`, current separation <= `R_threat` qualifies as a threat. Otherwise qualification requires `0 <= TCPA <= threat_tcpa_horizon` and `DCPA < R_threat`, using the current measured velocities. The horizon does not set the candidate-heading prediction horizon.
+
+#### `avoidance_point_node`
+
+| Parameter | Default (declaration / YAML) | Unit / range | Runtime change | Effect |
+|---|---:|---|---|---|
+| `avoidance_radius_scale` | 1.5 | dimensionless, >=1 | Yes | Candidate-heading collision radius is this scale times `(snapshot.os_radius + target.radius)`. |
+| `point_extension_distance` | 20.0 | m, >=0 | Yes | Extra AP range beyond the current OS-to-primary-TS distance. |
+| `snapshot_timeout` | 1.0 | s, >0 | No | Maximum processed snapshot age. |
+| `max_request_position_delta` | 3.0 | m, >=0 | No | Maximum XY distance between request OS position and snapshot OS position; does not compare orientation. |
+
+The physical OS radius has one configuration source: `ts_state_manager.os_radius`. Avoidance reads it from each `ProcessedTSList`; it has no separate physical-radius parameter. With both physical radii 5m, the shipped settings give a 30m threat domain and 15m avoidance collision radius.
+
+The point is `P = OS + (distance(OS, primary_TS) + point_extension_distance) * unit(safe_heading)`. The extension changes radial point range; the radius scale changes the candidate collision constraint. Candidate checks cover constant-velocity motion for `t >= 0`. Tangency and current overlap of the inflated discs are rejected. Dynamic settings are read together at each decision after parameter updates have been accepted.
+
+#### `barrier_node`
+
+All four parameters are startup-only/read-only; declaration and shipped-YAML defaults are identical.
+
+| Parameter | Default | Unit / range | Effect |
+|---|---:|---|---|
+| `lateral_margin` | 0.3 | m, >=0 | Extra lateral offset beyond the TS radius, perpendicular to the OS-to-TS bearing. This is a boundary-shape setting, not the OS physical radius. |
+| `closing_segment_length` | 999.0 | m, >0 | Length of the third U-shaped barrier segment. |
+| `snapshot_timeout` | 1.0 | s, >0 | Maximum age of both the requested snapshot and the latest received snapshot. |
+| `max_request_position_delta` | 3.0 | m, >=0 | Maximum request/snapshot OS XY position difference. |
+
+The three segment lengths are `L1 = r_TS + lateral_margin`, `L2 = max(distance(OS,TS), 10m) + 3*r_TS`, and `L3 = closing_segment_length`. For a 5m-radius TS, the default first segment is 5.3m. The barriers constrain the AP-to-goal search.
+
+#### Clock and parameter access
+
+Numeric settings must be finite. Time-based validity checks use each node's clock; `use_sim_time` is set for all three nodes by the launch argument (default `true`). `update_frequency` remains a wall-timer rate. Input topic/frame launch arguments explicitly override their YAML values.
+
+Parameter descriptions are available through `ros2 param describe`. Startup-only changes require restarting the node with its updated YAML. For example:
+
+```bash
+ros2 param get /ts_state_manager os_radius
+ros2 param describe /ts_state_manager threat_tcpa_horizon
+ros2 param set /avoidance_point_node avoidance_radius_scale 1.5
+ros2 param set /avoidance_point_node point_extension_distance 20.0
+```
 
 ### Controller registration
 

@@ -12,41 +12,43 @@ namespace nav2_colregs_ts_manager
 TSStateManager::TSStateManager()
 : rclcpp::Node("ts_state_manager")
 {
-  declare_parameter("frequency", 10.0, parameterDescription("Wall-timer update frequency [Hz].", true));
-  declare_parameter("ts_timeout", 1.0,
+  declare_parameter("update_frequency", 10.0,
+    parameterDescription("Wall-timer update frequency [Hz].", true));
+  declare_parameter("track_list_timeout", 1.0,
     parameterDescription("Maximum track-list measurement AND receipt age [s].", true));
-  declare_parameter("odom_timeout", 1.0,
+  declare_parameter("own_ship_state_timeout", 1.0,
     parameterDescription("Maximum own-ship odometry/TF age [s].", true));
-  declare_parameter("tcpa_horizon", 3.0, parameterDescription("Threat TCPA horizon [s].", true));
-  declare_parameter("safety_factor", 1.1,
+  declare_parameter("threat_tcpa_horizon", 3.0,
+    parameterDescription("Threat qualification TCPA horizon [s].", true));
+  declare_parameter("threat_radius_scale", 1.1,
     parameterDescription("Radius inflation >= 1 for threat detection and diagnostic cones.", true));
   declare_parameter("os_radius", 0.3,
-    parameterDescription("Own-ship radius for cones and threat threshold [m].", true));
+    parameterDescription("Physical own-ship radius [m], shared through ProcessedTSList.", true));
   declare_parameter("global_frame", "map", parameterDescription("Output/geometry frame.", true));
   declare_parameter("robot_base_frame", "base_link", parameterDescription("Own-ship TF frame.", true));
   declare_parameter("odom_topic", "odom", parameterDescription("Own-ship odometry input.", true));
   declare_parameter("tracked_ship_topic", tracked_ship_topic_,
     parameterDescription("Complete stamped TrackedShipList input snapshots.", true));
 
-  frequency_ = get_parameter("frequency").as_double();
-  ts_timeout_ = get_parameter("ts_timeout").as_double();
-  odom_timeout_ = get_parameter("odom_timeout").as_double();
-  tcpa_horizon_ = get_parameter("tcpa_horizon").as_double();
-  safety_factor_ = get_parameter("safety_factor").as_double();
+  update_frequency_ = get_parameter("update_frequency").as_double();
+  track_list_timeout_ = get_parameter("track_list_timeout").as_double();
+  own_ship_state_timeout_ = get_parameter("own_ship_state_timeout").as_double();
+  threat_tcpa_horizon_ = get_parameter("threat_tcpa_horizon").as_double();
+  threat_radius_scale_ = get_parameter("threat_radius_scale").as_double();
   os_radius_ = get_parameter("os_radius").as_double();
   global_frame_ = get_parameter("global_frame").as_string();
   robot_base_frame_ = get_parameter("robot_base_frame").as_string();
   odom_topic_ = get_parameter("odom_topic").as_string();
   tracked_ship_topic_ = get_parameter("tracked_ship_topic").as_string();
-  validateNumber("frequency", frequency_, true);
-  validateNumber("ts_timeout", ts_timeout_, true);
-  validateNumber("odom_timeout", odom_timeout_, true);
-  validateNumber("tcpa_horizon", tcpa_horizon_);
-  validateSafetyFactor(safety_factor_);
+  validateNumber("update_frequency", update_frequency_, true);
+  validateNumber("track_list_timeout", track_list_timeout_, true);
+  validateNumber("own_ship_state_timeout", own_ship_state_timeout_, true);
+  validateNumber("threat_tcpa_horizon", threat_tcpa_horizon_);
+  validateRadiusScale("threat_radius_scale", threat_radius_scale_);
   validateNumber("os_radius", os_radius_);
-  const double period_ns = 1e9 / frequency_;
+  const double period_ns = 1e9 / update_frequency_;
   if (period_ns < 1.0 || period_ns >= static_cast<double>(INT64_MAX)) {
-    throw std::invalid_argument("frequency must produce a representable positive timer period");
+    throw std::invalid_argument("update_frequency must produce a representable positive timer period");
   }
   if (global_frame_.empty() || robot_base_frame_.empty() ||
     odom_topic_.empty() || tracked_ship_topic_.empty())
@@ -67,9 +69,11 @@ TSStateManager::TSStateManager()
   timer_ = create_wall_timer(std::chrono::nanoseconds(static_cast<int64_t>(period_ns)),
     std::bind(&TSStateManager::timerCallback, this));
   RCLCPP_INFO(get_logger(),
-    "TS effective parameters: frequency=%.3f timeout=%.3f odom_timeout=%.3f horizon=%.3f "
-    "threat_scale=%.3f os_radius=%.3f frame=%s base=%s odom=%s topic=%s (startup-only)",
-    frequency_, ts_timeout_, odom_timeout_, tcpa_horizon_, safety_factor_, os_radius_,
+    "TS effective parameters: update_frequency=%.3f track_list_timeout=%.3f "
+    "own_ship_state_timeout=%.3f threat_tcpa_horizon=%.3f threat_radius_scale=%.3f "
+    "os_radius=%.3f frame=%s base=%s odom=%s topic=%s (startup-only)",
+    update_frequency_, track_list_timeout_, own_ship_state_timeout_,
+    threat_tcpa_horizon_, threat_radius_scale_, os_radius_,
     global_frame_.c_str(), robot_base_frame_.c_str(), odom_topic_.c_str(), tracked_ship_topic_.c_str());
 }
 
@@ -79,7 +83,7 @@ void TSStateManager::trackedShipCallback(
   const auto current = now();
   // Ignore delayed packets while a newer, still-fresh snapshot exists. Allow a
   // new clock epoch once the old stamp lies in the future.
-  if (have_tracks_ && tracks_valid_ && fresh(track_stamp_, current, ts_timeout_) &&
+  if (have_tracks_ && tracks_valid_ && fresh(track_stamp_, current, track_list_timeout_) &&
     rclcpp::Time(msg->header.stamp) < rclcpp::Time(track_stamp_))
   {
     return;
@@ -89,7 +93,7 @@ void TSStateManager::trackedShipCallback(
   track_stamp_ = msg->header.stamp;
   track_receipt_ = current;
   ts_map_.clear();
-  if (!fresh(track_stamp_, current, ts_timeout_) || msg->header.frame_id.empty()) {
+  if (!fresh(track_stamp_, current, track_list_timeout_) || msg->header.frame_id.empty()) {
     return;
   }
   std::unordered_map<std::string, TSEntry> next;
@@ -127,7 +131,7 @@ void TSStateManager::trackedShipCallback(
 
 void TSStateManager::odomCallback(nav_msgs::msg::Odometry::ConstSharedPtr msg)
 {
-  if (last_odom_ && fresh(last_odom_->header.stamp, now(), odom_timeout_) &&
+  if (last_odom_ && fresh(last_odom_->header.stamp, now(), own_ship_state_timeout_) &&
     rclcpp::Time(msg->header.stamp) < rclcpp::Time(last_odom_->header.stamp))
   {
     return;
@@ -159,13 +163,13 @@ void TSStateManager::timerCallback()
       processed_ts_pub_->publish(state);
       cpa_markers_pub_->publish(markers);
     };
-  if (!have_tracks_ || !tracks_valid_ || !fresh(track_stamp_, current, ts_timeout_) ||
-    !fresh(track_receipt_, current, ts_timeout_))
+  if (!have_tracks_ || !tracks_valid_ || !fresh(track_stamp_, current, track_list_timeout_) ||
+    !fresh(track_receipt_, current, track_list_timeout_))
   {
     invalid("Track stream missing, stale, invalid or from a different clock epoch");
     return;
   }
-  if (!last_odom_ || !fresh(last_odom_->header.stamp, current, odom_timeout_) ||
+  if (!last_odom_ || !fresh(last_odom_->header.stamp, current, own_ship_state_timeout_) ||
     !std::isfinite(last_odom_->twist.twist.linear.x) ||
     !std::isfinite(last_odom_->twist.twist.linear.y))
   {
@@ -184,7 +188,7 @@ void TSStateManager::timerCallback()
     os = tf_->transform(os, global_frame_, tf2::durationFromSec(0.1));
     velocity = tf_->transform(velocity, global_frame_, tf2::durationFromSec(0.1));
     const bool static_tf = os.header.stamp.sec == 0 && os.header.stamp.nanosec == 0;
-    if (!static_tf && !fresh(os.header.stamp, current, odom_timeout_)) {
+    if (!static_tf && !fresh(os.header.stamp, current, own_ship_state_timeout_)) {
       invalid("Own-ship TF is stale");
       return;
     }
@@ -215,7 +219,7 @@ void TSStateManager::timerCallback()
     const double uy = ts.vy - velocity.vector.y;
     const double speed_sq = ux * ux + uy * uy;
     const double distance = std::hypot(rx, ry);
-    const bool overlap = distance <= safety_factor_ * (os_radius_ + ts.radius);
+    const bool overlap = distance <= threat_radius_scale_ * (os_radius_ + ts.radius);
     double tcpa = std::numeric_limits<double>::infinity();
     double dcpa = distance;
     if (speed_sq > 1e-12) {
@@ -235,8 +239,8 @@ void TSStateManager::timerCallback()
     entry.radius = ts.radius;
     entry.tcpa = tcpa;
     entry.dcpa = dcpa;
-    entry.has_threat = overlap || (tcpa >= 0.0 && tcpa <= tcpa_horizon_ &&
-      dcpa < (os_radius_ + ts.radius) * safety_factor_);
+    entry.has_threat = overlap || (tcpa >= 0.0 && tcpa <= threat_tcpa_horizon_ &&
+      dcpa < (os_radius_ + ts.radius) * threat_radius_scale_);
     computeCollisionCone(ts, os.pose.position.x, os.pose.position.y, speed,
       entry.collision_cone_min, entry.collision_cone_max);
     state.ships.push_back(entry);
@@ -284,7 +288,7 @@ void TSStateManager::computeCollisionCone(
     const double angle = i * step;
     const bool unsafe = collisionCourse(ts.x - os_x, ts.y - os_y,
       ts.vx - os_speed * std::cos(angle), ts.vy - os_speed * std::sin(angle),
-      safety_factor_ * (os_radius_ + ts.radius));
+      threat_radius_scale_ * (os_radius_ + ts.radius));
     if (unsafe && !in_interval) {
       mins.push_back(angle);
       in_interval = true;

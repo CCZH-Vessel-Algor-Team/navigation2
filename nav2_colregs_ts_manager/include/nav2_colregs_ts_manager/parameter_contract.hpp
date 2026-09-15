@@ -16,7 +16,7 @@ inline rcl_interfaces::msg::ParameterDescriptor parameterDescription(
   result.description = description;
   result.read_only = read_only;
   result.additional_constraints = read_only ? "Startup-only; restart node to change." :
-    "Applied on the next successful avoidance service request.";
+    "Read at each avoidance decision after an accepted parameter update.";
   return result;
 }
 
@@ -28,10 +28,10 @@ inline void validateNumber(const std::string & name, double value, bool positive
   }
 }
 
-inline void validateSafetyFactor(double value)
+inline void validateRadiusScale(const std::string & name, double value)
 {
   if (!std::isfinite(value) || value < 1.0) {
-    throw std::invalid_argument("safety_factor must be finite and at least 1 (radius inflation)");
+    throw std::invalid_argument(name + " must be finite and at least 1 (radius inflation)");
   }
 }
 }  // namespace nav2_colregs_ts_manager
