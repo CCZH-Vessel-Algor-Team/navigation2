@@ -41,6 +41,18 @@ TEST(VORRTStar, terminates_threshold_path_at_requested_goal)
   EXPECT_DOUBLE_EQ(path.back().y, goal_y);
 }
 
+TEST(VORRTStar, zero_length_search_edge_checks_clearance_and_bounds)
+{
+  auto costmap = makeCostmap();
+  RRTStar planner(1.0, 10, 0.1, 0.5, 0.2, 0.0, 0, 5.0);
+  const std::vector<geometry_msgs::msg::Point> barriers;
+  EXPECT_TRUE(planner.isSegmentCollisionFree(1.05, 1.05, 1.05, 1.05, &costmap, barriers));
+  costmap.setCost(11, 10, nav2_costmap_2d::LETHAL_OBSTACLE);
+  EXPECT_FALSE(planner.isSegmentCollisionFree(1.05, 1.05, 1.05, 1.05, &costmap, barriers));
+  EXPECT_FALSE(planner.isSegmentCollisionFree(-1.0, 1.0, -1.0, 1.0, &costmap, barriers));
+  EXPECT_FALSE(planner.isSegmentCollisionFree(1.0, 1.0, 1e300, 1.0, &costmap, barriers));
+}
+
 TEST(VORRTStar, terminates_approximate_fallback_at_requested_goal)
 {
   auto costmap = makeCostmap();

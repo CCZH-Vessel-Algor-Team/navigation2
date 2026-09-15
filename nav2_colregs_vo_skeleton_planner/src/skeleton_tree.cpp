@@ -32,7 +32,9 @@ void SkeletonConfig::validate() const
   require_positive_int("recovery_near_limit", recovery_near_limit);
   require_positive_int("global_iterations", global_iterations);
   require_positive_int("local_iterations", local_iterations);
-  require_positive_int("max_work", static_cast<int>(max_work));
+  if (max_work < 1) {
+    throw std::invalid_argument("max_work must be a positive int64");
+  }
   if (node_limit < 2 || path_limit < 2) {
     throw std::invalid_argument("node_limit and path_limit must be at least two");
   }

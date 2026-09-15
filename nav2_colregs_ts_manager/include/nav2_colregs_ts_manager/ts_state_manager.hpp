@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <limits>
 #include <memory>
+#include <random>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -34,9 +35,9 @@ inline std::string uuidToString(const uint8_t * data)
 
 struct TSEntry
 {
+  unique_identifier_msgs::msg::UUID id;
   double x, y, radius;
   double vx, vy;
-  rclcpp::Time last_seen;
 };
 
 class TSStateManager : public rclcpp::Node
@@ -67,9 +68,14 @@ private:
 
   std::unordered_map<std::string, TSEntry> ts_map_;
   nav_msgs::msg::Odometry::ConstSharedPtr last_odom_;
+  builtin_interfaces::msg::Time track_stamp_, track_receipt_;
+  bool have_tracks_{false};
+  bool tracks_valid_{false};
+  std::mt19937_64 snapshot_rng_{std::random_device{}()};
 
   double frequency_{10.0};
   double ts_timeout_{1.0};
+  double odom_timeout_{1.0};
   double tcpa_horizon_{3.0};
   double safety_factor_{1.1};
   double os_radius_{0.3};

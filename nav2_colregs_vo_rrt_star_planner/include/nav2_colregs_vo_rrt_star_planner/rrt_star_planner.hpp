@@ -50,6 +50,10 @@ public:
   }
 
 private:
+  std::vector<rclcpp::Parameter> validatedParameters(
+    const std::vector<rclcpp::Parameter> & overrides = {}) const;
+  void applyParameters();
+  std::vector<rclcpp::Parameter> applied_parameters_;
   static nav_msgs::msg::Path linearInterpolation(
     const std::vector<RRTStarNode> & raw_path,
     double resolution);
@@ -72,7 +76,6 @@ private:
   double cost_weight_{1.0};
   int max_optimize_iters_{200};
   double eta_{1.1};
-  double tolerance_{0.5};
   bool prune_path_{true};
   bool use_informed_sampling_{true};
   double colregs_anchor_max_dist_{3.0};

@@ -24,7 +24,6 @@ planner_server:
       cost_weight: 1.0
       max_optimize_iters: 5000
       eta: 50.0
-      tolerance: 0.5
       prune_path: true
     VORRTStar:
       plugin: "nav2_colregs_vo_rrt_star_planner::VORRTStarPlanner"
@@ -36,7 +35,6 @@ planner_server:
       cost_weight: 1.0
       max_optimize_iters: 5000
       eta: 50.0
-      tolerance: 0.5
       prune_path: true
       use_informed_sampling: true
 
@@ -116,14 +114,4 @@ behavior_server:
     wait:
       plugin: "nav2_behaviors::Wait"
 
-ts_state_manager:
-  ros__parameters:
-    frequency: 10.0
-    ts_timeout: 3.0
-    tcpa_horizon: 20.0
-    safety_factor: 1.5
-    os_radius: 5.0
-    global_frame: "map"
-    robot_base_frame: "base_link"
-    odom_topic: "odom"
-    tracked_ship_topic: "/dynamic_ship/tracked_ships"
+# Standalone TS settings are in ts_subsystem.yaml; pass them with ts_params_file.

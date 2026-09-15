@@ -2,11 +2,24 @@
 # Computes a safe avoidance point for COLREGS-compliant path planning.
 # The service internally selects the primary threat from its /processed_ts_list cache.
 
-geometry_msgs/Pose os_pose     # own-ship pose in map frame
-geometry_msgs/Pose goal        # navigation goal (optional, for direction bias)
+std_msgs/Header header        # frame of request poses; must match the snapshot
+geometry_msgs/Pose os_pose     # own-ship pose near the live snapshot pose
+geometry_msgs/Pose goal        # required navigation goal, used for direction bias
 string avoid_direction         # "right" or "left" — starboard/port passing preference
 ---
+uint8 NO_DATA=0
+uint8 NO_THREAT=1
+uint8 SUCCESS=2
+uint8 INESCAPABLE=3
+uint8 STALE_STATE=4
+uint8 INVALID_REQUEST=5
+uint8 SNAPSHOT_MISMATCH=6
+uint8 TARGET_NOT_FOUND=7
+uint8 status
+string message
+std_msgs/Header header
+unique_identifier_msgs/UUID snapshot_id
 unique_identifier_msgs/UUID primary_target_id  # selected primary threat (all zeros if none)
 geometry_msgs/Point point                      # avoidance point in map frame
 float64 safe_heading                           # recommended safe heading (rad, map frame)
-bool has_feasible_angle                        # false if inescapable or no threat
+bool has_feasible_angle                        # compatibility flag; use status to distinguish failure

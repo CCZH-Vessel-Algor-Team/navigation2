@@ -51,6 +51,15 @@ public:
   /// Test-only: deterministic RNG seeding for reproducible unit tests.
   void seedForTesting(uint32_t seed);
 
+  /// Validate the deterministic VO leg with the same checks as searched edges.
+  bool isSegmentCollisionFree(
+    double x1, double y1, double x2, double y2,
+    const nav2_costmap_2d::Costmap2D * costmap,
+    const std::vector<geometry_msgs::msg::Point> & barriers)
+  {
+    return collisionFree(x1, y1, x2, y2, costmap, barriers);
+  }
+
 private:
   void randomSample(
     double & x, double & y,

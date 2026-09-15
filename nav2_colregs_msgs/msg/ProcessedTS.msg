@@ -7,18 +7,19 @@ float64           radius
 # ── CPA: snapshot at CURRENT OS velocity ──
 float64           tcpa
 float64           dcpa
-# Naive CPA check: TCPA < horizon AND DCPA < safe_dist at CURRENT velocity.
-# True = "I am on a collision course right now."
-# Use as alert trigger only. Do NOT use for path geometry decisions.
+# Manager alert: current inflated-domain intrusion OR a qualifying future CPA
+# at the current OS velocity. Used for primary-target candidacy, not as a
+# geometric clearance certificate for a new requested heading.
 bool              has_threat
 
-# ── LVO Collision Cone: pure kinematic ──
-# OS heading intervals [0, 2π) in map frame that would lead to collision,
-# assuming OS maintains its current speed and TS velocity is constant.
-#   []          = no heading leads to collision (safe at all headings)
+# ── Diagnostic sampled LVO Collision Cone ──
+# OS heading intervals [0, 2π) in header.frame_id, using manager radius inflation,
+# current OS speed and constant TS velocity. Narrow cones can fall between samples.
+#   []          = no sampled heading was unsafe (NOT an all-headings-safe proof)
 #   [[a, b]]    = these heading intervals are unsafe
 #   [[0, 2π]]   = ALL headings collide (inescapable at current speed)
-# Consumer takes complement of union to find safe headings.
+# Avoidance recomputes continuous collision checks with its own inflation factor;
+# it must not simply take inclusive complements of these sampled intervals.
 float64[] collision_cone_min
 float64[] collision_cone_max
 

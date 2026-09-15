@@ -5,7 +5,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, LogInfo
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -13,16 +13,16 @@ from launch_ros.actions import Node
 def generate_launch_description():
     bringup_dir = get_package_share_directory('nav2_colregs_bringup')
 
-    params_file = LaunchConfiguration('params_file')
+    params_file = LaunchConfiguration('ts_params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
     tracked_ship_topic = LaunchConfiguration('tracked_ship_topic')
     robot_base_frame = LaunchConfiguration('robot_base_frame')
     odom_topic = LaunchConfiguration('odom_topic')
 
     declare_params_file = DeclareLaunchArgument(
-        'params_file',
+        'ts_params_file',
         default_value=os.path.join(
-            bringup_dir, 'params', 'nav2_colregs_params_humble_minimal.yaml'))
+            bringup_dir, 'params', 'ts_subsystem.yaml'))
     declare_use_sim_time = DeclareLaunchArgument('use_sim_time', default_value='true')
     declare_tracked_ship_topic = DeclareLaunchArgument(
         'tracked_ship_topic', default_value='/dynamic_ship/tracked_ships')
@@ -37,6 +37,7 @@ def generate_launch_description():
         declare_tracked_ship_topic,
         declare_robot_base_frame,
         declare_odom_topic,
+        LogInfo(msg=['TS subsystem parameter file: ', params_file]),
         Node(
             package='nav2_colregs_ts_manager',
             executable='ts_state_manager',
@@ -47,9 +48,6 @@ def generate_launch_description():
                 'tracked_ship_topic': tracked_ship_topic,
                 'robot_base_frame': robot_base_frame,
                 'odom_topic': odom_topic,
-                'tcpa_horizon': 20.0,
-                'safety_factor': 1.5,
-                'os_radius': 5.0,
             }],
         ),
         Node(
@@ -59,8 +57,6 @@ def generate_launch_description():
             output='screen',
             parameters=[params_file, {
                 'use_sim_time': use_sim_time,
-                'os_radius': 5.0,
-                'safety_factor': 1.5,
             }],
         ),
         Node(

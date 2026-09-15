@@ -27,13 +27,16 @@ private:
     const std::shared_ptr<nav2_colregs_msgs::srv::GetAvoidancePoint::Request> request,
     const std::shared_ptr<nav2_colregs_msgs::srv::GetAvoidancePoint::Response> response);
 
-  int selectPrimary(const nav2_colregs_msgs::msg::ProcessedTSList & list);
+  int selectPrimary(const nav2_colregs_msgs::msg::ProcessedTSList & list,
+    double ox, double oy, double os_radius, double safety_factor);
+  void clearMarkers();
 
   bool findSafeHeading(
-    const nav2_colregs_msgs::msg::ProcessedTS & ts,
+    const nav2_colregs_msgs::msg::ProcessedTSList & state,
     const std::string & avoid_direction,
     double goal_x, double goal_y,
     double os_x, double os_y,
+    double os_radius, double safety_factor,
     double & safe_heading);
 
   rclcpp::Subscription<nav2_colregs_msgs::msg::ProcessedTSList>::SharedPtr
@@ -43,6 +46,10 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
 
   nav2_colregs_msgs::msg::ProcessedTSList::ConstSharedPtr last_ts_list_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
+  rclcpp::TimerBase::SharedPtr expiry_timer_;
+  double state_timeout_{1.0};
+  double max_pose_delta_{3.0};
 };
 
 }  // namespace nav2_colregs_ts_manager

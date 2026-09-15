@@ -1,6 +1,6 @@
 # navigation2 — COLREGS / Maritime Extensions
 
-This repository extends the official [navigation2](https://github.com/ros-navigation/navigation2) `humble` branch with COLREGS-compliant maritime navigation capabilities: velocity-obstacle RRT* planning, persistent skeleton-based replanning, target-ship state management, and LOS/ALOS guidance controllers.
+This repository extends the official [navigation2](https://github.com/ros-navigation/navigation2) `humble` branch with experimental COLREGS-oriented maritime navigation capabilities: velocity-obstacle RRT* planning, persistent skeleton-based replanning, target-ship state management, and LOS/ALOS guidance controllers.
 
 For upstream Nav2 documentation, see [docs.nav2.org](https://docs.nav2.org/). This README covers only the packages added in this fork.
 
@@ -58,7 +58,7 @@ Prerequisites: ROS 2 Humble (apt or RoboStack), colcon, and the standard Nav2 de
 ```bash
 # clean workspace
 mkdir -p ~/colregs_ws/src && cd ~/colregs_ws/src
-git clone -b feat/ntp-colregs-anchor \
+git clone -b fix/parameter-contracts \
   git@github.com:CCZH-Vessel-Algor-Team/navigation2.git
 
 cd ~/colregs_ws
@@ -115,7 +115,7 @@ bt_navigator:
 
 ### NavigateThroughPoses with VORRTStar
 
-The standard Humble `planner_server` calls `createPlan(start, goal)` for each segment. `VORRTStarPlanner` compares each segment start with the live robot pose from `Costmap2DROS`. It calls the COLREGS services only when that distance is within `colregs_anchor_max_dist` (default **3.0 m**, finite and nonnegative, read at configure time). More distant starts use plain informed RRT* without barrier constraints. If the live pose cannot be obtained, it logs a warning and also skips COLREGS.
+The standard Humble `planner_server` calls `createPlan(start, goal)` for each segment. `VORRTStarPlanner` compares each segment start with the live robot pose from `Costmap2DROS`. It calls the COLREGS services only when that distance is within `colregs_anchor_max_dist` (default **3.0 m**, finite and nonnegative, startup-only). More distant starts use plain informed RRT* without barrier constraints. If the live pose cannot be obtained, planning fails rather than silently skipping COLREGS.
 
 This is a distance-based gate, not a segment-index check: a later waypoint within the threshold can also enable COLREGS. `configure()` retains the `Costmap2DROS` object until cleanup; this fixes a null-pointer crash on the first planning request, including ordinary single-goal navigation.
 
@@ -155,10 +155,16 @@ The tested local companion setup in `USV_Simulation` (`feat/colregs-local-planne
 
 ### COLREGS service chain (VO plugins only)
 
-`VORRTStarPlanner` and `VOSkeletonPlanner` query two services from `nav2_colregs_ts_manager`. If either service times out (1 s), the planner falls back to plain RRT* from the robot pose — COLREGS avoidance is skipped but planning still succeeds. Decision is made against the **primary threat only** (minimum TCPA); multi-vessel simultaneous avoidance is not yet supported.
+`VORRTStarPlanner` and `VOSkeletonPlanner` query two services from `nav2_colregs_ts_manager`. Only an explicit **NO_THREAT** result permits ordinary planning for an anchored query. Infeasible directions, missing/stale state, either service timing out (1 s), or malformed/mismatched responses fail the planning action instead of bypassing COLREGS. Heading candidates are checked against all snapshot targets; the primary threat (minimum TCPA) still determines the avoidance-point extension and barrier.
 
 - `/get_avoidance_point` (`nav2_colregs_msgs/srv/GetAvoidancePoint`) — VO collision-cone safe heading and avoidance point
 - `/get_barrier_lines` (`nav2_colregs_msgs/srv/GetBarrierLines`) — barrier segments around the primary threat
+
+The services share a snapshot UUID and explicit frame/status contract. Rebuild/restart producers and consumers together after this interface update. Consumers must inspect `status`; `has_feasible_angle=false` alone does not distinguish no threat from an invalid or infeasible decision.
+
+**Safety scope:** radius inflation certifies candidate headings for the initial straight VO leg under the stated constant-speed model. The later AP-to-goal search uses the costmap and static U barriers; it does **not** guarantee the same inflated TS clearance along the whole returned path. This gap was independently reviewed and reproduced even for a stationary TS. Full-trajectory clearance remains a separate required enhancement.
+
+**Open-water encounter scope:** both VO planners prepend the initial OS-to-AP leg without checking current costmap occupancy. A moving ship's current occupied cells do not veto a future-safe VO heading. Static-obstacle handling along that leg is outside this stage and is reserved for future BT/controller collision integration. AP-to-goal search, ordinary no-threat planning and generic endpoint validation retain their costmap constraints.
 
 Launch the TS subsystem (standalone nodes):
 
@@ -173,11 +179,14 @@ ros2 launch nav2_colregs_bringup ts_subsystem_launch.py \
 
 ### TS conservative-avoidance tuning
 
-The avoidance point conservatism is governed by three parameters on `ts_state_manager` / `avoidance_point_node` (set in `ts_subsystem_launch.py` or your params file):
+Use `ts_subsystem_launch.py ts_params_file:=/path/to/ts_subsystem.yaml`; the default is `nav2_colregs_bringup/params/ts_subsystem.yaml`. The parent Nav2 `params_file` is independent. Algorithm values come from YAML; launch overrides only simulation-time and input/base-frame wiring.
 
-- `safety_factor` — multiplies the combined keep-out radius `(os_radius + ts_radius)`: controls both the DCPA threat-trigger threshold and the avoidance-point placement distance
-- `os_radius` — own-ship safety radius; the only parameter that widens the collision cone (lateral clearance)
-- `tcpa_horizon` — time window for threat qualification
+- **Both nodes** interpret `safety_factor >= 1` as radius inflation: the effective collision radius is `safety_factor * (os_radius + ts_radius)`. Manager uses its factor for detection and diagnostic cones; avoidance uses its factor to validate the actual selected heading. Current YAML settings use physical radii 5m, manager factor 3 (30m detection domain), avoidance factor 1.5 (15m heading clearance), and a manager `tcpa_horizon` of 40s.
+- **Avoidance node** `point_extension_distance` independently sets point range to `distance(OS,TS) + point_extension_distance` (default 20m). Changing safety_factor changes angular conservatism, not this radial extension. Inside/on the avoidance node's inflated domain, no heading satisfies the strict clearance constraint, so planning fails; it does not silently shrink back to physical radii.
+- Manager/barrier application parameters and skeleton planner settings are startup-only and read-only. Avoidance parameters are validated and used on the next successful service call. RRT numeric/bool updates are validated as a batch and applied from committed values at the next planning boundary, including updates made while inactive.
+- RRT `tolerance` and skeleton `prune_period` are deprecated, ignored compatibility parameters with startup warnings; remove them from configurations.
+
+Parameter descriptions are available through `ros2 param describe`. Changing a startup-only setting requires restarting the node with the updated YAML; accepted dynamic settings take effect at the decision/planning boundary described above.
 
 ### Controller registration
 
@@ -195,6 +204,7 @@ Reference parameter sets: `nav2_colregs_bringup/params/*.yaml` (merge the sectio
 
 - **Skeleton planners** (`SkeletonRRTPlanner`, `VOSkeletonPlanner`) do not support NavigateThroughPoses: the persistent goal-rooted tree anchors to a single final goal, and per-segment calls would repeatedly rebuild it, defeating the warm-start mechanism.
 - **`VORRTStarPlanner` under NavigateThroughPoses** uses the start-to-live-pose distance gate described above; it does not guarantee that only segment zero uses COLREGS.
+- **VO motion model** assumes constant speeds and instantaneous heading changes. Maneuver persistence and safe resumption of the goal course across controller braking/turning are not yet implemented as a stateful encounter policy.
 
 ## Tests
 
@@ -214,4 +224,15 @@ colcon test --packages-select nav2_colregs_vo_rrt_star_planner
 colcon test-result --test-result-base build/nav2_colregs_vo_rrt_star_planner --verbose
 ```
 
-Coverage includes 8 core GTests, 6 anchor-distance GTests, and `test_planner_actions.py`: a real planner-server subprocess with TF, costmap, and counted mock COLREGS services. The action test checks single-goal planning, near/far and threshold-boundary service gating, three-waypoint planning, and planning after cleanup/reconfiguration. It uses ROS domain 91 by default (override with `NTP_TEST_ROS_DOMAIN_ID`) and cleans up its own subprocess. These tests passed in Docker Humble; the user also confirmed the companion simulation test passed after the RViz/BT configuration and budget adjustments. The automated test does not exercise real target-ship decision calculations or full vessel control.
+Coverage includes core and anchor-distance GTests plus `test_planner_actions.py`: a real planner-server subprocess with TF, costmap, counted mock COLREGS services, and parameter/lifecycle regressions for all four planners. It uses ROS domain 91 by default (override with `NTP_TEST_ROS_DOMAIN_ID`). The bringup tests exercise the real TS nodes, parameter loading, radius inflation, snapshot/failure handling, first-leg occupancy acceptance and AP-to-goal obstacle rejection. These tests use synthetic sensor inputs and do not replace full vessel-control trials.
+
+After building and sourcing the workspace, run the node/action suites with:
+
+```bash
+python3 -m pytest -v \
+  nav2_colregs_bringup/test/test_ts_decisions.py \
+  nav2_colregs_bringup/test/test_ts_parameter_contract.py \
+  nav2_colregs_vo_rrt_star_planner/test/test_planner_actions.py
+```
+
+Run the command from this repository's root; the TS suites use ROS domains 93 and 92 by default.
