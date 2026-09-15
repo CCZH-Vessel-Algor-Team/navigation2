@@ -1,28 +1,36 @@
 #include "nav2_colregs_ts_manager/ts_state_manager.hpp"
+#include "nav2_colregs_ts_manager/parameter_contract.hpp"
+#include "nav2_colregs_ts_manager/decision_geometry.hpp"
 
 #include <cmath>
 #include <vector>
-
+#include "geometry_msgs/msg/vector3_stamped.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 namespace nav2_colregs_ts_manager
 {
-
 TSStateManager::TSStateManager()
 : rclcpp::Node("ts_state_manager")
 {
-  declare_parameter("frequency", 10.0);
-  declare_parameter("ts_timeout", 1.0);
-  declare_parameter("tcpa_horizon", 3.0);
-  declare_parameter("safety_factor", 1.1);
-  declare_parameter("os_radius", 0.3);
-  declare_parameter("global_frame", "map");
-  declare_parameter("robot_base_frame", "base_link");
-  declare_parameter("odom_topic", "odom");
-  declare_parameter("tracked_ship_topic", tracked_ship_topic_);
+  declare_parameter("frequency", 10.0, parameterDescription("Wall-timer update frequency [Hz].", true));
+  declare_parameter("ts_timeout", 1.0,
+    parameterDescription("Maximum track-list measurement AND receipt age [s].", true));
+  declare_parameter("odom_timeout", 1.0,
+    parameterDescription("Maximum own-ship odometry/TF age [s].", true));
+  declare_parameter("tcpa_horizon", 3.0, parameterDescription("Threat TCPA horizon [s].", true));
+  declare_parameter("safety_factor", 1.1,
+    parameterDescription("Radius inflation >= 1 for threat detection and diagnostic cones.", true));
+  declare_parameter("os_radius", 0.3,
+    parameterDescription("Own-ship radius for cones and threat threshold [m].", true));
+  declare_parameter("global_frame", "map", parameterDescription("Output/geometry frame.", true));
+  declare_parameter("robot_base_frame", "base_link", parameterDescription("Own-ship TF frame.", true));
+  declare_parameter("odom_topic", "odom", parameterDescription("Own-ship odometry input.", true));
+  declare_parameter("tracked_ship_topic", tracked_ship_topic_,
+    parameterDescription("Complete stamped TrackedShipList input snapshots.", true));
 
   frequency_ = get_parameter("frequency").as_double();
   ts_timeout_ = get_parameter("ts_timeout").as_double();
+  odom_timeout_ = get_parameter("odom_timeout").as_double();
   tcpa_horizon_ = get_parameter("tcpa_horizon").as_double();
   safety_factor_ = get_parameter("safety_factor").as_double();
   os_radius_ = get_parameter("os_radius").as_double();
@@ -30,156 +38,195 @@ TSStateManager::TSStateManager()
   robot_base_frame_ = get_parameter("robot_base_frame").as_string();
   odom_topic_ = get_parameter("odom_topic").as_string();
   tracked_ship_topic_ = get_parameter("tracked_ship_topic").as_string();
-
+  validateNumber("frequency", frequency_, true);
+  validateNumber("ts_timeout", ts_timeout_, true);
+  validateNumber("odom_timeout", odom_timeout_, true);
+  validateNumber("tcpa_horizon", tcpa_horizon_);
+  validateSafetyFactor(safety_factor_);
+  validateNumber("os_radius", os_radius_);
+  const double period_ns = 1e9 / frequency_;
+  if (period_ns < 1.0 || period_ns >= static_cast<double>(INT64_MAX)) {
+    throw std::invalid_argument("frequency must produce a representable positive timer period");
+  }
+  if (global_frame_.empty() || robot_base_frame_.empty() ||
+    odom_topic_.empty() || tracked_ship_topic_.empty())
+  {
+    throw std::invalid_argument("TS frames and input topics must not be empty");
+  }
   tf_ = std::make_shared<tf2_ros::Buffer>(get_clock());
-
+  tf_->setUsingDedicatedThread(true);
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_, true);
   ts_sub_ = create_subscription<nav2_colregs_msgs::msg::TrackedShipList>(
     tracked_ship_topic_, rclcpp::SystemDefaultsQoS(),
     std::bind(&TSStateManager::trackedShipCallback, this, std::placeholders::_1));
-
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
     odom_topic_, rclcpp::SystemDefaultsQoS(),
     std::bind(&TSStateManager::odomCallback, this, std::placeholders::_1));
-
-  processed_ts_pub_ = create_publisher<nav2_colregs_msgs::msg::ProcessedTSList>(
-    "processed_ts_list", 10);
-
-  cpa_markers_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
-    "cpa_markers", 10);
-
-  using namespace std::chrono_literals;
-  auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
-    std::chrono::duration<double>(1.0 / frequency_));
-  timer_ = create_wall_timer(period, std::bind(&TSStateManager::timerCallback, this));
-
-  tf_->setUsingDedicatedThread(true);
-  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_, true);
-
-  RCLCPP_INFO(get_logger(), "TSStateManager started (ts_timeout=%.1fs, topic=%s)",
-    ts_timeout_, tracked_ship_topic_.c_str());
+  processed_ts_pub_ = create_publisher<nav2_colregs_msgs::msg::ProcessedTSList>("processed_ts_list", 10);
+  cpa_markers_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("cpa_markers", 10);
+  timer_ = create_wall_timer(std::chrono::nanoseconds(static_cast<int64_t>(period_ns)),
+    std::bind(&TSStateManager::timerCallback, this));
+  RCLCPP_INFO(get_logger(),
+    "TS effective parameters: frequency=%.3f timeout=%.3f odom_timeout=%.3f horizon=%.3f "
+    "threat_scale=%.3f os_radius=%.3f frame=%s base=%s odom=%s topic=%s (startup-only)",
+    frequency_, ts_timeout_, odom_timeout_, tcpa_horizon_, safety_factor_, os_radius_,
+    global_frame_.c_str(), robot_base_frame_.c_str(), odom_topic_.c_str(), tracked_ship_topic_.c_str());
 }
-
-// ---------------------------------------------------------------------------
-// Subscribers
-// ---------------------------------------------------------------------------
 
 void TSStateManager::trackedShipCallback(
   nav2_colregs_msgs::msg::TrackedShipList::ConstSharedPtr msg)
 {
-  const auto now = get_clock()->now();
-
-  for (const auto & ship : msg->ships) {
-    const auto key = uuidToString(ship.target_id.uuid.data());
-
-    TSEntry e;
-    e.radius = ship.radius;
-    e.vx = ship.twist.linear.x;
-    e.vy = ship.twist.linear.y;
-    e.last_seen = now;
-
-    geometry_msgs::msg::PoseStamped ts_in, ts_out;
-    ts_in.header.frame_id = msg->header.frame_id;
-    ts_in.header.stamp = rclcpp::Time(0);
-    ts_in.pose = ship.pose;
-    try {
-      ts_out = tf_->transform(ts_in, global_frame_, tf2::durationFromSec(1.0));
-      e.x = ts_out.pose.position.x;
-      e.y = ts_out.pose.position.y;
-    } catch (const tf2::TransformException & ex) {
-      e.x = ship.pose.position.x;
-      e.y = ship.pose.position.y;
-      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-        "TSStateManager: TF from '%s' to '%s' failed for %s: %s",
-        msg->header.frame_id.c_str(), global_frame_.c_str(), key.c_str(), ex.what());
-    }
-
-    ts_map_[key] = e;
+  const auto current = now();
+  // Ignore delayed packets while a newer, still-fresh snapshot exists. Allow a
+  // new clock epoch once the old stamp lies in the future.
+  if (have_tracks_ && tracks_valid_ && fresh(track_stamp_, current, ts_timeout_) &&
+    rclcpp::Time(msg->header.stamp) < rclcpp::Time(track_stamp_))
+  {
+    return;
   }
+  have_tracks_ = true;
+  tracks_valid_ = false;
+  track_stamp_ = msg->header.stamp;
+  track_receipt_ = current;
+  ts_map_.clear();
+  if (!fresh(track_stamp_, current, ts_timeout_) || msg->header.frame_id.empty()) {
+    return;
+  }
+  std::unordered_map<std::string, TSEntry> next;
+  for (const auto & ship : msg->ships) {
+    if (!finitePoint(ship.pose.position) || !std::isfinite(ship.radius) || ship.radius < 0.0 ||
+      !std::isfinite(ship.twist.linear.x) || !std::isfinite(ship.twist.linear.y))
+    {
+      return;
+    }
+    geometry_msgs::msg::PoseStamped position;
+    position.header = msg->header;
+    position.pose = ship.pose;
+    geometry_msgs::msg::Vector3Stamped velocity;
+    velocity.header = msg->header;
+    velocity.vector = ship.twist.linear;
+    try {
+      position = tf_->transform(position, global_frame_, tf2::durationFromSec(0.1));
+      velocity = tf_->transform(velocity, global_frame_, tf2::durationFromSec(0.1));
+    } catch (const tf2::TransformException & ex) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Invalid TS frame: %s", ex.what());
+      return;  // Never relabel raw coordinates as global coordinates.
+    }
+    TSEntry entry;
+    entry.id = ship.target_id;
+    entry.x = position.pose.position.x;
+    entry.y = position.pose.position.y;
+    entry.vx = velocity.vector.x;
+    entry.vy = velocity.vector.y;
+    entry.radius = ship.radius;
+    next[uuidToString(ship.target_id.uuid.data())] = entry;
+  }
+  ts_map_ = std::move(next);  // Lists are complete snapshots; an empty list removes all targets.
+  tracks_valid_ = true;
 }
 
 void TSStateManager::odomCallback(nav_msgs::msg::Odometry::ConstSharedPtr msg)
 {
+  if (last_odom_ && fresh(last_odom_->header.stamp, now(), odom_timeout_) &&
+    rclcpp::Time(msg->header.stamp) < rclcpp::Time(last_odom_->header.stamp))
+  {
+    return;
+  }
   last_odom_ = msg;
 }
 
-// ---------------------------------------------------------------------------
-// Timer — CPA + Collision Cone + Publish
-// ---------------------------------------------------------------------------
-
 void TSStateManager::timerCallback()
 {
-  const auto now = get_clock()->now();
-
-  for (auto it = ts_map_.begin(); it != ts_map_.end(); ) {
-    if ((now - it->second.last_seen).seconds() > ts_timeout_) {
-      it = ts_map_.erase(it);
-    } else {
-      ++it;
+  const auto current = now();
+  nav2_colregs_msgs::msg::ProcessedTSList state;
+  state.header.stamp = current;
+  state.header.frame_id = global_frame_;
+  state.os_radius = os_radius_;
+  for (size_t i = 0; i < 16; i += 8) {
+    const auto bits = snapshot_rng_();
+    for (size_t j = 0; j < 8; ++j) {
+      state.snapshot_id.uuid[i + j] = static_cast<uint8_t>(bits >> (j * 8));
     }
   }
-
-  geometry_msgs::msg::PoseStamped os_pose;
-  os_pose.header.frame_id = robot_base_frame_;
-  os_pose.header.stamp = rclcpp::Time(0);
-  os_pose.pose.orientation.w = 1.0;
-  try {
-    os_pose = tf_->transform(os_pose, global_frame_, tf2::durationFromSec(1.0));
-  } catch (const tf2::TransformException &) {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
-      "TSStateManager: TF lookup %s→%s not yet available, skipping publish",
-      robot_base_frame_.c_str(), global_frame_.c_str());
+  visualization_msgs::msg::MarkerArray markers;
+  visualization_msgs::msg::Marker clear;
+  clear.action = visualization_msgs::msg::Marker::DELETEALL;
+  markers.markers.push_back(clear);
+  auto invalid = [&](const std::string & reason) {
+      state.valid = false;
+      state.status_message = reason;
+      state.ships.clear();
+      processed_ts_pub_->publish(state);
+      cpa_markers_pub_->publish(markers);
+    };
+  if (!have_tracks_ || !tracks_valid_ || !fresh(track_stamp_, current, ts_timeout_) ||
+    !fresh(track_receipt_, current, ts_timeout_))
+  {
+    invalid("Track stream missing, stale, invalid or from a different clock epoch");
     return;
   }
-
-  double ox = os_pose.pose.orientation.x;
-  double oy = os_pose.pose.orientation.y;
-  double oz = os_pose.pose.orientation.z;
-  double ow = os_pose.pose.orientation.w;
-  double os_yaw = std::atan2(2.0 * (ow * oz + ox * oy),
-                             1.0 - 2.0 * (oy * oy + oz * oz));
-
-  double os_vx = 0.0, os_vy = 0.0;
-  if (last_odom_) {
-    double body_vx = last_odom_->twist.twist.linear.x;
-    double body_vy = last_odom_->twist.twist.linear.y;
-    os_vx = std::cos(os_yaw) * body_vx - std::sin(os_yaw) * body_vy;
-    os_vy = std::sin(os_yaw) * body_vx + std::cos(os_yaw) * body_vy;
+  if (!last_odom_ || !fresh(last_odom_->header.stamp, current, odom_timeout_) ||
+    !std::isfinite(last_odom_->twist.twist.linear.x) ||
+    !std::isfinite(last_odom_->twist.twist.linear.y))
+  {
+    invalid("Own-ship odometry missing or stale/invalid");
+    return;
   }
-  const double os_speed = std::hypot(os_vx, os_vy);
-
-  auto list_msg = std::make_shared<nav2_colregs_msgs::msg::ProcessedTSList>();
-  list_msg->header.stamp = now;
-  list_msg->header.frame_id = global_frame_;
-
+  geometry_msgs::msg::PoseStamped os;
+  os.header.frame_id = robot_base_frame_;
+  os.pose.orientation.w = 1.0;
+  geometry_msgs::msg::Vector3Stamped velocity;
+  velocity.header.stamp = last_odom_->header.stamp;
+  velocity.header.frame_id = last_odom_->child_frame_id.empty() ?
+    robot_base_frame_ : last_odom_->child_frame_id;
+  velocity.vector = last_odom_->twist.twist.linear;
+  try {
+    os = tf_->transform(os, global_frame_, tf2::durationFromSec(0.1));
+    velocity = tf_->transform(velocity, global_frame_, tf2::durationFromSec(0.1));
+    const bool static_tf = os.header.stamp.sec == 0 && os.header.stamp.nanosec == 0;
+    if (!static_tf && !fresh(os.header.stamp, current, odom_timeout_)) {
+      invalid("Own-ship TF is stale");
+      return;
+    }
+    if (!static_tf) {
+      // Put OS and TS positions at the same calculation time under the same
+      // constant-velocity assumption; "latest TF" may still lag behind current.
+      const double age = (current -
+        rclcpp::Time(os.header.stamp, current.get_clock_type())).seconds();
+      os.pose.position.x += velocity.vector.x * age;
+      os.pose.position.y += velocity.vector.y * age;
+    }
+  } catch (const tf2::TransformException & ex) {
+    invalid(std::string("Own-ship TF unavailable: ") + ex.what());
+    return;
+  }
+  state.os_pose = os.pose;
+  state.os_twist.linear = velocity.vector;
+  const double speed = std::hypot(velocity.vector.x, velocity.vector.y);
+  const double age = (current - rclcpp::Time(track_stamp_, current.get_clock_type())).seconds();
+  int marker_id = 0;
   for (const auto & pair : ts_map_) {
-    const auto & ts = pair.second;
-
-    const double rel_x = ts.x - os_pose.pose.position.x;
-    const double rel_y = ts.y - os_pose.pose.position.y;
-    const double rel_vx = ts.vx - os_vx;
-    const double rel_vy = ts.vy - os_vy;
-
-    const double rel_speed_sq = rel_vx * rel_vx + rel_vy * rel_vy;
+    auto ts = pair.second;
+    ts.x += ts.vx * age;
+    ts.y += ts.vy * age;
+    const double rx = ts.x - os.pose.position.x;
+    const double ry = ts.y - os.pose.position.y;
+    const double ux = ts.vx - velocity.vector.x;
+    const double uy = ts.vy - velocity.vector.y;
+    const double speed_sq = ux * ux + uy * uy;
+    const double distance = std::hypot(rx, ry);
+    const bool overlap = distance <= safety_factor_ * (os_radius_ + ts.radius);
     double tcpa = std::numeric_limits<double>::infinity();
-    double dcpa = std::hypot(rel_x, rel_y);
-
-    if (rel_speed_sq > 1e-6) {
-      tcpa = -(rel_x * rel_vx + rel_y * rel_vy) / rel_speed_sq;
-      dcpa = std::hypot(rel_x + rel_vx * tcpa, rel_y + rel_vy * tcpa);
+    double dcpa = distance;
+    if (speed_sq > 1e-12) {
+      tcpa = -(rx * ux + ry * uy) / speed_sq;
+      dcpa = std::hypot(rx + ux * tcpa, ry + uy * tcpa);
     }
-
-    const double safe_dist = (os_radius_ + ts.radius) * safety_factor_;
-    bool has_threat = (tcpa > 0.0 && tcpa <= tcpa_horizon_ && dcpa < safe_dist);
-
-    std::vector<double> cone_min, cone_max;
-    if (os_speed > 1e-6) {
-      computeCollisionCone(ts, os_pose.pose.position.x, os_pose.pose.position.y,
-                           os_speed, cone_min, cone_max);
-    }
-
+    // A current safety-domain intrusion is a threat, but must not overwrite
+    // mathematical TCPA (including infinity for equal velocities).
     nav2_colregs_msgs::msg::ProcessedTS entry;
-    entry.header.stamp = now;
-    entry.header.frame_id = global_frame_;
+    entry.header = state.header;
+    entry.target_id = ts.id;
     entry.pose.position.x = ts.x;
     entry.pose.position.y = ts.y;
     entry.pose.orientation.w = 1.0;
@@ -188,170 +235,66 @@ void TSStateManager::timerCallback()
     entry.radius = ts.radius;
     entry.tcpa = tcpa;
     entry.dcpa = dcpa;
-    entry.has_threat = has_threat;
-    entry.collision_cone_min = cone_min;
-    entry.collision_cone_max = cone_max;
-    entry.encounter_type = nav2_colregs_msgs::msg::ProcessedTS::UNKNOWN;
-    {
-      const std::string & s = pair.first;
-      size_t byte_idx = 0;
-      for (size_t i = 0; i < s.size() && byte_idx < 16; ) {
-        if (s[i] == '-') { ++i; continue; }
-        unsigned int val;
-        std::stringstream ss;
-        ss << std::hex << s.substr(i, 2);
-        ss >> val;
-        entry.target_id.uuid[byte_idx++] = static_cast<uint8_t>(val);
-        i += 2;
-      }
+    entry.has_threat = overlap || (tcpa >= 0.0 && tcpa <= tcpa_horizon_ &&
+      dcpa < (os_radius_ + ts.radius) * safety_factor_);
+    computeCollisionCone(ts, os.pose.position.x, os.pose.position.y, speed,
+      entry.collision_cone_min, entry.collision_cone_max);
+    state.ships.push_back(entry);
+    visualization_msgs::msg::Marker marker;
+    marker.header = state.header;
+    marker.ns = "cpa";
+    marker.id = marker_id++;
+    marker.type = visualization_msgs::msg::Marker::SPHERE;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    const double prediction = std::isfinite(tcpa) ? std::max(0.0, tcpa) : 0.0;
+    marker.pose.position.x = ts.x + ts.vx * prediction;
+    marker.pose.position.y = ts.y + ts.vy * prediction;
+    marker.pose.orientation.w = 1.0;
+    marker.scale.x = marker.scale.y = marker.scale.z = 0.3;
+    marker.color.a = 0.8;
+    marker.color.r = 1.0;
+    marker.color.g = entry.has_threat ? 0.2 : 0.6;
+    marker.color.b = 0.2;
+    marker.lifetime.nanosec = 500000000;
+    if (finitePoint(marker.pose.position)) {
+      markers.markers.push_back(marker);
     }
-
-    list_msg->ships.push_back(entry);
   }
-
-  processed_ts_pub_->publish(*list_msg);
-
-  // Publish CPA markers for visualization.
-  auto markers = std::make_shared<visualization_msgs::msg::MarkerArray>();
-  int id = 0;
-  for (const auto & pair : ts_map_) {
-    const auto & ts = pair.second;
-
-    const double rel_x = ts.x - os_pose.pose.position.x;
-    const double rel_y = ts.y - os_pose.pose.position.y;
-    const double rel_vx = ts.vx - os_vx;
-    const double rel_vy = ts.vy - os_vy;
-    const double rel_speed_sq = rel_vx * rel_vx + rel_vy * rel_vy;
-    double tcpa = std::numeric_limits<double>::infinity();
-    if (rel_speed_sq > 1e-6) {
-      tcpa = -(rel_x * rel_vx + rel_y * rel_vy) / rel_speed_sq;
-    }
-    if (tcpa < 0.0) tcpa = 0.0;
-
-    bool is_threat = (tcpa > 0.0 && tcpa <= tcpa_horizon_ &&
-      std::hypot(rel_x + rel_vx * tcpa, rel_y + rel_vy * tcpa) <
-      (os_radius_ + ts.radius) * safety_factor_);
-
-    double cpa_x = ts.x + ts.vx * tcpa;
-    double cpa_y = ts.y + ts.vy * tcpa;
-
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
-      "CPA[%d] OS=(%.1f,%.1f) v_os=(%+.1f,%+.1f) yaw=%.1fdeg "
-      "TS=(%.1f,%.1f) v_ts=(%+.1f,%+.1f) "
-      "TCPA=%.1fs DCPA=%.1fm cp=(%.1f,%.1f) t=%d",
-      id,
-      os_pose.pose.position.x, os_pose.pose.position.y,
-      os_vx, os_vy,
-      os_yaw * 180.0 / M_PI,
-      ts.x, ts.y, ts.vx, ts.vy,
-      tcpa,
-      std::hypot(rel_x + rel_vx * tcpa, rel_y + rel_vy * tcpa),
-      cpa_x, cpa_y, (int)is_threat);
-
-    visualization_msgs::msg::Marker m;
-    m.header.stamp = now;
-    m.header.frame_id = global_frame_;
-    m.ns = "cpa";
-    m.id = id++;
-    m.type = visualization_msgs::msg::Marker::SPHERE;
-    m.action = visualization_msgs::msg::Marker::ADD;
-    m.pose.position.x = cpa_x;
-    m.pose.position.y = cpa_y;
-    m.pose.orientation.w = 1.0;
-    m.scale.x = m.scale.y = m.scale.z = 0.3;
-    m.color.a = 0.8;
-    if (is_threat) {
-      m.color.r = 1.0; m.color.g = 0.2; m.color.b = 0.2;
-    } else {
-      m.color.r = 1.0; m.color.g = 0.6; m.color.b = 0.2;
-    }
-    m.lifetime.sec = 0;
-    m.lifetime.nanosec = 500000000;  // 0.5s
-    markers->markers.push_back(m);
+  std::sort(state.ships.begin(), state.ships.end(), [](const auto & a, const auto & b) {
+      return a.target_id.uuid < b.target_id.uuid;
+    });
+  state.valid = true;
+  if (!validSnapshot(state)) {
+    invalid("Nonfinite or malformed computed snapshot");
+    return;
   }
-  cpa_markers_pub_->publish(*markers);
+  state.status_message = "Fresh coherent OS/TS snapshot";
+  processed_ts_pub_->publish(state);
+  cpa_markers_pub_->publish(markers);
 }
 
-// ---------------------------------------------------------------------------
-// LVO Collision Cone
-// ---------------------------------------------------------------------------
-
 void TSStateManager::computeCollisionCone(
-  const TSEntry & ts,
-  double os_x, double os_y, double os_speed,
-  std::vector<double> & min_intervals,
-  std::vector<double> & max_intervals)
+  const TSEntry & ts, double os_x, double os_y, double os_speed,
+  std::vector<double> & mins, std::vector<double> & maxs)
 {
-  min_intervals.clear();
-  max_intervals.clear();
-
-  const double rel_x = ts.x - os_x;
-  const double rel_y = ts.y - os_y;
-  const double dist = std::hypot(rel_x, rel_y);
-  const double sum_r = os_radius_ + ts.radius;
-
-  if (dist <= sum_r) {
-    min_intervals.push_back(0.0);
-    max_intervals.push_back(2.0 * M_PI);
-    return;
-  }
-
-  const double threshold = std::asin(sum_r / dist);
-  constexpr double kResolution = 2.0 * M_PI / 180.0;
-
-  const int N = static_cast<int>(2.0 * M_PI / kResolution);
-  std::vector<bool> unsafe(N, false);
-  bool any_unsafe = false;
-
-  for (int i = 0; i < N; ++i) {
-    double heading = i * kResolution;
-    double os_vx_h = os_speed * std::cos(heading);
-    double os_vy_h = os_speed * std::sin(heading);
-    double rvx = os_vx_h - ts.vx;
-    double rvy = os_vy_h - ts.vy;
-    double rv_len = std::hypot(rvx, rvy);
-
-    if (rv_len < 1e-6) {
-      if (dist < sum_r) {
-        unsafe[i] = true;
-        any_unsafe = true;
-      }
-      continue;
-    }
-
-    double dot = rel_x * rvx + rel_y * rvy;
-    double cos_angle = dot / (dist * rv_len);
-    cos_angle = std::max(-1.0, std::min(1.0, cos_angle));
-    double angle = std::acos(cos_angle);
-
-    if (angle <= threshold) {
-      unsafe[i] = true;
-      any_unsafe = true;
-    }
-  }
-
-  if (!any_unsafe) {
-    return;
-  }
-
+  constexpr int samples = 180;
+  constexpr double step = 2.0 * M_PI / samples;
   bool in_interval = false;
-  double start = 0.0;
-
-  for (int i = 0; i < N; ++i) {
-    if (unsafe[i] && !in_interval) {
-      start = i * kResolution;
+  for (int i = 0; i < samples; ++i) {
+    const double angle = i * step;
+    const bool unsafe = collisionCourse(ts.x - os_x, ts.y - os_y,
+      ts.vx - os_speed * std::cos(angle), ts.vy - os_speed * std::sin(angle),
+      safety_factor_ * (os_radius_ + ts.radius));
+    if (unsafe && !in_interval) {
+      mins.push_back(angle);
       in_interval = true;
-    }
-    if (!unsafe[i] && in_interval) {
-      min_intervals.push_back(start);
-      max_intervals.push_back(i * kResolution);
+    } else if (!unsafe && in_interval) {
+      maxs.push_back(angle);
       in_interval = false;
     }
   }
   if (in_interval) {
-    min_intervals.push_back(start);
-    max_intervals.push_back(2.0 * M_PI);
+    maxs.push_back(2.0 * M_PI);
   }
 }
-
 }  // namespace nav2_colregs_ts_manager

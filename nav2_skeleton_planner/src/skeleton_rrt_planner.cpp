@@ -1,4 +1,5 @@
 #include "nav2_skeleton_planner/skeleton_rrt_planner.hpp"
+#include "nav2_colregs_vo_skeleton_planner/parameter_contract.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -39,48 +40,7 @@ void SkeletonRRTPlanner::configure(
   auto node = parent_node_.lock();
   logger_ = node->get_logger();
 
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".step_size", rclcpp::ParameterValue(4.0));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".goal_bias", rclcpp::ParameterValue(0.1));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".eta", rclcpp::ParameterValue(50.0));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".node_limit", rclcpp::ParameterValue(1024));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".path_limit", rclcpp::ParameterValue(256));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".near_limit", rclcpp::ParameterValue(16));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".connector_limit", rclcpp::ParameterValue(128));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".recovery_near_limit", rclcpp::ParameterValue(16));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".global_iterations", rclcpp::ParameterValue(2400));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".local_iterations", rclcpp::ParameterValue(600));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".refine_iterations", rclcpp::ParameterValue(200));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".max_work", rclcpp::ParameterValue(12000000));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".time_limit", rclcpp::ParameterValue(0.0));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".goal_tolerance", rclcpp::ParameterValue(2.0));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".allow_recovery", rclcpp::ParameterValue(true));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".allow_skip", rclcpp::ParameterValue(true));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".reuse_iterations", rclcpp::ParameterValue(64));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".switch_margin", rclcpp::ParameterValue(0.03));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".prune_period", rclcpp::ParameterValue(10));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".safety_dist", rclcpp::ParameterValue(1.5));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".cost_weight", rclcpp::ParameterValue(0.3));
+  nav2_colregs_vo_skeleton_planner::declareSkeletonParameters(node, name_);
 
   node->get_parameter(name_ + ".step_size", config_.step);
   node->get_parameter(name_ + ".goal_bias", config_.goal_bias);
@@ -100,7 +60,6 @@ void SkeletonRRTPlanner::configure(
   node->get_parameter(name_ + ".allow_skip", config_.allow_skip);
   node->get_parameter(name_ + ".reuse_iterations", config_.reuse_iterations);
   node->get_parameter(name_ + ".switch_margin", config_.switch_margin);
-  node->get_parameter(name_ + ".prune_period", config_.prune_period);
   node->get_parameter(name_ + ".safety_dist", safety_dist_);
   node->get_parameter(name_ + ".cost_weight", cost_weight_);
   config_.validate();

@@ -43,8 +43,8 @@ struct PlanStats
  *     PRESERVED and the skeleton is rebuilt through it (near-recovery or
  *     global recovery on the same tree), not dropped.
  *  3. Tree prune - branches whose edges became invalid are physically
- *     removed (DRRT-style) whenever the skeleton failed this replan or
- *     every `prune_period` replans.
+ *     removed (DRRT-style) on each changed-world query with tree reuse.
+ *     Costs are refreshed on that query; prune_period is deprecated/ignored.
  */
 class SkeletonPlanner
 {
