@@ -5,6 +5,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "nav2_costmap_2d/layer.hpp"
 #include "nav2_costmap_2d/layered_costmap.hpp"
@@ -32,6 +33,11 @@ struct ShipEntry
   rclcpp::Time last_seen;
   bool has_cumulative_bounds{false};
   double cum_min_x, cum_min_y, cum_max_x, cum_max_y;
+};
+
+struct ClearRect
+{
+  double min_x, min_y, max_x, max_y;
 };
 
 class TSProjectionLayer : public nav2_costmap_2d::Layer
@@ -62,8 +68,11 @@ private:
   std::string tf_frame_;  // frame_id of last received TrackedShipList
 
   std::unordered_map<std::string, ShipEntry> ships_;
-  double track_timeout_{3.0};
-  std::string tracked_ship_topic_{"/dynamic_ship/tracked_ships"};
+  std::vector<ClearRect> pending_clears_;
+  rclcpp::Time last_msg_time_{0, 0, RCL_ROS_TIME};
+  bool last_msg_valid_{false};
+  double track_timeout_{0.5};
+  std::string tracked_ship_topic_{"/tracked_ship"};
 };
 
 }  // namespace nav2_colregs_costmap_layers

@@ -25,7 +25,7 @@ def generate_launch_description():
             bringup_dir, 'params', 'nav2_colregs_params_humble_minimal.yaml'))
     declare_use_sim_time = DeclareLaunchArgument('use_sim_time', default_value='true')
     declare_tracked_ship_topic = DeclareLaunchArgument(
-        'tracked_ship_topic', default_value='/dynamic_ship/tracked_ships')
+        'tracked_ship_topic', default_value='/tracked_ship')
     declare_robot_base_frame = DeclareLaunchArgument(
         'robot_base_frame', default_value='base_link')
     declare_odom_topic = DeclareLaunchArgument(
