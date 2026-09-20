@@ -2,6 +2,7 @@
 #define NAV2_COLREGS_TS_MANAGER__AVOIDANCE_POINT_HPP_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,9 @@ private:
   rclcpp::TimerBase::SharedPtr expiry_timer_;
   double snapshot_timeout_{1.0};
   double max_request_position_delta_{3.0};
+  double heading_smoothing_alpha_{1.0};
+  bool smooth_initial_heading_{false};
+  std::optional<double> previous_heading_;
 };
 
 }  // namespace nav2_colregs_ts_manager

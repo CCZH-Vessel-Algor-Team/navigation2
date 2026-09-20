@@ -25,6 +25,14 @@ AvoidancePointNode::AvoidancePointNode()
     parameterDescription("Maximum request/snapshot OS XY position difference [m].", true));
   validateNumber("snapshot_timeout", snapshot_timeout_, true);
   validateNumber("max_request_position_delta", max_request_position_delta_);
+  heading_smoothing_alpha_ = declare_parameter("heading_smoothing_alpha", 1.0,
+    parameterDescription("Experimental output heading blend in (0, 1]; 1 disables damping.", true));
+  smooth_initial_heading_ = declare_parameter("smooth_initial_heading", false,
+    parameterDescription("Blend the first heading from measured course (yaw at low speed).", true));
+  validateNumber("heading_smoothing_alpha", heading_smoothing_alpha_, true);
+  if (heading_smoothing_alpha_ > 1.0) {
+    throw std::invalid_argument("heading_smoothing_alpha must be at most 1");
+  }
   parameter_callback_ = add_on_set_parameters_callback(
     [](const std::vector<rclcpp::Parameter> & parameters) {
       rcl_interfaces::msg::SetParametersResult result;
@@ -93,6 +101,12 @@ void AvoidancePointNode::tsListCallback(
 
 void AvoidancePointNode::clearMarkers()
 {
+  // A clear/no-threat/invalid-data interval ends the filter's encounter history,
+  // including intervals in which no planner service request arrives.
+  if (previous_heading_) {
+    RCLCPP_INFO(get_logger(), "Heading smoothing reset");
+  }
+  previous_heading_.reset();
   visualization_msgs::msg::MarkerArray markers;
   visualization_msgs::msg::Marker clear;
   clear.action = visualization_msgs::msg::Marker::DELETEALL;
@@ -160,10 +174,47 @@ void AvoidancePointNode::handleService(
   double safe_heading = 0.0;
   bool found = findSafeHeading(state, request->avoid_direction,
                                goal_x, goal_y, os_x, os_y, avoidance_radius_scale, safe_heading);
+  bool physical_fallback = false;
+  if (!found && avoidance_radius_scale > 1.0) {
+    RCLCPP_WARN(get_logger(),
+      "No feasible VO heading at scale=%.3f; retrying at scale=1.000 "
+      "(physical radii, hard set without smoothing)", avoidance_radius_scale);
+    found = findSafeHeading(state, request->avoid_direction,
+        goal_x, goal_y, os_x, os_y, 1.0, safe_heading);
+    physical_fallback = found;
+  }
   if (!found) {
     fail(Response::INESCAPABLE,
-      "No heading satisfies the inflated collision radii at the current own-ship speed");
+      "No heading satisfies the physical collision radii at the current own-ship speed");
     return;
+  }
+  const double effective_scale = physical_fallback ? 1.0 : avoidance_radius_scale;
+
+  const double raw_heading = safe_heading;
+  const bool first = !previous_heading_.has_value();
+  const double speed = std::hypot(state.os_twist.linear.x, state.os_twist.linear.y);
+  double reference = previous_heading_.value_or(raw_heading);
+  if (!physical_fallback && first && smooth_initial_heading_ && heading_smoothing_alpha_ < 1.0) {
+    if (speed > 0.1) {
+      reference = std::atan2(state.os_twist.linear.y, state.os_twist.linear.x);
+    } else {
+      const auto & q = state.os_pose.orientation;
+      reference = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+          1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+      if (!std::isfinite(reference)) {
+        fail(Response::INVALID_REQUEST, "Nonfinite initial heading for smoothing");
+        return;
+      }
+    }
+  }
+  if (!physical_fallback && heading_smoothing_alpha_ < 1.0 && (!first || smooth_initial_heading_)) {
+    const double difference = std::atan2(
+      std::sin(raw_heading - reference), std::cos(raw_heading - reference));
+    safe_heading = std::fmod(reference + heading_smoothing_alpha_ * difference,
+        2.0 * M_PI);
+    if (safe_heading < 0.0) {
+      safe_heading += 2.0 * M_PI;
+    }
   }
 
   double ts_x = ts.pose.position.x;
@@ -183,6 +234,24 @@ void AvoidancePointNode::handleService(
   response->status = Response::SUCCESS;
   response->message = "Heading validated using inflated OS/TS radii (factor=" +
     std::to_string(avoidance_radius_scale) + ")";
+  if (physical_fallback) {
+    response->message = "Physical-radius fallback: scale=1.000, hard-set heading without smoothing";
+  } else if (heading_smoothing_alpha_ < 1.0) {
+    response->message = "Experimental smoothed output; raw VO candidate passed collision checks";
+  }
+  // A fallback direction was actually commanded: subsequent normal updates
+  // blend from this hard output, not from the previous pre-fallback direction.
+  previous_heading_ = safe_heading;
+  // Observe the interpolated heading's instantaneous VO status; do not bypass
+  // the damping experiment by reverting to the raw direction when it is false.
+  RCLCPP_INFO(get_logger(),
+    "Heading update: raw=%.9f output=%.9f reference=%.9f alpha=%.3f first=%d "
+    "smooth_initial=%d speed=%.6f output_safe=%d snapshot_time=%.9f "
+    "effective_scale=%.3f fallback=%d",
+    raw_heading, safe_heading, reference, heading_smoothing_alpha_, first,
+    smooth_initial_heading_, speed,
+    headingSafe(state, os_x, os_y, safe_heading, effective_scale),
+    rclcpp::Time(state.header.stamp).seconds(), effective_scale, physical_fallback);
 
   visualization_msgs::msg::MarkerArray markers;
   visualization_msgs::msg::Marker arrow;

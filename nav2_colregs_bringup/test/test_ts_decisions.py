@@ -694,7 +694,8 @@ def decision_measurements(scene, result):
     speed = math.hypot(state.os_twist.linear.x, state.os_twist.linear.y)
     ux = ship.twist.linear.x - speed * math.cos(result.safe_heading)
     uy = ship.twist.linear.y - speed * math.sin(result.safe_heading)
-    tcpa = max(0., -(rx * ux + ry * uy) / (ux * ux + uy * uy))
+    speed_sq = ux * ux + uy * uy
+    tcpa = max(0., -(rx * ux + ry * uy) / speed_sq) if speed_sq > 1e-12 else 0.
     dcpa = math.hypot(rx + ux * tcpa, ry + uy * tcpa)
     extension = math.hypot(result.point.x - 20, result.point.y - 20) - math.hypot(rx, ry)
     return dcpa, extension
@@ -743,13 +744,16 @@ def test_recorded_13m_goal_requires_inflated_20m_clearance(scene):
 
 @pytest.mark.parametrize('scene', [INFLATION_SETTINGS], indirect=True)
 @pytest.mark.parametrize('distance,target_vx,expected', [
-    (15., 1., GetAvoidancePoint.Response.INESCAPABLE),
-    (15., 2., GetAvoidancePoint.Response.INESCAPABLE),
-    (20., 0., GetAvoidancePoint.Response.INESCAPABLE),
+    (9., 0., GetAvoidancePoint.Response.INESCAPABLE),
+    (10., 0., GetAvoidancePoint.Response.INESCAPABLE),
+    (15., 1., GetAvoidancePoint.Response.SUCCESS),
+    (15., 2., GetAvoidancePoint.Response.SUCCESS),
+    (20., 0., GetAvoidancePoint.Response.SUCCESS),
     (20.1, 0., GetAvoidancePoint.Response.SUCCESS),
 ])
-def test_inflated_domain_is_not_silently_relaxed(scene, distance, target_vx, expected):
-    """Fail inside/on the inflated domain even without physical overlap.
+def test_inflated_domain_falls_back_but_physical_overlap_fails(
+        scene, distance, target_vx, expected):
+    """Retry physical radii inside the inflated domain; retain physical rejection.
 
     :param scene: Real-node harness with effective 20m avoidance radius.
     :param distance: Initial OS-TS separation.
@@ -768,8 +772,32 @@ def test_inflated_domain_is_not_silently_relaxed(scene, distance, target_vx, exp
         for planner in ('VO', 'Skeleton'):
             assert scene.plan(planner).status == GoalStatus.STATUS_ABORTED
     else:
-        assert decision_measurements(scene, result)[0] > 20.0
+        fallback = distance <= 20.
+        assert ('Physical-radius fallback' in result.message) == fallback
+        assert decision_measurements(scene, result)[0] > (10. if fallback else 20.)
+        if fallback:
+            assert 'retrying at scale=1.000' in (
+                scene.directory / 'avoidance_point_node.log').read_text()
     print('INFLATED DOMAIN:', distance, target_vx, 'status=', result.status, flush=True)
+
+
+@pytest.mark.parametrize('scene', [INFLATION_SETTINGS], indirect=True)
+def test_physical_fallback_real_planners(scene):
+    """Carry a fallback response through snapshot-pinned barriers and both planners.
+
+    :param scene: Real-node harness with physical radius 10m and preferred radius 20m.
+    """
+    scene.ships = [(35., 20., 2., 0., 5.)]
+    scene.until(lambda: scene.state is not None and scene.state.valid and scene.state.ships)
+    decision = scene.ready_decision()
+    assert 'Physical-radius fallback' in decision.message
+    assert decision_measurements(scene, decision)[0] > 10.
+    scene.start_planner()
+    for planner in ('VO', 'Skeleton'):
+        result = scene.plan(planner)
+        assert result.status == GoalStatus.STATUS_SUCCEEDED
+        assert result.result.path.poses
+    print('PASS: fallback snapshot/barrier and both real planning actions', flush=True)
 
 
 @pytest.mark.parametrize('scene', [INFLATION_SETTINGS], indirect=True)
