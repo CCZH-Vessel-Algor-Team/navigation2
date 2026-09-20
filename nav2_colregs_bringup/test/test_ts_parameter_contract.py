@@ -159,7 +159,8 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
             assert all(
                 d.read_only == (name != 'avoidance_point_node' or
                                 d.name in ('snapshot_timeout', 'max_request_position_delta',
-                                           'heading_smoothing_alpha', 'smooth_initial_heading'))
+                                           'heading_smoothing_alpha', 'smooth_initial_heading',
+                                           'speed_tolerance', 'speed_sample_count'))
                 for d in descriptors)
             print('YAML effective:', name, values, flush=True)
         set_values('ts_state_manager', {'threat_radius_scale': 9.0}, False)

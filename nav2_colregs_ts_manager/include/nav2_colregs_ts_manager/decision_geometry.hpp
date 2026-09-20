@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <vector>
 #include "rclcpp/rclcpp.hpp"
 #include "nav2_colregs_msgs/msg/processed_ts_list.hpp"
 
@@ -69,10 +70,9 @@ inline bool validSnapshot(const nav2_colregs_msgs::msg::ProcessedTSList & state)
   return true;
 }
 
-inline bool headingSafe(const nav2_colregs_msgs::msg::ProcessedTSList & state,
-  double ox, double oy, double heading, double avoidance_radius_scale)
+inline bool headingSafeAtSpeed(const nav2_colregs_msgs::msg::ProcessedTSList & state,
+  double ox, double oy, double heading, double avoidance_radius_scale, double speed)
 {
-  const double speed = std::hypot(state.os_twist.linear.x, state.os_twist.linear.y);
   for (const auto & ship : state.ships) {
     if (collisionCourse(ship.pose.position.x - ox, ship.pose.position.y - oy,
       ship.twist.linear.x - speed * std::cos(heading),
@@ -83,6 +83,41 @@ inline bool headingSafe(const nav2_colregs_msgs::msg::ProcessedTSList & state,
     }
   }
   return true;
+}
+
+inline bool headingSafe(const nav2_colregs_msgs::msg::ProcessedTSList & state,
+  double ox, double oy, double heading, double avoidance_radius_scale)
+{
+  return headingSafeAtSpeed(state, ox, oy, heading, avoidance_radius_scale,
+    std::hypot(state.os_twist.linear.x, state.os_twist.linear.y));
+}
+
+// Uniform interval samples plus the measured speed if it is not on the grid.
+// This is a finite-sample check, not a continuous-interval certificate.
+inline std::vector<double> sampleSpeeds(double speed, double tolerance, int count)
+{
+  std::vector<double> speeds{speed};
+  if (tolerance == 0.0) {
+    return speeds;
+  }
+  const double lower = std::max(0.0, speed - tolerance);
+  const double upper = speed + tolerance;
+  for (int i = 0; i < count; ++i) {
+    const double value = lower + (upper - lower) * (static_cast<double>(i) / (count - 1));
+    if (std::abs(value - speed) > 1e-9) {
+      speeds.push_back(value);
+    }
+  }
+  return speeds;
+}
+
+inline bool headingSafeForSpeeds(const nav2_colregs_msgs::msg::ProcessedTSList & state,
+  double ox, double oy, double heading, double avoidance_radius_scale,
+  const std::vector<double> & speeds)
+{
+  return std::all_of(speeds.begin(), speeds.end(), [&](double speed) {
+      return headingSafeAtSpeed(state, ox, oy, heading, avoidance_radius_scale, speed);
+    });
 }
 }  // namespace nav2_colregs_ts_manager
 #endif  // NAV2_COLREGS_TS_MANAGER__DECISION_GEOMETRY_HPP_

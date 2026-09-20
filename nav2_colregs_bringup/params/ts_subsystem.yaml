@@ -18,6 +18,8 @@ avoidance_point_node:
     point_extension_distance: 20.0  # independent endpoint range extension [m]
     heading_smoothing_alpha: 0.5    # heading blend per request; 1.0 disables damping
     smooth_initial_heading: false  # first output is direct; fallback always hard-sets
+    speed_tolerance: 0.0           # +/- m/s around measured speed; 0 disables sampling
+    speed_sample_count: 5          # uniform interval samples; also check measured speed
 
 barrier_node:
   ros__parameters:

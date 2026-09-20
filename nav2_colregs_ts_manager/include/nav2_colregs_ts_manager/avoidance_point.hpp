@@ -38,6 +38,7 @@ private:
     double goal_x, double goal_y,
     double os_x, double os_y,
     double avoidance_radius_scale,
+    const std::vector<double> & speeds,
     double & safe_heading);
 
   rclcpp::Subscription<nav2_colregs_msgs::msg::ProcessedTSList>::SharedPtr
@@ -53,6 +54,8 @@ private:
   double max_request_position_delta_{3.0};
   double heading_smoothing_alpha_{1.0};
   bool smooth_initial_heading_{false};
+  double speed_tolerance_{0.0};
+  int speed_sample_count_{5};
   std::optional<double> previous_heading_;
 };
 
