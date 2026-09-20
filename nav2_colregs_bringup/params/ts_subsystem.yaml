@@ -16,10 +16,12 @@ avoidance_point_node:
     max_request_position_delta: 3.0 # request/snapshot OS XY distance limit [m]
     avoidance_radius_scale: 1.5    # combined-radius scale; OS radius comes from the snapshot
     point_extension_distance: 20.0  # independent endpoint range extension [m]
+    heading_smoothing_alpha: 0.5    # heading blend per request; 1.0 disables damping
+    smooth_initial_heading: false  # first output is direct; fallback always hard-sets
 
 barrier_node:
   ros__parameters:
     snapshot_timeout: 1.0
     max_request_position_delta: 3.0
-    closing_segment_length: 999.0 # third barrier segment length [m]
+    closing_segment_length: 8.0   # short third segment [m]; L1=5.3m for the default 5m TS
     lateral_margin: 0.3           # first segment length = TS radius + this offset [m]

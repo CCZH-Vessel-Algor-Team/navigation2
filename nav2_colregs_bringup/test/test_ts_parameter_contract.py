@@ -54,7 +54,8 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
         threat_radius_scale=threat_scale, os_radius=4.0)
     config['avoidance_point_node']['ros__parameters'].update(
         avoidance_radius_scale=1.5 if expected_threat else 1.0,
-        point_extension_distance=20.0)
+        point_extension_distance=20.0,
+        heading_smoothing_alpha=1.0)  # Isolate radius/extension geometry from damping.
     config['barrier_node']['ros__parameters'].update(
         lateral_margin=2.0, closing_segment_length=20.0)
     params = tmp_path / 'custom_ts.yaml'
@@ -157,12 +158,15 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
             assert all(d.description for d in descriptors)
             assert all(
                 d.read_only == (name != 'avoidance_point_node' or
-                                d.name in ('snapshot_timeout', 'max_request_position_delta'))
+                                d.name in ('snapshot_timeout', 'max_request_position_delta',
+                                           'heading_smoothing_alpha', 'smooth_initial_heading'))
                 for d in descriptors)
             print('YAML effective:', name, values, flush=True)
         set_values('ts_state_manager', {'threat_radius_scale': 9.0}, False)
         set_values('ts_state_manager', {'update_frequency': 5.0}, False)
         set_values('barrier_node', {'closing_segment_length': 9.0}, False)
+        set_values('avoidance_point_node', {'heading_smoothing_alpha': 0.75}, False)
+        set_values('avoidance_point_node', {'smooth_initial_heading': True}, False)
         for invalid in (-1.0, 0.0, 0.5, float('nan'), float('inf'), 'bad'):
             set_values('avoidance_point_node', {'avoidance_radius_scale': invalid}, False)
         set_values('avoidance_point_node', {'point_extension_distance': -1.0}, False)
@@ -230,6 +234,8 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
     ('ts_state_manager', 'threat_radius_scale:=0.5'),
     ('ts_state_manager', 'os_radius:=-1.0'),
     ('barrier_node', 'closing_segment_length:=0.0'),
+    ('avoidance_point_node', 'heading_smoothing_alpha:=0.0'),
+    ('avoidance_point_node', 'heading_smoothing_alpha:=1.1'),
 ])
 def test_invalid_startup(tmp_path, monkeypatch, executable, argument):
     """Reject invalid startup overrides in real TS executables.

@@ -204,27 +204,31 @@ With `R_threat = threat_radius_scale * (r_OS + r_TS)`, current separation <= `R_
 
 | Parameter | Default (declaration / YAML) | Unit / range | Runtime change | Effect |
 |---|---:|---|---|---|
-| `avoidance_radius_scale` | 1.5 | dimensionless, >=1 | Yes | Candidate-heading collision radius is this scale times `(snapshot.os_radius + target.radius)`. |
+| `avoidance_radius_scale` | 1.5 | dimensionless, >=1 | Yes | Preferred candidate-heading collision radius is this scale times `(snapshot.os_radius + target.radius)`; if no direction is feasible, retry once at scale 1. |
 | `point_extension_distance` | 20.0 | m, >=0 | Yes | Extra AP range beyond the current OS-to-primary-TS distance. |
 | `snapshot_timeout` | 1.0 | s, >0 | No | Maximum processed snapshot age. |
 | `max_request_position_delta` | 3.0 | m, >=0 | No | Maximum XY distance between request OS position and snapshot OS position; does not compare orientation. |
+| `heading_smoothing_alpha` | 1.0 / 0.5 | dimensionless, 0 < alpha <= 1 | No | Per-request heading blend; 1 preserves the raw VO output. |
+| `smooth_initial_heading` | false | boolean | No | Also blend the first output from measured course; at speed <=0.1m/s use snapshot yaw. |
 
 The physical OS radius has one configuration source: `ts_state_manager.os_radius`. Avoidance reads it from each `ProcessedTSList`; it has no separate physical-radius parameter. With both physical radii 5m, the shipped settings give a 30m threat domain and 15m avoidance collision radius.
 
-The point is `P = OS + (distance(OS, primary_TS) + point_extension_distance) * unit(safe_heading)`. The extension changes radial point range; the radius scale changes the candidate collision constraint. Candidate checks cover constant-velocity motion for `t >= 0`. Tangency and current overlap of the inflated discs are rejected. Dynamic settings are read together at each decision after parameter updates have been accepted.
+The point is `P = OS + (distance(OS, primary_TS) + point_extension_distance) * unit(safe_heading)`. The extension changes radial point range; the radius scale changes the preferred candidate collision constraint. Candidate checks cover constant-velocity motion for `t >= 0`. If no heading satisfies the configured scale (>1), the node logs a warning and repeats the same search against all targets at scale 1 (physical OS/TS radii). A successful fallback is hard-set without either initial or subsequent heading smoothing. Physical tangency/overlap or no feasible physical-radius heading still returns `INESCAPABLE`. Invalid/stale data and invalid requests do not enter this fallback. Dynamic settings are read together at each decision after parameter updates have been accepted; fallback does not modify the configured scale.
+
+With experimental damping enabled on a normal (non-fallback) result, `heading_out = heading_previous + alpha * wrap(heading_raw - heading_previous)` (circular difference). AP range is unchanged; `safe_heading` then carries the smoothed output, whose intermediate direction may lie outside the instantaneous VO feasible set. Logs retain raw/output headings, effective scale, fallback flag and the instantaneous check result at that effective scale. A hard-set fallback becomes the reference for the next normal update. Filter history is cleared on no-threat/empty or invalid snapshots, snapshot expiry, and failed service requests, including no-threat intervals without service calls. The first normal output after a clear follows `smooth_initial_heading`. This is a single-node output filter, with no per-client or per-navigation-task history.
 
 #### `barrier_node`
 
-All four parameters are startup-only/read-only; declaration and shipped-YAML defaults are identical.
+All four parameters are startup-only/read-only. Defaults are shown as declaration / shipped YAML where they differ.
 
 | Parameter | Default | Unit / range | Effect |
 |---|---:|---|---|
 | `lateral_margin` | 0.3 | m, >=0 | Extra lateral offset beyond the TS radius, perpendicular to the OS-to-TS bearing. This is a boundary-shape setting, not the OS physical radius. |
-| `closing_segment_length` | 999.0 | m, >0 | Length of the third U-shaped barrier segment. |
+| `closing_segment_length` | 999.0 / 8.0 | m, >0 | Length of the third U-shaped barrier segment; the shipped configuration uses a short closing segment. |
 | `snapshot_timeout` | 1.0 | s, >0 | Maximum age of both the requested snapshot and the latest received snapshot. |
 | `max_request_position_delta` | 3.0 | m, >=0 | Maximum request/snapshot OS XY position difference. |
 
-The three segment lengths are `L1 = r_TS + lateral_margin`, `L2 = max(distance(OS,TS), 10m) + 3*r_TS`, and `L3 = closing_segment_length`. For a 5m-radius TS, the default first segment is 5.3m. The barriers constrain the AP-to-goal search.
+The three segment lengths are `L1 = r_TS + lateral_margin`, `L2 = max(distance(OS,TS), 10m) + 3*r_TS`, and `L3 = closing_segment_length`. For a 5m-radius TS, the default first segment is 5.3m and the shipped third segment is 8m. L3 remains an absolute length, not a radius-dependent scale. All three segments (six points) are retained. The barriers constrain the AP-to-goal search.
 
 #### Clock and parameter access
 
