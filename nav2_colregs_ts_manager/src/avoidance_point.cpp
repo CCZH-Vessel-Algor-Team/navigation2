@@ -33,6 +33,16 @@ AvoidancePointNode::AvoidancePointNode()
   if (heading_smoothing_alpha_ > 1.0) {
     throw std::invalid_argument("heading_smoothing_alpha must be at most 1");
   }
+  speed_tolerance_ = declare_parameter("speed_tolerance", 0.0,
+    parameterDescription("Own-speed interval half-width [m/s]; zero disables sampling.", true));
+  validateNumber("speed_tolerance", speed_tolerance_);
+  const auto sample_count = declare_parameter<int64_t>("speed_sample_count", 5,
+    parameterDescription("Uniform speed samples including endpoints [2, 101]; measured speed "
+      "is additionally checked if off-grid. Startup-only.", true));
+  if (sample_count < 2 || sample_count > 101) {
+    throw std::invalid_argument("speed_sample_count must be in [2, 101]");
+  }
+  speed_sample_count_ = static_cast<int>(sample_count);
   parameter_callback_ = add_on_set_parameters_callback(
     [](const std::vector<rclcpp::Parameter> & parameters) {
       rcl_interfaces::msg::SetParametersResult result;
@@ -74,9 +84,10 @@ AvoidancePointNode::AvoidancePointNode()
   RCLCPP_INFO(get_logger(), "AvoidancePointNode started");
   RCLCPP_INFO(get_logger(),
     "Avoidance effective parameters: os_radius=ProcessedTSList.os_radius "
-    "avoidance_radius_scale=%.3f point_extension_distance=%.3fm",
+    "avoidance_radius_scale=%.3f point_extension_distance=%.3fm "
+    "speed_tolerance=%.3fm/s speed_sample_count=%d",
     get_parameter("avoidance_radius_scale").as_double(),
-    get_parameter("point_extension_distance").as_double());
+    get_parameter("point_extension_distance").as_double(), speed_tolerance_, speed_sample_count_);
 }
 
 // ---------------------------------------------------------------------------
@@ -172,27 +183,44 @@ void AvoidancePointNode::handleService(
   double goal_y = request->goal.position.y;
 
   double safe_heading = 0.0;
+  const double speed = std::hypot(state.os_twist.linear.x, state.os_twist.linear.y);
+  if (!std::isfinite(speed + speed_tolerance_)) {
+    fail(Response::INVALID_REQUEST, "Nonfinite own-speed sampling interval");
+    return;
+  }
+  const auto speeds = sampleSpeeds(speed, speed_tolerance_, speed_sample_count_);
   bool found = findSafeHeading(state, request->avoid_direction,
-                               goal_x, goal_y, os_x, os_y, avoidance_radius_scale, safe_heading);
+      goal_x, goal_y, os_x, os_y, avoidance_radius_scale, speeds, safe_heading);
   bool physical_fallback = false;
+  if (!found && speed_tolerance_ > 0.0) {
+    double nominal_heading = 0.0;
+    if (findSafeHeading(state, request->avoid_direction, goal_x, goal_y, os_x, os_y,
+      avoidance_radius_scale, {speed}, nominal_heading))
+    {
+      RCLCPP_WARN(get_logger(), "No common heading for sampled speeds; measured-speed heading "
+        "exists at scale=%.3f, retaining radius", avoidance_radius_scale);
+      fail(Response::INESCAPABLE,
+        "No common heading for sampled speeds; measured-speed heading exists, radius retained");
+      return;
+    }
+  }
   if (!found && avoidance_radius_scale > 1.0) {
     RCLCPP_WARN(get_logger(),
       "No feasible VO heading at scale=%.3f; retrying at scale=1.000 "
       "(physical radii, hard set without smoothing)", avoidance_radius_scale);
     found = findSafeHeading(state, request->avoid_direction,
-        goal_x, goal_y, os_x, os_y, 1.0, safe_heading);
+        goal_x, goal_y, os_x, os_y, 1.0, speeds, safe_heading);
     physical_fallback = found;
   }
   if (!found) {
     fail(Response::INESCAPABLE,
-      "No heading satisfies the physical collision radii at the current own-ship speed");
+      "No heading satisfies the collision radii for the checked own-ship speeds");
     return;
   }
   const double effective_scale = physical_fallback ? 1.0 : avoidance_radius_scale;
 
   const double raw_heading = safe_heading;
   const bool first = !previous_heading_.has_value();
-  const double speed = std::hypot(state.os_twist.linear.x, state.os_twist.linear.y);
   double reference = previous_heading_.value_or(raw_heading);
   if (!physical_fallback && first && smooth_initial_heading_ && heading_smoothing_alpha_ < 1.0) {
     if (speed > 0.1) {
@@ -215,6 +243,11 @@ void AvoidancePointNode::handleService(
     if (safe_heading < 0.0) {
       safe_heading += 2.0 * M_PI;
     }
+  }
+  const bool smoothing_limited = speed_tolerance_ > 0.0 &&
+    !headingSafeForSpeeds(state, os_x, os_y, safe_heading, effective_scale, speeds);
+  if (smoothing_limited) {
+    safe_heading = raw_heading;
   }
 
   double ts_x = ts.pose.position.x;
@@ -239,19 +272,32 @@ void AvoidancePointNode::handleService(
   } else if (heading_smoothing_alpha_ < 1.0) {
     response->message = "Experimental smoothed output; raw VO candidate passed collision checks";
   }
+  if (speed_tolerance_ > 0.0) {
+    response->message = physical_fallback ?
+      "Physical-radius fallback: sampled speeds checked, hard-set heading" :
+      "Heading validated at finite speed samples (including measured speed)";
+    if (smoothing_limited) {
+      response->message += "; smoothing rejected, raw heading used";
+    }
+  }
   // A fallback direction was actually commanded: subsequent normal updates
   // blend from this hard output, not from the previous pre-fallback direction.
   previous_heading_ = safe_heading;
-  // Observe the interpolated heading's instantaneous VO status; do not bypass
-  // the damping experiment by reverting to the raw direction when it is false.
+  // With sampling disabled, preserve the original damping experiment. Enabled
+  // sampling rejects an unsafe blend above and reports the actual checked output.
   RCLCPP_INFO(get_logger(),
     "Heading update: raw=%.9f output=%.9f reference=%.9f alpha=%.3f first=%d "
     "smooth_initial=%d speed=%.6f output_safe=%d snapshot_time=%.9f "
-    "effective_scale=%.3f fallback=%d",
+    "effective_scale=%.3f fallback=%d speed_min=%.6f speed_max=%.6f "
+    "speed_checks=%zu sampled_safe=%d smoothing_limited=%d",
     raw_heading, safe_heading, reference, heading_smoothing_alpha_, first,
     smooth_initial_heading_, speed,
     headingSafe(state, os_x, os_y, safe_heading, effective_scale),
-    rclcpp::Time(state.header.stamp).seconds(), effective_scale, physical_fallback);
+    rclcpp::Time(state.header.stamp).seconds(), effective_scale, physical_fallback,
+    *std::min_element(speeds.begin(), speeds.end()),
+    *std::max_element(speeds.begin(), speeds.end()),
+    speeds.size(), headingSafeForSpeeds(state, os_x, os_y, safe_heading, effective_scale, speeds),
+    smoothing_limited);
 
   visualization_msgs::msg::MarkerArray markers;
   visualization_msgs::msg::Marker arrow;
@@ -316,6 +362,7 @@ bool AvoidancePointNode::findSafeHeading(
   double goal_x, double goal_y,
   double os_x, double os_y,
   double avoidance_radius_scale,
+  const std::vector<double> & speeds,
   double & safe_heading)
 {
   const double goal_angle = std::atan2(goal_y - os_y, goal_x - os_x);
@@ -324,7 +371,7 @@ bool AvoidancePointNode::findSafeHeading(
   // Validate each selected heading analytically against every current target.
   for (int i = 0; i < 180; ++i) {
     const double candidate = wrapAngle(goal_angle + direction * i * M_PI / 90.0);
-    if (headingSafe(state, os_x, os_y, candidate, avoidance_radius_scale)) {
+    if (headingSafeForSpeeds(state, os_x, os_y, candidate, avoidance_radius_scale, speeds)) {
       safe_heading = candidate;
       return true;
     }

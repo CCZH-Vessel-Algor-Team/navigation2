@@ -204,18 +204,35 @@ With `R_threat = threat_radius_scale * (r_OS + r_TS)`, current separation <= `R_
 
 | Parameter | Default (declaration / YAML) | Unit / range | Runtime change | Effect |
 |---|---:|---|---|---|
-| `avoidance_radius_scale` | 1.5 | dimensionless, >=1 | Yes | Preferred candidate-heading collision radius is this scale times `(snapshot.os_radius + target.radius)`; if no direction is feasible, retry once at scale 1. |
+| `avoidance_radius_scale` | 1.5 | dimensionless, >=1 | Yes | Preferred radius is this scale times `(snapshot.os_radius + target.radius)`; physical-radius retry requires the measured-speed search to have no feasible heading. |
 | `point_extension_distance` | 20.0 | m, >=0 | Yes | Extra AP range beyond the current OS-to-primary-TS distance. |
 | `snapshot_timeout` | 1.0 | s, >0 | No | Maximum processed snapshot age. |
 | `max_request_position_delta` | 3.0 | m, >=0 | No | Maximum XY distance between request OS position and snapshot OS position; does not compare orientation. |
 | `heading_smoothing_alpha` | 1.0 / 0.5 | dimensionless, 0 < alpha <= 1 | No | Per-request heading blend; 1 preserves the raw VO output. |
 | `smooth_initial_heading` | false | boolean | No | Also blend the first output from measured course; at speed <=0.1m/s use snapshot yaw. |
+| `speed_tolerance` | 0.0 | m/s, >=0 | No | Half-width around measured OS speed; zero preserves single-speed behavior. |
+| `speed_sample_count` | 5 | integer, 2–101 | No | Uniform samples including both interval endpoints; also check measured speed if off-grid. |
 
 The physical OS radius has one configuration source: `ts_state_manager.os_radius`. Avoidance reads it from each `ProcessedTSList`; it has no separate physical-radius parameter. With both physical radii 5m, the shipped settings give a 30m threat domain and 15m avoidance collision radius.
 
-The point is `P = OS + (distance(OS, primary_TS) + point_extension_distance) * unit(safe_heading)`. The extension changes radial point range; the radius scale changes the preferred candidate collision constraint. Candidate checks cover constant-velocity motion for `t >= 0`. If no heading satisfies the configured scale (>1), the node logs a warning and repeats the same search against all targets at scale 1 (physical OS/TS radii). A successful fallback is hard-set without either initial or subsequent heading smoothing. Physical tangency/overlap or no feasible physical-radius heading still returns `INESCAPABLE`. Invalid/stale data and invalid requests do not enter this fallback. Dynamic settings are read together at each decision after parameter updates have been accepted; fallback does not modify the configured scale.
+The point is `P = OS + (distance(OS, primary_TS) + point_extension_distance) * unit(safe_heading)`. The extension changes radial point range; the radius scale changes the preferred candidate collision constraint. Candidate checks cover constant-velocity motion for `t >= 0`. With sampling disabled, if no heading satisfies the configured scale (>1), the node logs a warning and repeats the same search against all targets at scale 1 (physical OS/TS radii). Enabled sampling adds the eligibility check described below. A successful fallback is hard-set without either initial or subsequent heading smoothing. Physical tangency/overlap or no feasible physical-radius heading still returns `INESCAPABLE`. Invalid/stale data and invalid requests do not enter this fallback. Dynamic settings are read together at each decision after parameter updates have been accepted; fallback does not modify the configured scale.
 
-With experimental damping enabled on a normal (non-fallback) result, `heading_out = heading_previous + alpha * wrap(heading_raw - heading_previous)` (circular difference). AP range is unchanged; `safe_heading` then carries the smoothed output, whose intermediate direction may lie outside the instantaneous VO feasible set. Logs retain raw/output headings, effective scale, fallback flag and the instantaneous check result at that effective scale. A hard-set fallback becomes the reference for the next normal update. Filter history is cleared on no-threat/empty or invalid snapshots, snapshot expiry, and failed service requests, including no-threat intervals without service calls. The first normal output after a clear follows `smooth_initial_heading`. This is a single-node output filter, with no per-client or per-navigation-task history.
+With experimental damping enabled on a normal (non-fallback) result, `heading_out = heading_previous + alpha * wrap(heading_raw - heading_previous)` (circular difference). AP range is unchanged. When speed sampling is disabled, `safe_heading` carries the smoothed output, whose intermediate direction may lie outside the instantaneous VO feasible set. When sampling is enabled, a blend that fails any checked speed is replaced by the checked raw heading (`smoothing_limited=1`). Logs retain raw/output headings, effective scale, fallback flag and the instantaneous check result at that effective scale. A hard-set output becomes the reference for the next normal update. Filter history is cleared on no-threat/empty or invalid snapshots, snapshot expiry, and failed service requests, including no-threat intervals without service calls. The first normal output after a clear follows `smooth_initial_heading`. This is a single-node output filter, with no per-client or per-navigation-task history.
+
+**Finite speed sampling (opt-in):** with measured speed `v` and tolerance `d > 0`, all candidate headings use the same uniform grid of `speed_sample_count` speeds over `[max(0, v-d), v+d]`. The measured speed is always checked as well, so an even grid or a zero-clipped interval can require one additional check. With `d=0`, only the measured speed is checked. Every checked speed must pass against every snapshot target, using constant-speed prediction for `t >= 0`. This does not certify unsampled speeds, acceleration or the turning transient. The count is capped at 101 to bound per-request search work.
+
+If no common sampled-speed heading exists but the original measured-speed search still has an inflated-radius solution, the service returns `INESCAPABLE` with a **sampled-speed** explanation and retains the radius; sampling uncertainty alone does not trigger radius relaxation. Only when the measured-speed search also fails can the existing physical-radius retry run. That retry still checks the same speed samples and hard-sets a successful result. Invalid inputs never trigger either retry. A `NO_THREAT` early return still follows the manager's current-motion classification; prediction of safe resumption of the goal course is a separate enhancement.
+
+For an experiment, restart the node with:
+
+```yaml
+avoidance_point_node:
+  ros__parameters:
+    speed_tolerance: 0.3       # m/s; e.g. 3.0 gives [2.7, 3.3]
+    speed_sample_count: 5      # 2.7, 2.85, 3.0, 3.15, 3.3 in this example
+```
+
+`Heading update` logs include `speed_min`, `speed_max`, `speed_checks`, `sampled_safe` and `smoothing_limited`. The supplied YAML keeps tolerance zero; the positive-tolerance setting above is opt-in.
 
 #### `barrier_node`
 
