@@ -461,16 +461,32 @@ docking_server:
       simulation_step: 0.1
       dock_collision_threshold: 0.3
 
-# TS state sub-node owned by colregs_local_planner_server (Phase 2 port):
-# maintains the TS map, publishes /cpa_markers, and serves planning snapshots.
-colregs_ts_state:
+ts_state_manager:
   ros__parameters:
     update_frequency: 10.0
     track_list_timeout: 3.0
     threat_tcpa_horizon: 10.0
     threat_radius_scale: 1.1
     os_radius: 0.3
-    barrier_ray_length: 999.0
+    global_frame: "map"
+    robot_base_frame: "base_link"
+    odom_topic: "odom"
+
+# TS state sub-node: complete stamped inputs, CPA markers and explicit validity.
+colregs_ts_state:
+  ros__parameters:
+    update_frequency: 10.0
+    track_list_timeout: 3.0
+    own_ship_state_timeout: 1.0
+    transform_timeout: 0.2
+    threat_tcpa_horizon: 10.0
+    threat_radius_scale: 1.1
+    avoidance_radius_scale: 1.1
+    os_radius: 0.3
+    point_extension_distance: 1.0
+    lateral_margin: 0.3
+    closing_segment_length: 999.0
+    max_request_position_delta: 3.0
     global_frame: "map"
     robot_base_frame: "base_link"
     odom_topic: "odom"

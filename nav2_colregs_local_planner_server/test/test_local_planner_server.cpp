@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -50,24 +52,33 @@ public:
   {
     return ts_state_ros_->get_current_state();
   }
-  const nav2_colregs_ts_manager::TsCoreParams & tsCoreParams() const
+  nav2_colregs_ts_manager::TsCoreParams tsCoreParams() const
   {
     return ts_state_ros_->coreParams();
   }
   void setCurrent(bool current) {current_ = current;}
   void setRobotPoseAvailable(bool available) {robot_pose_available_ = available;}
   void setTransformAvailable(bool available) {transform_available_ = available;}
+  void changeResolutionAfterSnapshot() {change_resolution_after_snapshot_ = true;}
+  void setTsInputDelay(std::chrono::milliseconds delay) {ts_input_delay_ = delay;}
+  int tsInputCallCount() const {return ts_input_call_count_.load();}
+  void invalidateClockEpoch() {++clock_epoch_;}
+  void invalidateLifecycleGeneration() {++lifecycle_generation_;}
+  int tsValidationCallCount() const {return ts_validation_call_count_.load();}
+  void resetTsValidationCalls() {ts_validation_call_count_ = 0;}
+  void invalidateOnTsValidationCall(int call) {invalidate_on_validation_call_ = call;}
   void setInjectedTsInput(
     const nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput & input)
   {
     injected_ts_input_ = input;
     use_injected_ts_input_ = true;
   }
-  void blockNextTransform()
+  void blockNextTransform(int calls_to_skip = 0)
   {
     std::lock_guard<std::mutex> lock(transform_mutex_);
     block_transform_ = true;
     transform_entered_ = false;
+    transforms_to_skip_ = calls_to_skip;
   }
   bool waitForBlockedTransform()
   {
@@ -90,12 +101,42 @@ protected:
   bool isCostmapCurrent() const override {return current_;}
 
   nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput getTsPlanningInput(
-    double os_x, double os_y) override
+    double os_x, double os_y, std::chrono::steady_clock::time_point) override
   {
-    if (use_injected_ts_input_) {
-      return injected_ts_input_;
+    ++ts_input_call_count_;
+    if (change_resolution_after_snapshot_) {
+      std::lock_guard<nav2_costmap_2d::Costmap2D::mutex_t> lock(*costmap_->getMutex());
+      costmap_->resizeMap(20, 20, 0.5, costmap_->getOriginX(), costmap_->getOriginY());
+      change_resolution_after_snapshot_ = false;
     }
-    return ColregsLocalPlannerServer::getTsPlanningInput(os_x, os_y);
+    std::this_thread::sleep_for(ts_input_delay_);
+    // Geometry-only tests use an explicitly valid, fresh empty scene. Missing
+    // observations are tested separately and must never stand in for no threat.
+    nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput input;
+    input.ts.status = nav2_colregs_ts_manager::InputStatus::VALID;
+    input.ts.frame_id = "map";
+    input.ts.stamp = rclcpp::Time(100, 0);
+    input.os.x = os_x;
+    input.os.y = os_y;
+    input.os.vx = 1.0;
+    input.os.velocity_valid = true;
+    input.params = tsCoreParams();
+    if (use_injected_ts_input_) {
+      input = injected_ts_input_;
+    }
+    input.clock_epoch = clock_epoch_.load();
+    input.lifecycle_generation = lifecycle_generation_.load();
+    return input;
+  }
+
+  bool isTsPlanningInputCurrent(
+    const nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput & input) const override
+  {
+    if (++ts_validation_call_count_ == invalidate_on_validation_call_.load()) {
+      ++clock_epoch_;
+    }
+    return input.clock_epoch == clock_epoch_.load() &&
+           input.lifecycle_generation == lifecycle_generation_.load();
   }
 
   bool getRobotPose(geometry_msgs::msg::PoseStamped & pose) const override
@@ -120,7 +161,7 @@ protected:
     {
       std::unique_lock<std::mutex> lock(transform_mutex_);
       ++transform_call_count_;
-      if (block_transform_) {
+      if (block_transform_ && transforms_to_skip_-- == 0) {
         transform_entered_ = true;
         transform_condition_.notify_all();
         transform_condition_.wait(lock, [this]() {return !block_transform_;});
@@ -145,11 +186,19 @@ private:
   bool robot_pose_available_{true};
   bool transform_available_{true};
   bool use_injected_ts_input_{false};
+  bool change_resolution_after_snapshot_{false};
+  std::chrono::milliseconds ts_input_delay_{0};
+  std::atomic<int> ts_input_call_count_{0};
+  mutable std::atomic<uint64_t> clock_epoch_{1};
+  std::atomic<uint64_t> lifecycle_generation_{1};
+  mutable std::atomic<int> ts_validation_call_count_{0};
+  std::atomic<int> invalidate_on_validation_call_{0};
   nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput injected_ts_input_;
   mutable std::mutex transform_mutex_;
   mutable std::condition_variable transform_condition_;
   mutable bool block_transform_{false};
   mutable bool transform_entered_{false};
+  mutable int transforms_to_skip_{0};
   mutable int transform_call_count_{0};
 };
 
@@ -202,6 +251,36 @@ protected:
       std::this_thread::sleep_for(5ms);
     }
     return decision_markers_seen_;
+  }
+
+  bool waitForClearedDecisionMarkers()
+  {
+    const auto deadline = std::chrono::steady_clock::now() + 1s;
+    while (std::chrono::steady_clock::now() < deadline) {
+      rclcpp::spin_some(client_node_);
+      if (last_decision_markers_ && last_decision_markers_->markers.size() == 2u &&
+        std::all_of(
+          last_decision_markers_->markers.begin(), last_decision_markers_->markers.end(),
+          [](const auto & marker) {
+            return marker.action == visualization_msgs::msg::Marker::DELETE &&
+            marker.points.empty();
+          }))
+      {
+        return true;
+      }
+      std::this_thread::sleep_for(5ms);
+    }
+    return false;
+  }
+
+  bool waitForPublishedPlan()
+  {
+    const auto deadline = std::chrono::steady_clock::now() + 1s;
+    while (!published_plan_ && std::chrono::steady_clock::now() < deadline) {
+      rclcpp::spin_some(client_node_);
+      std::this_thread::sleep_for(5ms);
+    }
+    return published_plan_ != nullptr;
   }
 
   void TearDown() override
@@ -369,6 +448,29 @@ protected:
       return {};
     }
     return result_future.get();
+  }
+
+  ThroughPosesGoalHandle::SharedPtr sendThroughPosesGoal(const ActionThroughPoses::Goal & goal)
+  {
+    auto future = through_poses_client_->async_send_goal(goal);
+    const auto status = rclcpp::spin_until_future_complete(client_node_, future, 2s);
+    EXPECT_EQ(status, rclcpp::FutureReturnCode::SUCCESS);
+    if (status != rclcpp::FutureReturnCode::SUCCESS) {
+      return nullptr;
+    }
+    return future.get();
+  }
+
+  ThroughPosesGoalHandle::WrappedResult runThroughPosesResult(
+    const ThroughPosesGoalHandle::SharedPtr & handle)
+  {
+    auto future = through_poses_client_->async_get_result(handle);
+    const auto status = rclcpp::spin_until_future_complete(client_node_, future, 3s);
+    EXPECT_EQ(status, rclcpp::FutureReturnCode::SUCCESS);
+    if (status != rclcpp::FutureReturnCode::SUCCESS) {
+      return {};
+    }
+    return future.get();
   }
 
   std::shared_ptr<TestPlannerServer> server_;
@@ -690,6 +792,88 @@ TEST_F(LocalPlannerServerTest, invalidParametersFailConfigurationAtomically)
   EXPECT_EQ(server_->costmap(), nullptr);
 }
 
+TEST_F(LocalPlannerServerTest, parametersAreWritableOnlyWhileUnconfigured)
+{
+  const std::vector<rclcpp::Parameter> parameters = {
+    rclcpp::Parameter("action_server_result_timeout", 11.0),
+    rclcpp::Parameter("costmap_update_timeout", 1.1),
+    rclcpp::Parameter("max_planning_time", 1.0),
+    rclcpp::Parameter("step_size", 0.8),
+    rclcpp::Parameter("max_iterations", 1200),
+    rclcpp::Parameter("goal_bias", 0.2),
+    rclcpp::Parameter("goal_threshold", 0.4),
+    rclcpp::Parameter("safety_dist", 0.2),
+    rclcpp::Parameter("cost_weight", 1.2),
+    rclcpp::Parameter("max_optimize_iters", 100),
+    rclcpp::Parameter("eta", 1.2),
+    rclcpp::Parameter("random_seed", 24),
+    rclcpp::Parameter("prune_path", false),
+    rclcpp::Parameter("avoid_direction", "left")};
+  ASSERT_TRUE(server_->set_parameters_atomically(parameters).successful);
+  for (const auto & parameter : parameters) {
+    EXPECT_NE(
+      server_->describe_parameter(parameter.get_name()).description.find("UNCONFIGURED"),
+      std::string::npos);
+  }
+  configure();
+  for (const auto & parameter : parameters) {
+    const auto result = server_->set_parameter(parameter);
+    EXPECT_FALSE(result.successful) << parameter.get_name();
+    EXPECT_NE(result.reason.find("UNCONFIGURED"), std::string::npos);
+  }
+  ASSERT_EQ(server_->activate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE);
+  for (const auto & parameter : parameters) {
+    EXPECT_FALSE(server_->set_parameter(parameter).successful) << parameter.get_name();
+  }
+  const auto rejected = server_->set_parameters_atomically(
+    {
+      rclcpp::Parameter("step_size", 2.0), rclcpp::Parameter("random_seed", 99)});
+  EXPECT_FALSE(rejected.successful);
+  EXPECT_DOUBLE_EQ(server_->get_parameter("step_size").as_double(), 0.8);
+  EXPECT_EQ(server_->get_parameter("random_seed").as_int(), 24);
+  EXPECT_TRUE(server_->set_parameter(server_->get_parameter("use_sim_time")).successful);
+  ASSERT_EQ(server_->deactivate().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+  EXPECT_FALSE(server_->set_parameter(rclcpp::Parameter("step_size", 2.0)).successful);
+  ASSERT_EQ(server_->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
+  EXPECT_TRUE(server_->set_parameter(rclcpp::Parameter("step_size", 2.0)).successful);
+  configure();
+}
+
+TEST_F(LocalPlannerServerTest, interpolationUsesRequestSnapshotResolution)
+{
+  activate();
+  ASSERT_DOUBLE_EQ(server_->costmap()->getResolution(), 0.1);
+  server_->changeResolutionAfterSnapshot();
+  const auto goal = makeGoal();
+  const auto result = runGoal(goal);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_NE(result.result, nullptr);
+  EXPECT_DOUBLE_EQ(server_->costmap()->getResolution(), 0.5);
+  const auto & path = result.result->path.poses;
+  ASSERT_GT(path.size(), 2u);
+  EXPECT_EQ(path.front().pose, goal.start.pose);
+  EXPECT_EQ(path.back().pose, goal.goal.pose);
+  for (size_t index = 1; index < path.size(); ++index) {
+    EXPECT_LE(
+      std::hypot(
+        path[index].pose.position.x - path[index - 1].pose.position.x,
+        path[index].pose.position.y - path[index - 1].pose.position.y), 0.101);
+  }
+}
+
+TEST_F(LocalPlannerServerTest, snapshotAcquisitionConsumesBothActionsPlanningBudget)
+{
+  server_->set_parameter(rclcpp::Parameter("max_planning_time", 0.02));
+  activate();
+  server_->setTsInputDelay(50ms);
+  expectError(makeGoal());
+  ASSERT_TRUE(through_poses_client_->wait_for_action_server(2s));
+  const auto result = runThroughPosesGoal(makeThroughPosesGoal({{4.0, 1.0}, {8.0, 3.0}}));
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::ABORTED);
+  ASSERT_NE(result.result, nullptr);
+  EXPECT_TRUE(result.result->path.poses.empty());
+}
+
 TEST_F(LocalPlannerServerTest, nonMapCostmapFrameFailsConfiguration)
 {
   rclcpp::NodeOptions options;
@@ -708,6 +892,8 @@ nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput headOnThreatInput(
   bool velocity_valid = true, double ts_x = 5.0)
 {
   nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput input;
+  input.ts.status = nav2_colregs_ts_manager::InputStatus::VALID;
+  input.ts.frame_id = "map";
   input.ts.stamp = rclcpp::Time(100, 0);
   nav2_colregs_ts_manager::RawTsEntry entry;
   entry.target_id = "head-on";
@@ -746,7 +932,7 @@ TEST_F(LocalPlannerServerTest, activeThreatProducesTwoSegmentPathThroughAvoidanc
   // Reproduce the server-side pure evaluation and verify the path passes
   // exactly through the avoidance point (raw nodes, pruning disabled).
   const auto input = headOnThreatInput();
-  const auto & params = server_->tsCoreParams();
+  const auto & params = input.params;
   const auto snapshot = processTs(input.ts, input.os, params);
   const auto decision = evaluateColregs(
     snapshot, input.os, goal.goal.pose.position.x, goal.goal.pose.position.y,
@@ -777,7 +963,7 @@ TEST_F(LocalPlannerServerTest, activeThreatPublishesDecisionMarkers)
   // Mirror the server-side evaluation and require the arrow endpoint and the
   // barrier polyline to come from the same decision frame.
   const auto input = headOnThreatInput();
-  const auto & params = server_->tsCoreParams();
+  const auto & params = input.params;
   const auto snapshot = processTs(input.ts, input.os, params);
   const auto decision = evaluateColregs(
     snapshot, input.os, goal.goal.pose.position.x, goal.goal.pose.position.y,
@@ -811,13 +997,13 @@ TEST_F(LocalPlannerServerTest, activeThreatPublishesDecisionMarkers)
   EXPECT_TRUE(barrier_checked);
 }
 
-TEST_F(LocalPlannerServerTest, inactiveThreatClearsDecisionMarkers)
+TEST_F(LocalPlannerServerTest, inescapableThreatClearsDecisionMarkers)
 {
   activate();
   server_->setInjectedTsInput(headOnThreatInput(true, 1.2));  // inescapable cone
 
   const auto result = runGoal(makeGoal());
-  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::ABORTED);
   ASSERT_TRUE(waitForDecisionMarkers());
 
   const auto & markers = last_decision_markers_->markers;
@@ -828,33 +1014,202 @@ TEST_F(LocalPlannerServerTest, inactiveThreatClearsDecisionMarkers)
   }
 }
 
-TEST_F(LocalPlannerServerTest, inescapableThreatFallsBackToDirectPath)
+TEST_F(LocalPlannerServerTest, inescapableThreatRejectsPlanning)
 {
   activate();
   // Distance 0.2 <= os_radius + ts_radius = 0.6 → inescapable cone [[0, 2π]].
   server_->setInjectedTsInput(headOnThreatInput(true, 1.2));
 
-  const auto goal = makeGoal();
-  const auto result = runGoal(goal);
-  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  const auto result = runGoal(makeGoal());
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::ABORTED);
   ASSERT_NE(result.result, nullptr);
-  ASSERT_GT(result.result->path.poses.size(), 1u);
-  EXPECT_EQ(result.result->path.poses.front().pose, goal.start.pose);
-  EXPECT_EQ(result.result->path.poses.back().pose, goal.goal.pose);
+  EXPECT_TRUE(result.result->path.poses.empty());
 }
 
-TEST_F(LocalPlannerServerTest, invalidOsVelocityFallsBackToDirectPath)
+TEST_F(LocalPlannerServerTest, invalidOsVelocityRejectsPlanning)
 {
   activate();
   server_->setInjectedTsInput(headOnThreatInput(false));
 
-  const auto goal = makeGoal();
-  const auto result = runGoal(goal);
-  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  const auto result = runGoal(makeGoal());
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::ABORTED);
   ASSERT_NE(result.result, nullptr);
-  ASSERT_GT(result.result->path.poses.size(), 1u);
-  EXPECT_EQ(result.result->path.poses.front().pose, goal.start.pose);
-  EXPECT_EQ(result.result->path.poses.back().pose, goal.goal.pose);
+  EXPECT_TRUE(result.result->path.poses.empty());
+}
+
+TEST_F(LocalPlannerServerTest, unusableSnapshotsAbortBothActionsAndClearMarkers)
+{
+  activate();
+  ASSERT_TRUE(through_poses_client_->wait_for_action_server(2s));
+  using nav2_colregs_ts_manager::InputStatus;
+  for (const auto status : {
+      InputStatus::NO_DATA, InputStatus::STALE_STATE,
+      InputStatus::INVALID_STATE, InputStatus::INVALID_REQUEST})
+  {
+    nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput input;
+    input.ts.status = status;
+    input.ts.reason = "injected unavailable observation";
+    server_->setInjectedTsInput(input);
+    decision_markers_seen_ = false;
+    const auto result = runGoal(makeGoal());
+    ASSERT_EQ(result.code, rclcpp_action::ResultCode::ABORTED);
+    ASSERT_NE(result.result, nullptr);
+    EXPECT_TRUE(result.result->path.poses.empty());
+    ASSERT_TRUE(waitForDecisionMarkers());
+    ASSERT_EQ(last_decision_markers_->markers.size(), 2u);
+    for (const auto & marker : last_decision_markers_->markers) {
+      EXPECT_EQ(marker.action, visualization_msgs::msg::Marker::DELETE);
+      EXPECT_TRUE(marker.points.empty());
+    }
+    const auto through_result = runThroughPosesGoal(
+      makeThroughPosesGoal({{4.0, 1.0}, {8.0, 3.0}}));
+    ASSERT_EQ(through_result.code, rclcpp_action::ResultCode::ABORTED);
+    ASSERT_NE(through_result.result, nullptr);
+    EXPECT_TRUE(through_result.result->path.poses.empty());
+  }
+}
+
+TEST_F(LocalPlannerServerTest, freshEmptySnapshotPermitsPlainPlanningAndClearsMarkers)
+{
+  activate();
+  auto input = headOnThreatInput();
+  input.ts.ships.clear();
+  server_->setInjectedTsInput(input);
+  const auto result = runGoal(makeGoal());
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_TRUE(waitForDecisionMarkers());
+  ASSERT_EQ(last_decision_markers_->markers.size(), 2u);
+  for (const auto & marker : last_decision_markers_->markers) {
+    EXPECT_EQ(marker.action, visualization_msgs::msg::Marker::DELETE);
+    EXPECT_TRUE(marker.points.empty());
+  }
+}
+
+TEST_F(LocalPlannerServerTest, expiredObservationIsNotAnEmptyScene)
+{
+  activate();
+  auto input = headOnThreatInput();
+  input.ts.ships.front().last_seen = rclcpp::Time(0, 0);
+  server_->setInjectedTsInput(input);
+  expectError(makeGoal());
+}
+
+TEST_F(LocalPlannerServerTest, decisionUsesCoreParametersCapturedInPlanningInput)
+{
+  activate();
+  auto input = headOnThreatInput();
+  ASSERT_GT(server_->tsCoreParams().threat_tcpa_horizon, 2.0);
+  // TCPA is two seconds. The snapshot's shorter horizon excludes this threat,
+  // whereas re-reading the live provider parameters would produce avoidance.
+  input.params.threat_tcpa_horizon = 0.1;
+  server_->setInjectedTsInput(input);
+  EXPECT_EQ(runGoal(makeGoal()).code, rclcpp_action::ResultCode::SUCCEEDED);
+  EXPECT_TRUE(waitForClearedDecisionMarkers());
+}
+
+TEST_F(LocalPlannerServerTest, clockEpochChangeAfterSnapshotAbortsWithoutRestarting)
+{
+  activate();
+  server_->blockNextTransform(1);  // Block goal TF after the request snapshot was copied.
+  const auto handle = sendGoal(makeGoal());
+  EXPECT_NE(handle, nullptr);
+  EXPECT_TRUE(server_->waitForBlockedTransform());
+  server_->invalidateClockEpoch();
+  server_->releaseTransform();
+  ASSERT_NE(handle, nullptr);
+  const auto result = runResult(handle);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::ABORTED);
+  ASSERT_NE(result.result, nullptr);
+  EXPECT_TRUE(result.result->path.poses.empty());
+  EXPECT_EQ(server_->tsInputCallCount(), 1);
+  EXPECT_TRUE(waitForClearedDecisionMarkers());
+  EXPECT_EQ(published_plan_, nullptr);
+}
+
+TEST_F(LocalPlannerServerTest, clockEpochChangeStopsRrtAsInvalidInputRatherThanRetrying)
+{
+  server_->set_parameter(rclcpp::Parameter("max_iterations", 1000000));
+  server_->set_parameter(rclcpp::Parameter("max_planning_time", 5.0));
+  activate();
+  addSolidWall();
+  const auto handle = sendGoal(makeGoal());
+  ASSERT_NE(handle, nullptr);
+  ASSERT_TRUE(waitForDecisionMarkers());  // Decision completed; RRT is searching the blocked map.
+  server_->invalidateClockEpoch();
+  const auto result = runResult(handle);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::ABORTED);
+  ASSERT_NE(result.result, nullptr);
+  EXPECT_TRUE(result.result->path.poses.empty());
+  EXPECT_EQ(server_->tsInputCallCount(), 1);
+  EXPECT_TRUE(waitForClearedDecisionMarkers());
+  EXPECT_EQ(published_plan_, nullptr);
+}
+
+TEST_F(LocalPlannerServerTest, lifecycleGenerationChangeInvalidatesThroughPosesPreview)
+{
+  activate();
+  ASSERT_TRUE(through_poses_client_->wait_for_action_server(2s));
+  server_->setInjectedTsInput(headOnThreatInput());
+  server_->blockNextTransform(2);  // Start and first goal TF complete; block preview goal TF.
+  const auto handle = sendThroughPosesGoal(makeThroughPosesGoal({{4.0, 1.0}, {8.0, 3.0}}));
+  EXPECT_NE(handle, nullptr);
+  EXPECT_TRUE(server_->waitForBlockedTransform());
+  server_->invalidateLifecycleGeneration();
+  server_->releaseTransform();
+  ASSERT_NE(handle, nullptr);
+  const auto result = runThroughPosesResult(handle);
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::ABORTED);
+  ASSERT_NE(result.result, nullptr);
+  EXPECT_TRUE(result.result->path.poses.empty());
+  EXPECT_EQ(server_->tsInputCallCount(), 1);
+  EXPECT_TRUE(waitForClearedDecisionMarkers());
+  EXPECT_EQ(published_plan_, nullptr);
+}
+
+TEST_F(LocalPlannerServerTest, bothActionsRevalidateEpochAtThePublicationBoundary)
+{
+  activate();
+  ASSERT_TRUE(through_poses_client_->wait_for_action_server(2s));
+  for (const bool through_poses : {false, true}) {
+    const auto run = [&]() {
+        return through_poses ?
+               runThroughPosesGoal(makeThroughPosesGoal({{4.0, 1.0}, {8.0, 3.0}})).code :
+               runGoal(makeGoal()).code;
+      };
+    server_->invalidateOnTsValidationCall(0);
+    server_->resetTsValidationCalls();
+    EXPECT_EQ(run(), rclcpp_action::ResultCode::SUCCEEDED);
+    ASSERT_TRUE(waitForPublishedPlan());
+    // RRT is deterministic for this unchanged request and seed. Learn its last
+    // validation call instead of hard-coding an implementation-specific count.
+    const int final_check = server_->tsValidationCallCount();
+    ASSERT_GT(final_check, 0);
+    published_plan_.reset();
+    last_decision_markers_.reset();
+    server_->resetTsValidationCalls();
+    server_->invalidateOnTsValidationCall(final_check);
+    const int snapshots_before = server_->tsInputCallCount();
+    EXPECT_EQ(run(), rclcpp_action::ResultCode::ABORTED);
+    EXPECT_EQ(server_->tsInputCallCount(), snapshots_before + 1);
+    EXPECT_EQ(server_->tsValidationCallCount(), final_check);
+    EXPECT_TRUE(waitForClearedDecisionMarkers());
+    EXPECT_EQ(published_plan_, nullptr);
+  }
+}
+
+TEST_F(LocalPlannerServerTest, nonFiniteThreatNeverPublishesMarkerGeometry)
+{
+  activate();
+  auto input = headOnThreatInput();
+  input.ts.ships.front().x = std::numeric_limits<double>::quiet_NaN();
+  server_->setInjectedTsInput(input);
+  expectError(makeGoal());
+  ASSERT_TRUE(waitForDecisionMarkers());
+  ASSERT_EQ(last_decision_markers_->markers.size(), 2u);
+  for (const auto & marker : last_decision_markers_->markers) {
+    EXPECT_EQ(marker.action, visualization_msgs::msg::Marker::DELETE);
+    EXPECT_TRUE(marker.points.empty());
+  }
 }
 
 TEST_F(LocalPlannerServerTest, invalidAvoidDirectionFailsConfiguration)
@@ -892,6 +1247,9 @@ TEST_F(LocalPlannerServerTest, throughPosesSingleGoalReachesGoal)
 TEST_F(LocalPlannerServerTest, throughPosesAppliesColregsOnlyToFirstSegment)
 {
   server_->set_parameter(rclcpp::Parameter("prune_path", false));
+  server_->set_parameter(rclcpp::Parameter("goal_bias", 1.0));
+  server_->set_parameter(rclcpp::Parameter("step_size", 10.0));
+  server_->set_parameter(rclcpp::Parameter("max_optimize_iters", 0));
   activate();
   ASSERT_TRUE(through_poses_client_->wait_for_action_server(2s));
   server_->setInjectedTsInput(headOnThreatInput());
@@ -901,6 +1259,7 @@ TEST_F(LocalPlannerServerTest, throughPosesAppliesColregsOnlyToFirstSegment)
   const auto goal = makeThroughPosesGoal({{4.0, 1.0}, {8.0, 3.0}});
   const auto result = runThroughPosesGoal(goal);
   ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  EXPECT_EQ(server_->tsInputCallCount(), 1);
   ASSERT_NE(result.result, nullptr);
   const auto & path = result.result->path.poses;
   ASSERT_GT(path.size(), 2u);
@@ -910,7 +1269,7 @@ TEST_F(LocalPlannerServerTest, throughPosesAppliesColregsOnlyToFirstSegment)
   // The first segment is the active two-segment VO-RRT plan: the path must
   // pass exactly through its avoidance point.
   const auto input = headOnThreatInput();
-  const auto & params = server_->tsCoreParams();
+  const auto & params = input.params;
   const auto snapshot = processTs(input.ts, input.os, params);
   const auto decision = evaluateColregs(
     snapshot, input.os, goal.goals[0].pose.position.x,
@@ -926,6 +1285,21 @@ TEST_F(LocalPlannerServerTest, throughPosesAppliesColregsOnlyToFirstSegment)
     }
   }
   EXPECT_TRUE(found_avoidance_point);
+  // With goal-only sampling the preview is the direct segment (4,1)->(8,3),
+  // crossing the first decision's vertical barrier at (5,1.5). Retaining that
+  // barrier or re-evaluating COLREGS for this segment cannot produce this leg.
+  bool in_preview = false;
+  for (const auto & pose : path) {
+    if (std::abs(pose.pose.position.x - 4.0) < 1e-9 &&
+      std::abs(pose.pose.position.y - 1.0) < 1e-9)
+    {
+      in_preview = true;
+    }
+    if (in_preview) {
+      EXPECT_NEAR(pose.pose.position.y - 1.0, 0.5 * (pose.pose.position.x - 4.0), 1e-9);
+    }
+  }
+  EXPECT_TRUE(in_preview);
 }
 
 TEST_F(LocalPlannerServerTest, throughPosesPassesExactlyThroughViapoints)

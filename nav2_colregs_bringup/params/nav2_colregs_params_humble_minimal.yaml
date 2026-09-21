@@ -182,12 +182,18 @@ colregs_costmap:
 
 colregs_ts_state:
   ros__parameters:
-    frequency: 10.0
-    ts_timeout: 3.0
-    tcpa_horizon: 20.0
-    safety_factor: 1.5
+    update_frequency: 10.0
+    track_list_timeout: 1.0
+    own_ship_state_timeout: 1.0
+    transform_timeout: 0.2
+    threat_tcpa_horizon: 40.0
+    threat_radius_scale: 3.0
+    avoidance_radius_scale: 1.5
     os_radius: 5.0
-    barrier_ray_length: 999.0
+    point_extension_distance: 20.0
+    lateral_margin: 0.3
+    closing_segment_length: 999.0
+    max_request_position_delta: 3.0
     global_frame: "map"
     robot_base_frame: "base_link"
     odom_topic: "odom"

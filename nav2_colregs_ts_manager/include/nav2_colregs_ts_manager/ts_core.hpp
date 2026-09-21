@@ -24,7 +24,17 @@
 namespace nav2_colregs_ts_manager
 {
 
-/// Raw target-ship observation copied under the state mutex (map frame).
+enum class InputStatus {VALID, NO_DATA, STALE_STATE, INVALID_STATE, INVALID_REQUEST};
+enum class DecisionStatus
+{
+  SUCCESS, NO_THREAT, NO_DATA, STALE_STATE, INVALID_STATE, INVALID_REQUEST, INESCAPABLE
+};
+
+const char * inputStatusName(InputStatus status);
+const char * decisionStatusName(DecisionStatus status);
+
+/// Target state transformed/projected to the snapshot calculation time (map).
+/// last_seen retains the original measurement time for freshness validation.
 struct RawTsEntry
 {
   std::string target_id;
@@ -33,14 +43,17 @@ struct RawTsEntry
   double radius{0.0};
   double vx{0.0};
   double vy{0.0};
-  rclcpp::Time last_seen;
+  rclcpp::Time last_seen{0, 0, RCL_ROS_TIME};
 };
 
-/// Raw snapshot: observation entries without any derived computation.
+/// Complete input aligned at stamp, before CPA/threat derivation.
 struct RawTsSnapshot
 {
-  rclcpp::Time stamp;
+  rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
   std::vector<RawTsEntry> ships;
+  InputStatus status{InputStatus::NO_DATA};
+  std::string reason;
+  std::string frame_id;
 };
 
 /// Processed target-ship state (result of processTs).
@@ -62,13 +75,15 @@ struct TsState
 /// Processed snapshot: timeout-filtered entries with CPA and collision cone.
 struct TsSnapshot
 {
-  rclcpp::Time stamp;
+  rclcpp::Time stamp{0, 0, RCL_ROS_TIME};
   std::vector<TsState> ships;
+  InputStatus status{InputStatus::NO_DATA};
+  std::string reason;
+  std::string frame_id;
 };
 
-/// Own-ship state. Position comes from the planning start; velocity is the
-/// odometry body twist rotated into the map frame (velocity_valid=false when
-/// the rotation was not possible, in which case vx/vy are zero).
+/// Own-ship state anchored at the live planning start, with velocity transformed
+/// from the odometry child frame at its measurement time into the global frame.
 struct OsState
 {
   double x{0.0};
@@ -81,33 +96,39 @@ struct OsState
 /// Parameters shared by the pure TS computations.
 struct TsCoreParams
 {
-  double ts_timeout{3.0};
-  double tcpa_horizon{10.0};
-  double safety_factor{1.1};
+  double track_list_timeout{3.0};
+  double threat_tcpa_horizon{10.0};
+  double threat_radius_scale{1.1};
+  double avoidance_radius_scale{1.1};
   double os_radius{0.3};
-  double barrier_ray_length{999.0};
+  double point_extension_distance{1.0};
+  double lateral_margin{0.3};
+  double closing_segment_length{999.0};
 };
+
+bool validateCoreParams(const TsCoreParams & params, std::string & reason);
 
 /// COLREGS decision produced by evaluateColregs. When active, barrier_points
 /// holds six points forming three consecutive line segments.
 struct ColregsDecision
 {
   bool active{false};
+  DecisionStatus status{DecisionStatus::NO_DATA};
+  std::string reason;
   TsState primary;
   double safe_heading{0.0};
-  geometry_msgs::msg::Point avoidance_point;
+  geometry_msgs::msg::Point avoidance_point{};
   std::vector<geometry_msgs::msg::Point> barrier_points;
 };
 
-/// Compute the processed snapshot: filter entries older than ts_timeout
-/// relative to the snapshot stamp, then compute TCPA/DCPA, threat flag and
-/// collision cone per entry. Pure function, no locks, no ROS calls.
+/// Validate the complete snapshot, then compute CPA and threat flags. Invalid or
+/// stale observations invalidate the input instead of becoming an empty scene.
 TsSnapshot processTs(
   const RawTsSnapshot & raw, const OsState & os, const TsCoreParams & params);
 
 /// Evaluate the COLREGS decision for one planning request: primary threat
-/// selection (minimum TCPA among threats), safe heading from the collision
-/// cone complement, avoidance point and barrier lines. Pure function.
+/// selection, all-target analytic candidate checks, avoidance point and barrier
+/// lines. Only explicit NO_THREAT permits ordinary planning. Pure function.
 ColregsDecision evaluateColregs(
   const TsSnapshot & snapshot, const OsState & os,
   double goal_x, double goal_y,

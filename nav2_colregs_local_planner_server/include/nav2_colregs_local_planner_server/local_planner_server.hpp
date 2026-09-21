@@ -15,6 +15,7 @@
 #ifndef NAV2_COLREGS_LOCAL_PLANNER_SERVER__LOCAL_PLANNER_SERVER_HPP_
 #define NAV2_COLREGS_LOCAL_PLANNER_SERVER__LOCAL_PLANNER_SERVER_HPP_
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -62,7 +63,9 @@ protected:
     const geometry_msgs::msg::PoseStamped & input,
     geometry_msgs::msg::PoseStamped & output) const;
   virtual nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput getTsPlanningInput(
-    double os_x, double os_y);
+    double os_x, double os_y, std::chrono::steady_clock::time_point deadline);
+  virtual bool isTsPlanningInputCurrent(
+    const nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput & input) const;
 
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
   nav2_costmap_2d::Costmap2D * costmap_{nullptr};
@@ -83,7 +86,9 @@ private:
   // a plain barrier-free RRT* segment: COLREGS semantics (collision cone and
   // safe heading derive from the OS velocity at the snapshot anchor) are only
   // physically meaningful for the first segment; later segments are previews
-  // that get re-planned as the OS advances.
+  // that get re-planned as the OS advances. All segments use ts_input.params
+  // and input_valid; the latter latches request invalidation and clears markers
+  // even when the current segment is a preview.
   struct SegmentPlan
   {
     PlanStatus status{PlanStatus::SUCCESS};
@@ -100,6 +105,7 @@ private:
     const nav2_costmap_2d::Costmap2D & snapshot,
     const nav2_colregs_ts_manager::ColregsTsStateROS::PlanningInput & ts_input,
     const std::function<bool()> & interrupted,
+    const std::function<bool()> & input_valid,
     const std::chrono::steady_clock::time_point & deadline,
     bool apply_colregs,
     bool publish_markers);
@@ -115,8 +121,10 @@ private:
   nav_msgs::msg::Path makePath(
     const std::vector<RRTStarNode> & nodes,
     const geometry_msgs::msg::PoseStamped & start,
-    const geometry_msgs::msg::PoseStamped & goal);
+    const geometry_msgs::msg::PoseStamped & goal,
+    double resolution);
 
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
   std::unique_ptr<nav2_util::NodeThread> costmap_thread_;
   std::unique_ptr<nav2_util::NodeThread> ts_thread_;
   std::unique_ptr<ActionServer> action_server_;

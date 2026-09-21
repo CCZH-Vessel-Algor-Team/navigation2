@@ -15,10 +15,12 @@
 #ifndef NAV2_COLREGS_TS_MANAGER__COLREGS_TS_STATE_ROS_HPP_
 #define NAV2_COLREGS_TS_MANAGER__COLREGS_TS_STATE_ROS_HPP_
 
+#include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
-#include <unordered_map>
 
 #include "nav2_colregs_msgs/msg/tracked_ship_list.hpp"
 #include "nav2_colregs_ts_manager/ts_core.hpp"
@@ -34,7 +36,7 @@ namespace nav2_colregs_ts_manager
 {
 
 /// Lifecycle sub-node owned by the COLREGS local planner server. It maintains
-/// the raw target-ship state (tracked-ship subscription + timeout eviction),
+/// complete stamped target-ship and odometry observations,
 /// publishes CPA markers and serves consistent planning snapshots through
 /// getPlanningInput. Orchestration mirrors the server-owned costmap child.
 class ColregsTsStateROS : public nav2_util::LifecycleNode
@@ -44,21 +46,32 @@ public:
   {
     RawTsSnapshot ts;
     OsState os;
+    std::uint64_t lifecycle_generation{0};
+    std::uint64_t clock_epoch{0};
+    TsCoreParams params{};
   };
 
   ColregsTsStateROS(
     const std::string & name, const std::string & parent_namespace,
     const bool & use_sim_time);
 
-  /// Single-lock consistent snapshot for one planning request. OS position
-  /// comes from the planning start; velocity is the cached odometry body
-  /// twist rotated into the global frame (velocity_valid=false on failure).
-  PlanningInput getPlanningInput(double os_x, double os_y);
+  /// Single-lock observation copy, followed by lock-free TF and extrapolation.
+  /// The request start anchors OS only when close to the current live pose.
+  /// Callers must inspect ts.status before using either part of the input.
+  /// TF waiting shares one steady-wall budget, capped by the caller deadline.
+  PlanningInput getPlanningInput(
+    double os_x, double os_y,
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max());
+
+  /// Check lifecycle/clock provenance, independently of ts.status/freshness.
+  /// The server must recheck during planning and before committing a result.
+  bool isPlanningInputCurrent(const PlanningInput & input) const;
 
   /// CPA/cone/barrier parameters owned by this sub-node; the hosting server
-  /// uses them for the pure processTs/evaluateColregs evaluation.
-  const TsCoreParams & coreParams() const
+  /// can obtain a thread-safe copy. Planning uses the copy in PlanningInput.
+  TsCoreParams coreParams() const
   {
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return core_params_;
   }
 
@@ -75,16 +88,59 @@ protected:
 private:
   bool loadAndValidateParameters();
   void trackedShipCallback(
-    nav2_colregs_msgs::msg::TrackedShipList::ConstSharedPtr msg);
-  void odomCallback(nav_msgs::msg::Odometry::ConstSharedPtr msg);
-  void timerCallback();
+    nav2_colregs_msgs::msg::TrackedShipList::ConstSharedPtr msg, uint64_t generation);
+  void odomCallback(nav_msgs::msg::Odometry::ConstSharedPtr msg, uint64_t generation);
+  void timerCallback(uint64_t generation);
 
-  bool getOsPoseAndVelocity(
-    double & os_x, double & os_y, double & os_vx, double & os_vy);
+  struct TfResources
+  {
+    // Keep listener and buffer alive together for lock-free snapshot users.
+    std::shared_ptr<tf2_ros::Buffer> buffer;
+    std::shared_ptr<tf2_ros::TransformListener> listener;
+  };
+
+  struct ObservationTimes
+  {
+    rclcpp::Time receipt{0, 0, RCL_ROS_TIME};
+    int64_t newest_stamp{-1};
+    // Receipt admission only: VALID includes bounded-ahead pending data.
+    // A query must still check measurement AND receipt age at calculation time.
+    InputStatus status{InputStatus::NO_DATA};
+    std::string reason;
+  };
+
+  struct Configuration
+  {
+    TsCoreParams core;
+    std::chrono::nanoseconds timer_period{100000000};
+    std::chrono::steady_clock::duration transform_timeout{std::chrono::milliseconds(200)};
+    double own_ship_state_timeout{1.0};
+    double max_request_position_delta{3.0};
+    std::string global_frame{"map"};
+    std::string robot_base_frame{"base_link"};
+    std::string odom_topic{"odom"};
+    std::string tracked_ship_topic{"/tracked_ship"};
+  };
+
+  PlanningInput collectInput(
+    bool request_anchor, double os_x, double os_y,
+    std::chrono::steady_clock::time_point deadline);
+  void clearObservationsLocked();
+  void recordReceiptLocked(
+    const builtin_interfaces::msg::Time & stamp, const rclcpp::Time & receipt,
+    double timeout, ObservationTimes & times);
 
   mutable std::mutex state_mutex_;
-  std::unordered_map<std::string, RawTsEntry> ts_map_;
+  nav2_colregs_msgs::msg::TrackedShipList::ConstSharedPtr last_tracks_;
   nav_msgs::msg::Odometry::ConstSharedPtr last_odom_;
+  ObservationTimes track_times_;
+  ObservationTimes odom_times_;
+  Configuration config_;
+  bool configured_{false};
+  bool accepting_inputs_{false};
+  bool active_{false};
+  uint64_t generation_{0};
+  std::atomic<uint64_t> clock_epoch_{0};
 
   rclcpp::Subscription<nav2_colregs_msgs::msg::TrackedShipList>::SharedPtr ts_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
@@ -92,15 +148,11 @@ private:
   rclcpp_lifecycle::LifecyclePublisher<visualization_msgs::msg::MarkerArray>::SharedPtr
     cpa_markers_pub_;
 
-  std::shared_ptr<tf2_ros::Buffer> tf_;
-  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  std::shared_ptr<TfResources> tf_resources_;
 
-  double frequency_{10.0};
-  std::string global_frame_{"map"};
-  std::string robot_base_frame_{"base_link"};
-  std::string odom_topic_{"odom"};
-  std::string tracked_ship_topic_{"/tracked_ship"};
   TsCoreParams core_params_{};
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
+  rclcpp::JumpHandler::SharedPtr clock_jump_handler_;
 };
 
 }  // namespace nav2_colregs_ts_manager
