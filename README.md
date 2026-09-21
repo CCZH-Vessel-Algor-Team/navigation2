@@ -2,7 +2,80 @@
 
 This repository extends the official [navigation2](https://github.com/ros-navigation/navigation2) `humble` branch with experimental COLREGS-oriented maritime navigation capabilities: velocity-obstacle RRT* planning, persistent skeleton-based replanning, target-ship state management, and LOS/ALOS guidance controllers.
 
+The `feat/rrt-star-local-planner-server-humble` branch is based on `feat/colregs-humble-night` and adds the in-process COLREGS Local Planner Server described below. This delivery targets **ROS 2 Humble only**.
+
 For upstream Nav2 documentation, see [docs.nav2.org](https://docs.nav2.org/). This README covers only the packages added in this fork.
+
+## COLREGS Local Planner Server
+
+`nav2_colregs_local_planner_server` provides a lifecycle-managed planning entrypoint with in-process TS state, VO decisions and RRT* search. It replaces the standard `planner_server` plus planner plugin for this configuration.
+
+### Interfaces and planning contract
+
+- Standard Nav2 actions: `ComputePathToPose` on `compute_path_to_pose` and `ComputePathThroughPoses` on `compute_path_through_poses`; `planner_id` must be empty or `RRTStar`. Successful paths publish on `plan`. All names are relative to the Server namespace.
+- The Server owns `colregs_costmap` and the `colregs_ts_state` lifecycle child, configuring/activating costmap before TS. Both use `global_frame: map`; the supplied costmap configuration uses Static, Obstacle, TSProjection and Inflation layers.
+- Each request uses one costmap snapshot and one TS/parameter snapshot. The TS child atomically copies the complete tracked list, odometry and their receipt times under one lock. A fresh empty list means no targets only when the remaining input contract is valid.
+- Only explicit `NO_THREAT` permits ordinary planning for the first segment. `SUCCESS` selects VO two-leg planning; `NO_DATA`, `STALE_STATE`, `INVALID_STATE`, `INVALID_REQUEST` and `INESCAPABLE` fail closed and clear decision markers. These are internal decision statuses, not additional action interfaces.
+- **ComputePathThroughPoses:** only segment zero evaluates COLREGS. Later segments are barrier-free, costmap-constrained RRT* previews; replanning re-anchors the decision as the own ship advances. Segments share the snapshots and planning deadline, start at the previous segment's endpoint and omit duplicate junction poses. Empty goals abort; requested start and final goal are preserved.
+- Under `SUCCESS`, **start → avoidance point (AP)** is a deterministic open-water VO leg without costmap or barrier collision checks along that leg. Generic start/goal validation remains. **AP → segment goal** uses costmap- and barrier-constrained RRT*; an occupied/out-of-map AP can therefore fail planning.
+- Candidate headings are checked against every snapshot target using the configured inflated physical radii; the primary threat determines AP range and the three barrier segments. `avoid_direction` defaults to `right` (starboard).
+- `colregs_decision_markers` displays the first-segment AP/barriers; `colregs_ts_state` publishes `cpa_markers` diagnostics. The Server consumes neither standalone `/processed_ts_list` nor the avoidance/barrier services.
+
+### Input timing, lifecycle and search
+
+TS positions/velocities use the list frame and exact measurement-time TF; OS velocity uses the odometry child frame at its measurement time. Velocities are not rotated by target heading. Live OS pose uses latest TF with a dynamic-transform age check; state is extrapolated once to a common calculation time, with the request start checked against the live OS anchor.
+
+Both measurement and receipt ages must be fresh. Missing, stale, malformed or untransformable input invalidates the complete snapshot. Bounded future measurements can await clock catch-up but are unusable before it. Clock rollback/source changes and cleanup invalidate input tokens, checked during planning and again before committing success.
+
+`transform_timeout` is **one shared steady-clock wait budget** for OS, TS and live-base TF queries, capped by the planning deadline; the diagnostic timer does not wait. Paused simulation time cannot indefinitely extend these TF waits.
+
+`max_planning_time` is shared by TS collection and all search segments. It begins **after** costmap readiness, initial start-pose transformation and costmap copying; costmap readiness has its own `costmap_update_timeout`. It is not a hard end-to-end action latency guarantee.
+
+Server algorithm/resource parameters and TS child parameters are settable only while **UNCONFIGURED**, validated/cached together on configure, then immutable in both inactive and active states. Change them via cleanup → set → configure/activate, or restart. ROS-managed `use_sim_time` is handled separately and changing clock source invalidates old inputs.
+
+The Server RRT* maintains incremental children adjacency and a separate incoming-edge cost cache. Rewiring propagates updated parent cost plus cached edge cost through descendants, avoiding repeated whole-tree scans/edge integration and subtraction-based precision loss. Full cancellation/token/deadline polling occurs at most every **64 work checkpoints**, with forced checks at entry, phase boundaries and successful search exit; this is a work-granularity bound, not a millisecond guarantee.
+
+### Build and integration
+
+From the workspace root, with Humble and dependencies available, select the Server and its companion runtime packages (including their source dependencies):
+
+```bash
+colcon build --symlink-install --packages-up-to \
+  nav2_colregs_local_planner_server nav2_colregs_costmap_layers \
+  nav2_colregs_alos_controller nav2_colregs_bringup
+source install/setup.bash
+```
+
+Merge the `colregs_local_planner_server`, `colregs_costmap` and `colregs_ts_state` sections of `nav2_colregs_bringup/params/nav2_colregs_params_humble_minimal.yaml` into a working Humble bringup. Wire TS topics, odometry, frames and vessel dimensions explicitly; this file is a configuration fragment. Minimal Server overrides, with other algorithm settings at their defaults:
+
+```yaml
+colregs_local_planner_server:
+  ros__parameters:
+    costmap_update_timeout: 1.0
+    max_planning_time: 0.8
+    avoid_direction: "right"
+colregs_ts_state:
+  ros__parameters:
+    transform_timeout: 0.2
+    tracked_ship_topic: /tracked_ship
+    robot_base_frame: base_link
+    odom_topic: odom
+```
+
+The separate `usv_simulation` repository (`feat/colregs-local-planner-bringup`) supplies `usv_sim_full/config/radar_nav2_param_colregs_local.yaml`, the matching BT/lifecycle wiring and the full simulation entrypoint:
+
+```bash
+ros2 launch usv_sim_full nav2_sim_colregs_local_bringup.launch.py
+```
+
+That command requires the separately built/sourced simulation workspace. The Server uses `colregs_ts_state` parameters; `ts_subsystem_launch.py` and its standalone TS settings belong to the plugin/service chain documented below.
+
+### Server limitations
+
+- The first VO leg does not certify static-obstacle clearance; the tail's costmap/static barriers do not guarantee the same time-dependent TS clearance over the full path. The motion model assumes constant speeds and instantaneous heading changes.
+- Standalone TS speed-range sampling, heading damping and **physical-radius (1×) fallback have not been ported** to the Server. An infeasible decision aborts rather than reverting to ordinary planning.
+- The Server has its own per-segment RRT*: it does not inherit the plugins' Informed sampling or persistent Skeleton search.
+- Planning-action failure does not itself stop the controller immediately; BT recovery and controller behavior are separate.
 
 ## Added Packages
 
@@ -42,7 +115,7 @@ For upstream Nav2 documentation, see [docs.nav2.org](https://docs.nav2.org/). Th
 
 | Component | Package | Summary |
 |---|---|---|
-| TS State Manager | `nav2_colregs_ts_manager` | `ts_state_manager` (TS snapshots, CPA/TCPA, collision cones), `avoidance_point_node`, `barrier_node`. Also embeddable as `colregs_ts_state` lifecycle child. |
+| TS State Manager | `nav2_colregs_ts_manager` | Standalone `ts_state_manager`, `avoidance_point_node`, `barrier_node` use `ts_manager_core`. The Server's `colregs_ts_state` lifecycle child uses separate `ts_core` / `colregs_ts_state_ros` libraries with its own input/decision contract. |
 | TS Projection Layer | `nav2_colregs_ts_projection_layer` | Costmap layer projecting TS positions as occupied regions. |
 | Vector Object Server | `nav2_colregs_vector_object_server` | RViz-based target-ship placement. |
 | Costmap Layers | `nav2_colregs_costmap_layers` | COLREGS-specific costmap layer plugins. |
@@ -58,7 +131,7 @@ Prerequisites: ROS 2 Humble (apt or RoboStack), colcon, and the standard Nav2 de
 ```bash
 # clean workspace
 mkdir -p ~/colregs_ws/src && cd ~/colregs_ws/src
-git clone -b fix/parameter-contracts \
+git clone -b feat/rrt-star-local-planner-server-humble \
   git@github.com:CCZH-Vessel-Algor-Team/navigation2.git
 
 cd ~/colregs_ws
