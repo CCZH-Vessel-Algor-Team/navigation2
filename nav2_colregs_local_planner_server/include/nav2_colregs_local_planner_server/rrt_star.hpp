@@ -78,7 +78,9 @@ private:
   friend class RRTStarTestPeer;
 
   bool parametersValid() const;
-  bool checkInterrupted() const;
+  // Poll at least once per 64 work checkpoints; force at request/phase boundaries.
+  // This bounds work granularity, not elapsed time or callback/allocator latency.
+  bool checkInterrupted(bool force = false) const;
   bool boundedCeil(double value, int & result) const;
   bool barrierFree(double x1, double y1, double x2, double y2) const;
   bool pointCollisionFree(
@@ -91,8 +93,7 @@ private:
     const nav2_costmap_2d::Costmap2D & costmap) const;
   int nearestNode(double x, double y) const;
   std::vector<int> findNear(double x, double y) const;
-  bool propagateDescendantCosts(
-    int parent_idx, const nav2_costmap_2d::Costmap2D & costmap);
+  bool propagateDescendantCosts(int parent_idx);
   bool rewire(
     int new_idx, const std::vector<int> & near,
     const nav2_costmap_2d::Costmap2D & costmap);
@@ -102,12 +103,16 @@ private:
 
   RRTStarParameters parameters_;
   std::vector<RRTStarNode> tree_;
+  std::vector<std::vector<int>> children_;
+  // Incoming edge costs are cached independently of rounded root totals.
+  std::vector<double> edge_costs_;
   std::mt19937 rng_;
   int iterations_executed_{0};
   const std::function<bool()> * cancel_checker_{nullptr};
   const std::vector<geometry_msgs::msg::Point> * barriers_{nullptr};
   std::chrono::steady_clock::time_point deadline_;
   mutable bool interrupted_{false};
+  mutable unsigned int interruption_checks_{0};
   mutable PlanStatus interruption_status_{PlanStatus::CANCELED};
   mutable bool invalid_geometry_{false};
 };

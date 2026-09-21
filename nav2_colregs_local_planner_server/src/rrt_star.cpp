@@ -84,36 +84,44 @@ PlanStatus RRTStar::planPath(
 {
   path.clear();
   tree_.clear();
+  children_.clear();
+  edge_costs_.clear();
   iterations_executed_ = 0;
   rng_.seed(parameters_.random_seed);
   cancel_checker_ = &cancel_checker;
   barriers_ = &barriers;
   deadline_ = deadline;
   interrupted_ = false;
+  interruption_checks_ = 0;
+  interruption_status_ = PlanStatus::CANCELED;
   invalid_geometry_ = false;
+
+  // Request-owned arguments must not remain dangling between queries, including
+  // early returns. The tree and its adjacency always have the same lifetime.
+  struct RequestScope
+  {
+    const std::function<bool()> * & cancel;
+    const std::vector<geometry_msgs::msg::Point> * & barriers;
+    ~RequestScope()
+    {
+      cancel = nullptr;
+      barriers = nullptr;
+    }
+  } request_scope{cancel_checker_, barriers_};
 
   auto failureStatus = [&](PlanStatus fallback) {
       path.clear();
-      if (interrupted_) {
+      if (checkInterrupted(true)) {
         return interruption_status_;
       }
       return invalid_geometry_ ? PlanStatus::INVALID_INPUT : fallback;
     };
 
-  bool barriers_finite = true;
-  for (const auto & barrier_point : barriers) {
-    if (!std::isfinite(barrier_point.x) || !std::isfinite(barrier_point.y)) {
-      barriers_finite = false;
-      break;
-    }
-  }
-
   if (!parametersValid() || !std::isfinite(start_x) || !std::isfinite(start_y) ||
     !std::isfinite(goal_x) || !std::isfinite(goal_y) ||
     costmap.getSizeInCellsX() == 0 || costmap.getSizeInCellsY() == 0 ||
     !std::isfinite(costmap.getResolution()) || costmap.getResolution() <= 0.0 ||
-    !std::isfinite(costmap.getOriginX()) || !std::isfinite(costmap.getOriginY()) ||
-    !barriers_finite)
+    !std::isfinite(costmap.getOriginX()) || !std::isfinite(costmap.getOriginY()))
   {
     return PlanStatus::INVALID_INPUT;
   }
@@ -145,6 +153,18 @@ PlanStatus RRTStar::planPath(
     return PlanStatus::INVALID_INPUT;
   }
 
+  if (checkInterrupted(true)) {
+    return failureStatus(PlanStatus::NO_PATH);
+  }
+  for (const auto & barrier_point : barriers) {
+    if (checkInterrupted()) {
+      return failureStatus(PlanStatus::NO_PATH);
+    }
+    if (!std::isfinite(barrier_point.x) || !std::isfinite(barrier_point.y)) {
+      return PlanStatus::INVALID_INPUT;
+    }
+  }
+
   int safety_radius;
   if (!boundedCeil(parameters_.safety_dist / resolution, safety_radius)) {
     return failureStatus(PlanStatus::INVALID_INPUT);
@@ -156,13 +176,18 @@ PlanStatus RRTStar::planPath(
   if (!pointCollisionFree(goal_x, goal_y, costmap)) {
     return failureStatus(PlanStatus::NO_PATH);
   }
-  if (checkInterrupted()) {
+  if (checkInterrupted(true)) {
     return failureStatus(PlanStatus::NO_PATH);
   }
 
   tree_.push_back({start_x, start_y, -1, 0.0});
+  children_.emplace_back();
+  edge_costs_.push_back(0.0);
   if (goal_x == start_x && goal_y == start_y) {
     path = {{start_x, start_y, -1, 0.0}, {goal_x, goal_y, 0, 0.0}};
+    if (checkInterrupted(true)) {
+      return failureStatus(PlanStatus::NO_PATH);
+    }
     return PlanStatus::SUCCESS;
   }
 
@@ -220,8 +245,8 @@ PlanStatus RRTStar::planPath(
         return false;
       }
       int best_parent = nearest_idx;
-      double best_cost = nearest.cost_from_root +
-        edgeCost(nearest.x, nearest.y, new_x, new_y, costmap);
+      double best_edge_cost = edgeCost(nearest.x, nearest.y, new_x, new_y, costmap);
+      double best_cost = nearest.cost_from_root + best_edge_cost;
       if (!std::isfinite(best_cost)) {
         invalid_geometry_ = true;
       }
@@ -239,8 +264,9 @@ PlanStatus RRTStar::planPath(
           }
           continue;
         }
-        const double candidate_cost = candidate.cost_from_root +
+        const double candidate_edge_cost =
           edgeCost(candidate.x, candidate.y, new_x, new_y, costmap);
+        const double candidate_cost = candidate.cost_from_root + candidate_edge_cost;
         if (!std::isfinite(candidate_cost)) {
           invalid_geometry_ = true;
         }
@@ -250,11 +276,15 @@ PlanStatus RRTStar::planPath(
         if (candidate_cost < best_cost - kEpsilon) {
           best_parent = idx;
           best_cost = candidate_cost;
+          best_edge_cost = candidate_edge_cost;
         }
       }
 
       const int new_idx = static_cast<int>(tree_.size());
       tree_.push_back({new_x, new_y, best_parent, best_cost});
+      children_.emplace_back();
+      edge_costs_.push_back(best_edge_cost);
+      children_[best_parent].push_back(new_idx);
       if (!rewire(new_idx, near, costmap)) {
         return false;
       }
@@ -271,7 +301,7 @@ PlanStatus RRTStar::planPath(
   {
     goal_reached = true;
   }
-  if (interrupted_ || invalid_geometry_) {
+  if (checkInterrupted(true) || invalid_geometry_) {
     return failureStatus(PlanStatus::NO_PATH);
   }
 
@@ -285,7 +315,7 @@ PlanStatus RRTStar::planPath(
     }
   }
 
-  if (!goal_reached) {
+  if (checkInterrupted(true) || !goal_reached) {
     return failureStatus(PlanStatus::NO_PATH);
   }
 
@@ -295,6 +325,9 @@ PlanStatus RRTStar::planPath(
     }
   }
 
+  if (checkInterrupted(true)) {
+    return failureStatus(PlanStatus::NO_PATH);
+  }
   int best_goal_parent = -1;
   double best_goal_cost = std::numeric_limits<double>::infinity();
   for (size_t i = 0; i < tree_.size(); ++i) {
@@ -328,8 +361,8 @@ PlanStatus RRTStar::planPath(
       best_goal_cost = cost;
     }
   }
-  if (best_goal_parent < 0) {
-    return PlanStatus::NO_PATH;
+  if (checkInterrupted(true) || best_goal_parent < 0) {
+    return failureStatus(PlanStatus::NO_PATH);
   }
 
   for (int idx = best_goal_parent; idx >= 0; idx = tree_[idx].parent_idx) {
@@ -338,7 +371,12 @@ PlanStatus RRTStar::planPath(
     }
     path.push_back(tree_[idx]);
   }
-  std::reverse(path.begin(), path.end());
+  for (size_t i = 0; i < path.size() / 2; ++i) {
+    if (checkInterrupted()) {
+      return failureStatus(PlanStatus::NO_PATH);
+    }
+    std::swap(path[i], path[path.size() - 1 - i]);
+  }
   if (path.back().x != goal_x || path.back().y != goal_y) {
     path.push_back({goal_x, goal_y, static_cast<int>(path.size()) - 1, best_goal_cost});
   }
@@ -349,9 +387,12 @@ PlanStatus RRTStar::planPath(
     path[i].parent_idx = i == 0 ? -1 : static_cast<int>(i) - 1;
   }
   if (parameters_.prune_path) {
-    if (!prunePath(path, costmap)) {
+    if (checkInterrupted(true) || !prunePath(path, costmap)) {
       return failureStatus(PlanStatus::NO_PATH);
     }
+  }
+  if (checkInterrupted(true)) {
+    return failureStatus(PlanStatus::NO_PATH);
   }
   return PlanStatus::SUCCESS;
 }
@@ -368,11 +409,15 @@ bool RRTStar::parametersValid() const
          parameters_.eta > 0.0;
 }
 
-bool RRTStar::checkInterrupted() const
+bool RRTStar::checkInterrupted(bool force) const
 {
   if (interrupted_) {
     return true;
   }
+  if (!force && ++interruption_checks_ < 64U) {
+    return false;
+  }
+  interruption_checks_ = 0;
   if (cancel_checker_ && *cancel_checker_ && (*cancel_checker_)()) {
     interrupted_ = true;
     interruption_status_ = PlanStatus::CANCELED;
@@ -455,6 +500,9 @@ bool RRTStar::barrierFree(double x1, double y1, double x2, double y2) const
     return true;
   }
   for (size_t i = 0; i + 1 < barriers_->size(); i += 2) {
+    if (checkInterrupted()) {
+      return false;
+    }
     const auto & a = (*barriers_)[i];
     const auto & b = (*barriers_)[i + 1];
     if (segmentsIntersect(x1, y1, x2, y2, a.x, a.y, b.x, b.y)) {
@@ -591,28 +639,33 @@ std::vector<int> RRTStar::findNear(double x, double y) const
   return near;
 }
 
-bool RRTStar::propagateDescendantCosts(
-  int parent_idx, const nav2_costmap_2d::Costmap2D & costmap)
+bool RRTStar::propagateDescendantCosts(int parent_idx)
 {
-  for (size_t i = 0; i < tree_.size(); ++i) {
+  std::vector<int> stack{parent_idx};
+  while (!stack.empty()) {
     if (checkInterrupted()) {
       return false;
     }
-    if (tree_[i].parent_idx != parent_idx) {
-      continue;
-    }
-    const auto & parent = tree_[parent_idx];
-    const double descendant_cost = parent.cost_from_root +
-      edgeCost(parent.x, parent.y, tree_[i].x, tree_[i].y, costmap);
-    if (!std::isfinite(descendant_cost)) {
-      invalid_geometry_ = true;
-      return false;
-    }
-    tree_[i].cost_from_root = descendant_cost;
-    if (interrupted_ || invalid_geometry_ ||
-      !propagateDescendantCosts(static_cast<int>(i), costmap))
-    {
-      return false;
+    const int current = stack.back();
+    stack.pop_back();
+    for (const int child : children_[current]) {
+      if (checkInterrupted()) {
+        return false;
+      }
+      // A short edge may have rounded out of the old cumulative cost. Rebuild
+      // totals parent-first from independently cached edges, without integrating
+      // those edges again or subtracting rounded cumulative costs.
+      const double edge_cost = edge_costs_[child];
+      const double descendant_cost = tree_[current].cost_from_root + edge_cost;
+      if (!std::isfinite(tree_[child].cost_from_root) ||
+        !std::isfinite(edge_cost) || edge_cost < 0.0 ||
+        !std::isfinite(descendant_cost))
+      {
+        invalid_geometry_ = true;
+        return false;
+      }
+      tree_[child].cost_from_root = descendant_cost;
+      stack.push_back(child);
     }
   }
   return true;
@@ -627,12 +680,13 @@ bool RRTStar::rewire(
     if (checkInterrupted()) {
       return false;
     }
-    if (idx == new_node.parent_idx) {
+    if (idx == new_idx || idx == new_node.parent_idx || tree_[idx].parent_idx < 0) {
       continue;
     }
-    const double new_cost = new_node.cost_from_root +
+    const double new_edge_cost =
       edgeCost(new_node.x, new_node.y, tree_[idx].x, tree_[idx].y, costmap);
-    if (!std::isfinite(new_cost)) {
+    const double new_cost = new_node.cost_from_root + new_edge_cost;
+    if (!std::isfinite(new_cost) || !std::isfinite(tree_[idx].cost_from_root)) {
       invalid_geometry_ = true;
       return false;
     }
@@ -640,6 +694,21 @@ bool RRTStar::rewire(
       return false;
     }
     if (new_cost >= tree_[idx].cost_from_root - kEpsilon) {
+      continue;
+    }
+    // Positive edge costs normally rule out ancestor rewiring. Check the
+    // topology explicitly as well, so floating-point drift cannot form a cycle.
+    bool ancestor = false;
+    for (int parent = new_node.parent_idx; parent >= 0; parent = tree_[parent].parent_idx) {
+      if (checkInterrupted()) {
+        return false;
+      }
+      if (parent == idx) {
+        ancestor = true;
+        break;
+      }
+    }
+    if (ancestor) {
       continue;
     }
     if (!collisionFree(
@@ -650,9 +719,33 @@ bool RRTStar::rewire(
       }
       continue;
     }
+    auto & siblings = children_[tree_[idx].parent_idx];
+    size_t sibling = 0;
+    for (; sibling < siblings.size(); ++sibling) {
+      if (checkInterrupted()) {
+        return false;
+      }
+      if (siblings[sibling] == idx) {
+        break;
+      }
+    }
+    if (sibling == siblings.size()) {
+      invalid_geometry_ = true;
+      return false;
+    }
+    children_[new_idx].push_back(idx);
+    siblings[sibling] = siblings.back();
+    siblings.pop_back();
     tree_[idx].parent_idx = new_idx;
     tree_[idx].cost_from_root = new_cost;
-    if (!propagateDescendantCosts(idx, costmap)) {
+    edge_costs_[idx] = new_edge_cost;
+    if (!propagateDescendantCosts(idx)) {
+      // A partially updated subtree must never survive an interrupted or
+      // invalid query. Discard all tree state rather than doing an unbounded
+      // non-cancelable rollback or retaining stale descendant costs.
+      tree_.clear();
+      children_.clear();
+      edge_costs_.clear();
       return false;
     }
   }
