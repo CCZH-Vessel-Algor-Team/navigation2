@@ -41,17 +41,50 @@ public:
     return planner.iterations_executed_;
   }
 
-  static void setTree(RRTStar & planner, std::vector<RRTStarNode> tree)
+  static const std::vector<std::vector<int>> & children(const RRTStar & planner)
   {
-    planner.tree_ = std::move(tree);
+    return planner.children_;
   }
 
-  static void rewire(
-    RRTStar & planner, int new_idx, const std::vector<int> & near,
+  static bool requestReleased(const RRTStar & planner)
+  {
+    return planner.cancel_checker_ == nullptr && planner.barriers_ == nullptr;
+  }
+
+  static const std::vector<double> & edgeCosts(const RRTStar & planner)
+  {
+    return planner.edge_costs_;
+  }
+
+  static void setTree(
+    RRTStar & planner, std::vector<RRTStarNode> tree,
     const nav2_costmap_2d::Costmap2D & costmap)
   {
     prepareOperation(planner);
-    (void)planner.rewire(new_idx, near, costmap);
+    planner.tree_ = std::move(tree);
+    planner.children_.assign(planner.tree_.size(), {});
+    planner.edge_costs_.assign(planner.tree_.size(), 0.0);
+    for (size_t i = 0; i < planner.tree_.size(); ++i) {
+      const int parent = planner.tree_[i].parent_idx;
+      if (parent >= 0) {
+        planner.children_.at(parent).push_back(static_cast<int>(i));
+        const auto & from = planner.tree_.at(parent);
+        const auto & to = planner.tree_[i];
+        planner.edge_costs_[i] = planner.edgeCost(from.x, from.y, to.x, to.y, costmap);
+      }
+    }
+  }
+
+  static bool rewire(
+    RRTStar & planner, int new_idx, const std::vector<int> & near,
+    const nav2_costmap_2d::Costmap2D & costmap,
+    const std::function<bool()> & cancel = {})
+  {
+    prepareOperation(planner);
+    planner.cancel_checker_ = &cancel;
+    const bool result = planner.rewire(new_idx, near, costmap);
+    planner.cancel_checker_ = nullptr;
+    return result;
   }
 
   static bool collisionFree(
@@ -82,6 +115,7 @@ private:
     planner.barriers_ = nullptr;
     planner.deadline_ = std::chrono::steady_clock::time_point::max();
     planner.interrupted_ = false;
+    planner.interruption_checks_ = 0;
     planner.invalid_geometry_ = false;
   }
 };
@@ -110,6 +144,38 @@ PlanStatus plan(
   return planner.planPath(
     0.5, 0.5, goal_x, goal_y, map, barriers, cancel,
     steady_clock::now() + std::chrono::seconds(10), path);
+}
+
+void expectConsistentTree(const RRTStar & planner)
+{
+  const auto & tree = RRTStarTestPeer::tree(planner);
+  const auto & children = RRTStarTestPeer::children(planner);
+  const auto & edge_costs = RRTStarTestPeer::edgeCosts(planner);
+  ASSERT_EQ(children.size(), tree.size());
+  ASSERT_EQ(edge_costs.size(), tree.size());
+  std::vector<int> incoming(tree.size(), 0);
+  for (size_t parent = 0; parent < children.size(); ++parent) {
+    for (const int child : children[parent]) {
+      ASSERT_GE(child, 0);
+      ASSERT_LT(static_cast<size_t>(child), tree.size());
+      EXPECT_EQ(tree[child].parent_idx, static_cast<int>(parent));
+      ++incoming[child];
+    }
+  }
+  for (size_t i = 0; i < tree.size(); ++i) {
+    EXPECT_EQ(incoming[i], i == 0 ? 0 : 1);
+    EXPECT_TRUE(std::isfinite(tree[i].cost_from_root));
+    EXPECT_TRUE(std::isfinite(edge_costs[i]));
+    EXPECT_GE(edge_costs[i], 0.0);
+    int ancestor = static_cast<int>(i);
+    size_t depth = 0;
+    while (ancestor >= 0 && depth <= tree.size()) {
+      ASSERT_LT(static_cast<size_t>(ancestor), tree.size());
+      ancestor = tree[ancestor].parent_idx;
+      ++depth;
+    }
+    EXPECT_LE(depth, tree.size()) << "Cycle from node " << i;
+  }
 }
 
 TEST(RRTStar, ClearsOutputBeforeEveryReturn)
@@ -325,6 +391,7 @@ TEST(RRTStar, EveryDescendantCostMatchesItsCurrentParent)
   RRTStar planner(params);
   std::vector<RRTStarNode> path;
   (void)plan(planner, map, path, 15.5, 15.5);
+  expectConsistentTree(planner);
   const auto & tree = RRTStarTestPeer::tree(planner);
   for (size_t i = 1; i < tree.size(); ++i) {
     const auto & parent = tree.at(tree[i].parent_idx);
@@ -342,14 +409,129 @@ TEST(RRTStar, RewiringPropagatesCostChangesToDescendants)
   RRTStarTestPeer::setTree(
     planner,
     {{0.5, 0.5, -1, 0.0}, {5.5, 4.5, 0, 9.0}, {6.5, 4.5, 1, 10.0},
-      {4.5, 3.5, 0, 5.0}});
+      {4.5, 3.5, 0, 5.0}}, map);
 
-  RRTStarTestPeer::rewire(planner, 3, {1}, map);
+  ASSERT_TRUE(RRTStarTestPeer::rewire(planner, 3, {1}, map));
+  expectConsistentTree(planner);
 
   const auto & tree = RRTStarTestPeer::tree(planner);
   EXPECT_EQ(tree[1].parent_idx, 3);
   EXPECT_NEAR(tree[1].cost_from_root, 5.0 + std::sqrt(2.0), 1e-9);
   EXPECT_NEAR(tree[2].cost_from_root, 6.0 + std::sqrt(2.0), 1e-9);
+}
+
+TEST(RRTStar, RepeatedRewiringUpdatesBranchedWeightedSubtree)
+{
+  nav2_costmap_2d::Costmap2D map(20, 20, 1.0, 0.0, 0.0, 127);
+  auto params = parameters();
+  params.cost_weight = 2.0;  // Every edge costs twice its length.
+  RRTStar planner(params);
+  RRTStarTestPeer::setTree(
+    planner,
+    {{0.5, 0.5, -1, 0.0}, {0.5, 4.5, 0, 8.0}, {5.5, 4.5, 1, 18.0},
+      {6.5, 4.5, 2, 20.0}, {7.5, 4.5, 3, 22.0}, {5.5, 5.5, 2, 20.0},
+      {4.5, 3.5, 0, 10.0}, {3.0, 2.5, 0, std::sqrt(41.0)}}, map);
+
+  ASSERT_TRUE(RRTStarTestPeer::rewire(planner, 6, {2}, map));
+  expectConsistentTree(planner);
+  EXPECT_EQ(RRTStarTestPeer::tree(planner)[2].parent_idx, 6);
+  EXPECT_NEAR(
+    RRTStarTestPeer::tree(planner)[4].cost_from_root,
+    14.0 + 2.0 * std::sqrt(2.0), 1e-12);
+  // Reparent the same subtree again; its old adjacency must no longer retain it.
+  ASSERT_TRUE(RRTStarTestPeer::rewire(planner, 7, {2}, map));
+  expectConsistentTree(planner);
+  const auto & tree = RRTStarTestPeer::tree(planner);
+  EXPECT_EQ(tree[2].parent_idx, 7);
+  EXPECT_TRUE(RRTStarTestPeer::children(planner)[6].empty());
+  for (size_t i = 1; i < tree.size(); ++i) {
+    const auto & parent = tree[tree[i].parent_idx];
+    EXPECT_NEAR(
+      tree[i].cost_from_root,
+      parent.cost_from_root + 2.0 * std::hypot(tree[i].x - parent.x, tree[i].y - parent.y),
+      1e-12);
+  }
+}
+
+TEST(RRTStar, RewiringRecoversShortEdgesRoundedOutOfLargeCumulativeCosts)
+{
+  auto map = freeMap();
+  map.setCost(0, 1, 127);
+  auto params = parameters();
+  params.cost_weight = std::ldexp(1.0, 55);
+  const double old_cost = std::ldexp(1.0, 54);
+  const double rounded_child_cost = old_cost + 1.0;
+  ASSERT_EQ(rounded_child_cost, old_cost);
+  RRTStar planner(params);
+  // Only the root->1 midpoint hits the high-weight cell. The unit edges
+  // 1->2->3 are free; the alternate branch 0->4->5->6 has cost 7.
+  RRTStarTestPeer::setTree(
+    planner,
+    {{0.5, 0.5, -1, 0.0}, {0.5, 1.5, 0, old_cost},
+      {1.5, 1.5, 1, rounded_child_cost}, {2.5, 1.5, 2, rounded_child_cost + 1.0},
+      {3.0, 0.5, 0, 2.5}, {3.0, 2.5, 4, 4.5}, {0.5, 2.5, 5, 7.0}}, map);
+  ASSERT_EQ(RRTStarTestPeer::edgeCosts(planner)[1], old_cost);
+  ASSERT_EQ(RRTStarTestPeer::edgeCosts(planner)[2], 1.0);
+  ASSERT_TRUE(RRTStarTestPeer::rewire(planner, 6, {1}, map));
+  expectConsistentTree(planner);
+  const auto & tree = RRTStarTestPeer::tree(planner);
+  EXPECT_EQ(tree[1].parent_idx, 6);
+  EXPECT_EQ(tree[1].cost_from_root, 8.0);
+  EXPECT_EQ(tree[2].cost_from_root, 9.0);
+  EXPECT_EQ(tree[3].cost_from_root, 10.0);
+  EXPECT_EQ(RRTStarTestPeer::edgeCosts(planner)[1], 1.0);
+}
+
+TEST(RRTStar, RewireCannotCreateCycleEvenWithInconsistentAncestorCosts)
+{
+  auto map = freeMap();
+  RRTStar planner(parameters());
+  RRTStarTestPeer::setTree(
+    planner,
+    {{0.5, 0.5, -1, 0.0}, {1.5, 0.5, 0, 100.0},
+      {2.5, 0.5, 1, 101.0}, {3.5, 0.5, 2, 1.0}}, map);
+  ASSERT_TRUE(RRTStarTestPeer::rewire(planner, 3, {0, 1, 2, 3}, map));
+  expectConsistentTree(planner);
+  EXPECT_EQ(RRTStarTestPeer::tree(planner)[1].parent_idx, 0);
+}
+
+TEST(RRTStar, CancellationDuringSubtreeTranslationDiscardsPartialTree)
+{
+  auto map = freeMap();
+  RRTStar planner(parameters());
+  std::vector<RRTStarNode> tree{
+    {0.5, 0.5, -1, 0.0}, {5.5, 4.5, 0, 9.0}, {4.5, 3.5, 0, 5.0}};
+  for (int i = 0; i < 256; ++i) {
+    tree.push_back({5.51 + i * 0.01, 4.5, i == 0 ? 1 : i + 2, 9.01 + i * 0.01});
+  }
+  RRTStarTestPeer::setTree(planner, std::move(tree), map);
+  bool canceled_subtree = false;
+  EXPECT_FALSE(
+    RRTStarTestPeer::rewire(
+      planner, 2, {1}, map, [&]() {
+        canceled_subtree = RRTStarTestPeer::tree(planner)[1].parent_idx == 2;
+        return canceled_subtree;
+      }));
+  EXPECT_TRUE(canceled_subtree);
+  EXPECT_TRUE(RRTStarTestPeer::tree(planner).empty());
+  expectConsistentTree(planner);
+  std::vector<RRTStarNode> path;
+  ASSERT_EQ(plan(planner, map, path), PlanStatus::SUCCESS);
+  expectConsistentTree(planner);
+}
+
+TEST(RRTStar, NonFiniteDescendantDiscardsPartialTree)
+{
+  auto map = freeMap();
+  RRTStar planner(parameters());
+  RRTStarTestPeer::setTree(
+    planner,
+    {{0.5, 0.5, -1, 0.0}, {5.5, 4.5, 0, 9.0}, {6.5, 4.5, 1, 10.0},
+      {7.5, 4.5, 2, std::numeric_limits<double>::infinity()}, {4.5, 3.5, 0, 5.0}}, map);
+  EXPECT_FALSE(RRTStarTestPeer::rewire(planner, 4, {1}, map));
+  EXPECT_TRUE(RRTStarTestPeer::invalidGeometry(planner));
+  EXPECT_TRUE(RRTStarTestPeer::tree(planner).empty());
+  expectConsistentTree(planner);
 }
 
 TEST(RRTStar, SameSeedProducesSamePath)
@@ -385,6 +567,27 @@ TEST(RRTStar, HonorsCancellationAndDeadline)
     PlanStatus::TIMEOUT);
 }
 
+TEST(RRTStar, DenseCollisionValidationBatchesExpensiveCallbacks)
+{
+  nav2_costmap_2d::Costmap2D map(200, 200, 1.0, 0.0, 0.0, 0);
+  auto params = parameters();
+  params.safety_dist = 10.0;
+  RRTStar planner(params);
+  std::vector<RRTStarNode> path;
+  int callbacks = 0;
+  ASSERT_EQ(
+    planner.planPath(
+      100.5, 100.5, 100.5, 100.5, map, {}, [&]() {
+        ++callbacks;
+        return false;
+      }, steady_clock::now() + std::chrono::seconds(10), path), PlanStatus::SUCCESS);
+  // Two 21x21 candidate-cell scans plus boundary checks: hundreds of cheap
+  // checkpoints must not become hundreds of Server-lock/clock acquisitions.
+  EXPECT_GT(callbacks, 3);
+  EXPECT_LE(callbacks, 20);
+  ASSERT_EQ(path.size(), 2U);
+}
+
 TEST(RRTStar, HonorsCancellationTriggeredInsidePlanningWork)
 {
   auto map = freeMap();
@@ -393,14 +596,17 @@ TEST(RRTStar, HonorsCancellationTriggeredInsidePlanningWork)
   params.max_iterations = 1000;
   RRTStar planner(params);
   std::vector<RRTStarNode> path(2);
-  int checks = 0;
+  bool canceled_during_search = false;
 
   EXPECT_EQ(
     plan(
       planner, map, path, 19.5, 19.5,
-      [&checks]() {return ++checks >= 20;}),
+      [&]() {
+        canceled_during_search = RRTStarTestPeer::iterations(planner) >= 2;
+        return canceled_during_search;
+      }),
     PlanStatus::CANCELED);
-  EXPECT_GE(checks, 20);
+  EXPECT_TRUE(canceled_during_search);
   EXPECT_TRUE(path.empty());
 }
 
@@ -412,22 +618,98 @@ TEST(RRTStar, HonorsDeadlineReachedInsidePlanningWork)
   params.max_iterations = 1000;
   RRTStar planner(params);
   std::vector<RRTStarNode> path;
-  int checks = 0;
-  const auto deadline = steady_clock::now() + std::chrono::milliseconds(100);
+  bool expired_during_search = false;
+  const auto deadline = steady_clock::now() + std::chrono::seconds(1);
 
   EXPECT_EQ(
     planner.planPath(
       0.5, 0.5, 19.5, 19.5, map, {},
-      [&checks]() {
-        if (++checks == 20) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(150));
+      [&]() {
+        if (RRTStarTestPeer::iterations(planner) >= 2) {
+          expired_during_search = true;
+          std::this_thread::sleep_until(deadline + std::chrono::milliseconds(1));
         }
         return false;
       },
       deadline, path),
     PlanStatus::TIMEOUT);
-  EXPECT_GE(checks, 20);
+  EXPECT_TRUE(expired_during_search);
   EXPECT_TRUE(path.empty());
+}
+
+TEST(RRTStar, FinalCallbackCanCancelBothNormalAndCoincidentEndpointPaths)
+{
+  auto map = freeMap();
+  for (const bool prune : {false, true}) {
+    for (const double goal_x : {0.5, 4.5}) {
+      auto params = parameters();
+      params.prune_path = prune;
+      RRTStar planner(params);
+      std::vector<RRTStarNode> path;
+      bool saw_completed_path = false;
+      EXPECT_EQ(
+        plan(
+          planner, map, path, goal_x, 0.5, [&]() {
+            saw_completed_path = !path.empty() && (!prune || path.size() == 2);
+            return saw_completed_path;
+          }), PlanStatus::CANCELED);
+      EXPECT_TRUE(saw_completed_path);
+      EXPECT_TRUE(path.empty());
+      EXPECT_TRUE(RRTStarTestPeer::requestReleased(planner));
+    }
+  }
+}
+
+TEST(RRTStar, DeadlineExpiringInFinalCallbackCannotReturnSuccess)
+{
+  auto map = freeMap();
+  RRTStar planner(parameters());
+  std::vector<RRTStarNode> path;
+  const auto deadline = steady_clock::now() + std::chrono::seconds(1);
+  bool saw_completed_path = false;
+  EXPECT_EQ(
+    planner.planPath(
+      0.5, 0.5, 0.5, 0.5, map, {}, [&]() {
+        if (!path.empty()) {
+          saw_completed_path = true;
+          std::this_thread::sleep_until(deadline + std::chrono::milliseconds(1));
+        }
+        return false;
+      }, deadline, path), PlanStatus::TIMEOUT);
+  EXPECT_TRUE(saw_completed_path);
+  EXPECT_TRUE(path.empty());
+}
+
+TEST(RRTStar, ReusedPlannerResetsRequestStateAndAdjacency)
+{
+  auto map = freeMap();
+  auto params = parameters();
+  params.goal_bias = 0.2;
+  RRTStar planner(params);
+  RRTStar fresh(params);
+  std::vector<RRTStarNode> path;
+  std::vector<RRTStarNode> expected;
+  ASSERT_EQ(plan(fresh, map, expected), PlanStatus::SUCCESS);
+  for (int request = 0; request < 2; ++request) {
+    EXPECT_EQ(
+      plan(planner, map, path, 4.5, 0.5, []() {return true;}),
+      PlanStatus::CANCELED);
+    EXPECT_TRUE(path.empty());
+    EXPECT_TRUE(RRTStarTestPeer::requestReleased(planner));
+    EXPECT_EQ(
+      planner.planPath(
+        0.5, 0.5, 4.5, 0.5, map, {}, {},
+        steady_clock::now(), path), PlanStatus::TIMEOUT);
+    ASSERT_EQ(plan(planner, map, path), PlanStatus::SUCCESS);
+    expectConsistentTree(planner);
+    EXPECT_TRUE(RRTStarTestPeer::requestReleased(planner));
+    ASSERT_EQ(path.size(), expected.size());
+    for (size_t i = 0; i < path.size(); ++i) {
+      EXPECT_DOUBLE_EQ(path[i].x, expected[i].x);
+      EXPECT_DOUBLE_EQ(path[i].y, expected[i].y);
+      EXPECT_DOUBLE_EQ(path[i].cost_from_root, expected[i].cost_from_root);
+    }
+  }
 }
 
 TEST(RRTStar, RejectsUnrepresentableSafetyAndSegmentSampleCounts)
