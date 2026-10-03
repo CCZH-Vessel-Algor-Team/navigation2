@@ -33,6 +33,23 @@ AvoidancePointNode::AvoidancePointNode()
   if (heading_smoothing_alpha_ > 1.0) {
     throw std::invalid_argument("heading_smoothing_alpha must be at most 1");
   }
+  asymmetric_heading_smoothing_ = declare_parameter("asymmetric_heading_smoothing", false,
+    parameterDescription("Fast increase / slow decrease of passing-side deflection; also filters "
+      "fallback outputs when the blend is feasible. Startup-only.", true));
+  heading_alpha_increase_ = declare_parameter("heading_alpha_increase", 1.0,
+    parameterDescription("Blend gain when increasing passing-side deflection (0,1].", true));
+  heading_alpha_decrease_ = declare_parameter("heading_alpha_decrease", 0.15,
+    parameterDescription("Blend gain when decreasing passing-side deflection (0,1].", true));
+  for (const auto & name : {"heading_alpha_increase", "heading_alpha_decrease"}) {
+    const double value = get_parameter(name).as_double();
+    validateNumber(name, value, true);
+    if (value > 1.0) {
+      throw std::invalid_argument(std::string(name) + " must be <= 1");
+    }
+  }
+  if (heading_alpha_decrease_ > heading_alpha_increase_) {
+    throw std::invalid_argument("heading_alpha_decrease must be <= heading_alpha_increase");
+  }
   speed_tolerance_ = declare_parameter("speed_tolerance", 0.0,
     parameterDescription("Own-speed interval half-width [m/s]; zero disables sampling.", true));
   validateNumber("speed_tolerance", speed_tolerance_);
@@ -207,7 +224,8 @@ void AvoidancePointNode::handleService(
   if (!found && avoidance_radius_scale > 1.0) {
     RCLCPP_WARN(get_logger(),
       "No feasible VO heading at scale=%.3f; retrying at scale=1.000 "
-      "(physical radii, hard set without smoothing)", avoidance_radius_scale);
+      "(physical radii; asymmetric filter=%d)", avoidance_radius_scale,
+      asymmetric_heading_smoothing_);
     found = findSafeHeading(state, request->avoid_direction,
         goal_x, goal_y, os_x, os_y, 1.0, speeds, safe_heading);
     physical_fallback = found;
@@ -222,7 +240,11 @@ void AvoidancePointNode::handleService(
   const double raw_heading = safe_heading;
   const bool first = !previous_heading_.has_value();
   double reference = previous_heading_.value_or(raw_heading);
-  if (!physical_fallback && first && smooth_initial_heading_ && heading_smoothing_alpha_ < 1.0) {
+  const bool can_blend = asymmetric_heading_smoothing_ ?
+    (heading_alpha_increase_ < 1.0 || heading_alpha_decrease_ < 1.0) : heading_smoothing_alpha_ < 1.0;
+  if ((!physical_fallback || asymmetric_heading_smoothing_) && first &&
+    smooth_initial_heading_ && can_blend)
+  {
     if (speed > 0.1) {
       reference = std::atan2(state.os_twist.linear.y, state.os_twist.linear.x);
     } else {
@@ -235,16 +257,27 @@ void AvoidancePointNode::handleService(
       }
     }
   }
-  if (!physical_fallback && heading_smoothing_alpha_ < 1.0 && (!first || smooth_initial_heading_)) {
+  double alpha = heading_smoothing_alpha_;
+  if (asymmetric_heading_smoothing_) {
+    // Unwrap about the previous heading. Positive deflection change means further
+    // into the requested passing side; the current goal-frame reference cancels.
+    const double change = std::atan2(std::sin(raw_heading - reference),
+      std::cos(raw_heading - reference));
+    const double side = request->avoid_direction == "right" ? -1.0 : 1.0;
+    alpha = side * change > 0.0 ? heading_alpha_increase_ : heading_alpha_decrease_;
+  }
+  if ((!physical_fallback || asymmetric_heading_smoothing_) && alpha < 1.0 &&
+    (!first || smooth_initial_heading_))
+  {
     const double difference = std::atan2(
       std::sin(raw_heading - reference), std::cos(raw_heading - reference));
-    safe_heading = std::fmod(reference + heading_smoothing_alpha_ * difference,
+    safe_heading = std::fmod(reference + alpha * difference,
         2.0 * M_PI);
     if (safe_heading < 0.0) {
       safe_heading += 2.0 * M_PI;
     }
   }
-  const bool smoothing_limited = speed_tolerance_ > 0.0 &&
+  const bool smoothing_limited = (speed_tolerance_ > 0.0 || asymmetric_heading_smoothing_) &&
     !headingSafeForSpeeds(state, os_x, os_y, safe_heading, effective_scale, speeds);
   if (smoothing_limited) {
     safe_heading = raw_heading;
@@ -268,36 +301,36 @@ void AvoidancePointNode::handleService(
   response->message = "Heading validated using inflated OS/TS radii (factor=" +
     std::to_string(avoidance_radius_scale) + ")";
   if (physical_fallback) {
-    response->message = "Physical-radius fallback: scale=1.000, hard-set heading without smoothing";
-  } else if (heading_smoothing_alpha_ < 1.0) {
+    response->message = "Physical-radius fallback: scale=1.000";
+  } else if (alpha < 1.0) {
     response->message = "Experimental smoothed output; raw VO candidate passed collision checks";
   }
   if (speed_tolerance_ > 0.0) {
     response->message = physical_fallback ?
-      "Physical-radius fallback: sampled speeds checked, hard-set heading" :
+      "Physical-radius fallback: sampled speeds checked" :
       "Heading validated at finite speed samples (including measured speed)";
-    if (smoothing_limited) {
-      response->message += "; smoothing rejected, raw heading used";
-    }
   }
-  // A fallback direction was actually commanded: subsequent normal updates
-  // blend from this hard output, not from the previous pre-fallback direction.
+  if (smoothing_limited) {
+    response->message += "; smoothing rejected, raw heading used";
+  }
+  // Subsequent updates blend from this emitted direction, including a feasible
+  // asymmetric fallback blend; no planner-execution acknowledgment is implied.
   previous_heading_ = safe_heading;
-  // With sampling disabled, preserve the original damping experiment. Enabled
-  // sampling rejects an unsafe blend above and reports the actual checked output.
+  // Symmetric single-speed mode preserves the original damping experiment.
+  // Asymmetric mode always checks blends, including without speed sampling.
   RCLCPP_INFO(get_logger(),
-    "Heading update: raw=%.9f output=%.9f reference=%.9f alpha=%.3f first=%d "
+    "Heading update: raw=%.9f output=%.9f reference=%.9f alpha=%.9f first=%d "
     "smooth_initial=%d speed=%.6f output_safe=%d snapshot_time=%.9f "
     "effective_scale=%.3f fallback=%d speed_min=%.6f speed_max=%.6f "
-    "speed_checks=%zu sampled_safe=%d smoothing_limited=%d",
-    raw_heading, safe_heading, reference, heading_smoothing_alpha_, first,
+    "speed_checks=%zu sampled_safe=%d smoothing_limited=%d asymmetric=%d",
+    raw_heading, safe_heading, reference, alpha, first,
     smooth_initial_heading_, speed,
     headingSafe(state, os_x, os_y, safe_heading, effective_scale),
     rclcpp::Time(state.header.stamp).seconds(), effective_scale, physical_fallback,
     *std::min_element(speeds.begin(), speeds.end()),
     *std::max_element(speeds.begin(), speeds.end()),
     speeds.size(), headingSafeForSpeeds(state, os_x, os_y, safe_heading, effective_scale, speeds),
-    smoothing_limited);
+    smoothing_limited, asymmetric_heading_smoothing_);
 
   visualization_msgs::msg::MarkerArray markers;
   visualization_msgs::msg::Marker arrow;

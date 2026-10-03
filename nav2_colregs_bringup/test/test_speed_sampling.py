@@ -20,7 +20,8 @@ from test_ts_parameter_contract import stop_process
 class Probe:
     """Own one real service process and stamped synthetic observations."""
 
-    def __init__(self, directory, tolerance=.3, count=5, alpha=1., initial=False):
+    def __init__(self, directory, tolerance=.3, count=5, alpha=1., initial=False,
+                 asymmetric=False):
         self.log = directory / 'node.log'
         executable = Path(get_package_prefix('nav2_colregs_ts_manager')) / \
             'lib/nav2_colregs_ts_manager/avoidance_point_node'
@@ -28,7 +29,8 @@ class Probe:
             self.process = subprocess.Popen([
                 str(executable), '--ros-args', '-p', f'speed_tolerance:={tolerance}',
                 '-p', f'speed_sample_count:={count}', '-p', f'heading_smoothing_alpha:={alpha}',
-                '-p', 'smooth_initial_heading:=' + str(initial).lower()],
+                '-p', 'smooth_initial_heading:=' + str(initial).lower(),
+                '-p', 'asymmetric_heading_smoothing:=' + str(asymmetric).lower()],
                 stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
         self.node = rclpy.create_node('speed_sampling_probe')
         self.pub = self.node.create_publisher(ProcessedTSList, '/processed_ts_list', 10)
@@ -74,10 +76,11 @@ class Probe:
             self.state.ships.append(ship)
         self.spin()
 
-    def call(self, goal=(100., 0.)):
+    def call(self, goal=(100., 0.), direction='right'):
         """Query the current synthetic snapshot.
 
         :param goal: Goal XY coordinates.
+        :param direction: Requested passing side.
         :return: Real GetAvoidancePoint response.
         """
         assert self.client.wait_for_service(timeout_sec=8)
@@ -86,7 +89,7 @@ class Probe:
         request.header.frame_id = 'map'
         request.os_pose = self.state.os_pose
         request.goal.position.x, request.goal.position.y = goal
-        request.avoid_direction = 'right'
+        request.avoid_direction = direction
         future = self.client.call_async(request)
         deadline = time.monotonic()+3
         while not future.done() and time.monotonic() < deadline:
@@ -138,6 +141,124 @@ def clearance(probe, heading, speed, ship):
     norm = vx*vx+vy*vy
     t = max(0., -(x*vx+y*vy)/norm) if norm > 1e-12 else 0.
     return math.hypot(x+t*vx, y+t*vy)
+
+
+def signed_degrees(heading):
+    """Convert a heading to signed degrees for circular comparisons.
+
+    :param heading: Heading in radians.
+    :return: Angle in [-180, 180] degrees.
+    """
+    return math.degrees(math.atan2(math.sin(heading), math.cos(heading)))
+
+
+@pytest.mark.parametrize('probe', [{'asymmetric': True}], indirect=True)
+@pytest.mark.parametrize('direction,sign', [('right', -1), ('left', 1)])
+def test_asymmetric_return_is_slow_but_increase_is_direct(probe, direction, sign):
+    """Verify gains and circular state using actual service outputs.
+
+    :param probe: Asymmetric heading node.
+    :param direction: Passing side.
+    :param sign: Sign of increasing deflection for that side.
+    """
+    probe.ships([(0, 100, 0, 0, 5, True)])
+
+    def goal(degrees):
+        """Construct a distant goal in the requested direction.
+
+        :param degrees: Goal bearing in degrees.
+        :return: Goal XY coordinates.
+        """
+        return (100.*math.cos(math.radians(degrees)), 100.*math.sin(math.radians(degrees)))
+
+    a = probe.call(goal(sign*80), direction)
+    b = probe.call(goal(0), direction)
+    c = probe.call(goal(sign*100), direction)
+    assert all(r.status == r.SUCCESS for r in (a, b, c))
+    assert abs(signed_degrees(a.safe_heading)-sign*80) < 1e-6
+    assert abs(signed_degrees(b.safe_heading)-sign*68) < 1e-6
+    assert abs(signed_degrees(c.safe_heading)-sign*100) < 1e-6
+
+
+@pytest.mark.parametrize('probe', [{'asymmetric': True}], indirect=True)
+@pytest.mark.parametrize('direction,expected', [('right', 179.3), ('left', 181.)])
+def test_asymmetric_wrap_uses_shortest_difference(probe, direction, expected):
+    """A boundary crossing must not become a spurious full-circle turn.
+
+    :param probe: Asymmetric heading node.
+    :param direction: Passing side.
+    :param expected: Expected second output in degrees.
+    """
+    probe.ships([(0, -100, 0, 0, 5, True)])
+    for degrees in (179., -179.):
+        result = probe.call((100*math.cos(math.radians(degrees)),
+                             100*math.sin(math.radians(degrees))), direction)
+        assert result.status == result.SUCCESS
+    delta = result.safe_heading-math.radians(expected)
+    assert abs(math.atan2(math.sin(delta), math.cos(delta))) < 1e-6
+
+
+@pytest.mark.parametrize('probe', [{'alpha': 1., 'initial': True}], indirect=True)
+def test_disabled_blending_does_not_require_initial_yaw(probe):
+    """Alpha one preserves raw-only behavior without consulting an unused yaw.
+
+    :param probe: Node with initial blending requested but unity gain.
+    """
+    probe.state.os_twist.linear.x = 0.
+    probe.state.os_pose.orientation.z = float('nan')
+    probe.ships([(100, 100, 0, 0, 5, True)])
+    result = probe.call()
+    assert result.status == result.SUCCESS
+    assert result.safe_heading == pytest.approx(0.)
+
+
+@pytest.mark.parametrize('probe', [{'asymmetric': True}, {'asymmetric': True, 'tolerance': 0.}],
+                         indirect=True)
+def test_asymmetric_fallback_blends_only_when_all_targets_remain_safe(probe):
+    """Fallback may return slowly, but a secondary target vetoes unsafe blending.
+
+    :param probe: Real asymmetric heading node.
+    """
+    probe.ships([(0, 100, 0, 0, 5, True)])
+    probe.call((100*math.cos(math.radians(-80)), 100*math.sin(math.radians(-80))))
+    probe.ships([(14, 0, 0, 0, 5, True)])
+    blend = probe.call()
+    assert blend.status == blend.SUCCESS and 'Physical-radius fallback' in blend.message
+    assert signed_degrees(blend.safe_heading) == pytest.approx(-74.9)
+    secondary = (30*math.cos(blend.safe_heading), 30*math.sin(blend.safe_heading), 0, 0, 1, False)
+    probe.ships([(14, 0, 0, 0, 5, True), secondary])
+    rejected_blend = probe.call()
+    assert rejected_blend.status == rejected_blend.SUCCESS
+    assert signed_degrees(rejected_blend.safe_heading) == pytest.approx(-46.)
+    assert 'smoothing rejected' in rejected_blend.message
+
+
+@pytest.mark.parametrize('probe', [{'asymmetric': True}], indirect=True)
+@pytest.mark.parametrize('reset', ['empty', 'invalid', 'request_failure'])
+def test_asymmetric_history_resets(probe, reset):
+    """A new encounter must not inherit a previous damped return direction.
+
+    :param probe: Real asymmetric heading node with direct first output.
+    :param reset: Event ending the encounter history.
+    """
+    probe.ships([(0, 100, 0, 0, 5, True)])
+    first = probe.call((0., -100.))
+    assert first.status == first.SUCCESS
+    returning = probe.call()
+    assert abs(math.sin(returning.safe_heading)) > .5
+    if reset == 'empty':
+        probe.ships([])
+    elif reset == 'invalid':
+        probe.state.valid = False
+        probe.spin()
+        assert probe.call().status == first.STALE_STATE
+        probe.state.valid = True
+    else:
+        assert probe.call(direction='invalid').status == first.INVALID_REQUEST
+    probe.ships([(0, 100, 0, 0, 5, True)])
+    resumed = probe.call()
+    assert resumed.status == resumed.SUCCESS
+    assert resumed.safe_heading == pytest.approx(0.)
 
 
 @pytest.mark.parametrize('probe', [{'count': 2}, {'count': 4}], indirect=True)

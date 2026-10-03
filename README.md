@@ -215,13 +215,13 @@ With `R_threat = threat_radius_scale * (r_OS + r_TS)`, current separation <= `R_
 
 The physical OS radius has one configuration source: `ts_state_manager.os_radius`. Avoidance reads it from each `ProcessedTSList`; it has no separate physical-radius parameter. With both physical radii 5m, the shipped settings give a 30m threat domain and 15m avoidance collision radius.
 
-The point is `P = OS + (distance(OS, primary_TS) + point_extension_distance) * unit(safe_heading)`. The extension changes radial point range; the radius scale changes the preferred candidate collision constraint. Candidate checks cover constant-velocity motion for `t >= 0`. With sampling disabled, if no heading satisfies the configured scale (>1), the node logs a warning and repeats the same search against all targets at scale 1 (physical OS/TS radii). Enabled sampling adds the eligibility check described below. A successful fallback is hard-set without either initial or subsequent heading smoothing. Physical tangency/overlap or no feasible physical-radius heading still returns `INESCAPABLE`. Invalid/stale data and invalid requests do not enter this fallback. Dynamic settings are read together at each decision after parameter updates have been accepted; fallback does not modify the configured scale.
+The point is `P = OS + (distance(OS, primary_TS) + point_extension_distance) * unit(safe_heading)`. The extension changes radial point range; the radius scale changes the preferred candidate collision constraint. Candidate checks cover constant-velocity motion for `t >= 0`. With sampling disabled, if no heading satisfies the configured scale (>1), the node logs a warning and repeats the same search against all targets at scale 1 (physical OS/TS radii). Enabled sampling adds the eligibility check described below. In the default symmetric mode, a successful fallback is hard-set without either initial or subsequent heading smoothing. Physical tangency/overlap or no feasible physical-radius heading still returns `INESCAPABLE`. Invalid/stale data and invalid requests do not enter this fallback. Dynamic settings are read together at each decision after parameter updates have been accepted; fallback does not modify the configured scale.
 
 With experimental damping enabled on a normal (non-fallback) result, `heading_out = heading_previous + alpha * wrap(heading_raw - heading_previous)` (circular difference). AP range is unchanged. When speed sampling is disabled, `safe_heading` carries the smoothed output, whose intermediate direction may lie outside the instantaneous VO feasible set. When sampling is enabled, a blend that fails any checked speed is replaced by the checked raw heading (`smoothing_limited=1`). Logs retain raw/output headings, effective scale, fallback flag and the instantaneous check result at that effective scale. A hard-set output becomes the reference for the next normal update. Filter history is cleared on no-threat/empty or invalid snapshots, snapshot expiry, and failed service requests, including no-threat intervals without service calls. The first normal output after a clear follows `smooth_initial_heading`. This is a single-node output filter, with no per-client or per-navigation-task history.
 
 **Finite speed sampling (opt-in):** with measured speed `v` and tolerance `d > 0`, all candidate headings use the same uniform grid of `speed_sample_count` speeds over `[max(0, v-d), v+d]`. The measured speed is always checked as well, so an even grid or a zero-clipped interval can require one additional check. With `d=0`, only the measured speed is checked. Every checked speed must pass against every snapshot target, using constant-speed prediction for `t >= 0`. This does not certify unsampled speeds, acceleration or the turning transient. The count is capped at 101 to bound per-request search work.
 
-If no common sampled-speed heading exists but the original measured-speed search still has an inflated-radius solution, the service returns `INESCAPABLE` with a **sampled-speed** explanation and retains the radius; sampling uncertainty alone does not trigger radius relaxation. Only when the measured-speed search also fails can the existing physical-radius retry run. That retry still checks the same speed samples and hard-sets a successful result. Invalid inputs never trigger either retry. A `NO_THREAT` early return still follows the manager's current-motion classification; prediction of safe resumption of the goal course is a separate enhancement.
+If no common sampled-speed heading exists but the original measured-speed search still has an inflated-radius solution, the service returns `INESCAPABLE` with a **sampled-speed** explanation and retains the radius; sampling uncertainty alone does not trigger radius relaxation. Only when the measured-speed search also fails can the existing physical-radius retry run. That retry still checks the same speed samples and, by default, hard-sets a successful result (optional asymmetric behavior is described below). Invalid inputs never trigger either retry. A `NO_THREAT` early return still follows the manager's current-motion classification; prediction of safe resumption of the goal course is a separate enhancement.
 
 For an experiment, restart the node with:
 
@@ -233,6 +233,43 @@ avoidance_point_node:
 ```
 
 `Heading update` logs include `speed_min`, `speed_max`, `speed_checks`, `sampled_safe` and `smoothing_limited`. The supplied YAML keeps tolerance zero; the positive-tolerance setting above is opt-in.
+
+#### Optional asymmetric heading damping
+
+Three startup-only parameters belong to `avoidance_point_node`:
+
+| Parameter | Declaration default | Effect |
+|---|---:|---|
+| `asymmetric_heading_smoothing` | false | Select fast avoidance / slow return instead of the symmetric gain. |
+| `heading_alpha_increase` | 1.0 | Gain for a heading change further into the selected passing side. |
+| `heading_alpha_decrease` | 0.15 | Gain for a change in the opposite direction, returning toward the goal course. |
+
+Gains satisfy `0 < decrease <= increase <= 1` and apply **per decision request**,
+not per second. The shortest circular raw-minus-previous difference determines
+the direction; left/right passing preferences are mirrored. When enabled, these
+gains replace `heading_smoothing_alpha`, while `smooth_initial_heading` retains
+control of the first output. The default profile remains symmetric.
+
+Asymmetric mode also attempts to blend physical-radius fallback outputs. Every
+blend is checked against all targets at the effective radius scale and all active
+speed samples (the measured speed alone when tolerance is zero). An unsafe blend
+is replaced by raw. Existing reset rules, including `NO_THREAT`, expired snapshots
+and failed requests, still apply; this is not an unconditional angular slew limit.
+`Heading update` logs include the selected gain, `asymmetric` and `smoothing_limited`.
+
+The complete opt-in profile `params/ts_subsystem_asymmetric.yaml` enables gains
+1.0/0.15 with existing speed sampling ±0.3m/s / 5 points, direct first output,
+OS radius 5m, threat/avoidance scales 3/1.5 and L3=8m. Use it with the existing
+`ts_params_file` argument; the launch does not merge it with another TS profile:
+
+```bash
+TS_PARAMS="$(ros2 pkg prefix --share nav2_colregs_bringup)/params/ts_subsystem_asymmetric.yaml"
+ros2 launch usv_sim_full nav2_sim_three_vision_mmwave_bringup.launch.py \
+  ts_params_file:="$TS_PARAMS"
+```
+
+The standard `ts_subsystem.yaml`, service message layouts, planner and controller
+configuration are unchanged; no new navigation parameter file is required.
 
 #### `barrier_node`
 

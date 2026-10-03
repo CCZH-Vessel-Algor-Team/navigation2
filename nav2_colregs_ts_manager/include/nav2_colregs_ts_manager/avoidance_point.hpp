@@ -53,6 +53,9 @@ private:
   double snapshot_timeout_{1.0};
   double max_request_position_delta_{3.0};
   double heading_smoothing_alpha_{1.0};
+  bool asymmetric_heading_smoothing_{false};
+  double heading_alpha_increase_{1.0};
+  double heading_alpha_decrease_{0.15};
   bool smooth_initial_heading_{false};
   double speed_tolerance_{0.0};
   int speed_sample_count_{5};

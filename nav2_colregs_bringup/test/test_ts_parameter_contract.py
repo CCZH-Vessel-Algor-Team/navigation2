@@ -37,18 +37,20 @@ def stop_process(proc):
 
 
 @pytest.mark.parametrize('threat_scale,expected_threat', [(2.0, True), (1.0, False)])
-def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_threat):
+@pytest.mark.parametrize('profile', ['ts_subsystem.yaml', 'ts_subsystem_asymmetric.yaml'])
+def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_threat, profile):
     """Load nondefault YAML via a parent with a conflicting params_file.
 
     :param tmp_path: Pytest evidence directory.
     :param monkeypatch: Environment fixture.
     :param threat_scale: Manager-only distance multiplier.
     :param expected_threat: Expected classification for the fixed input scene.
+    :param profile: Installed complete TS parameter profile.
     """
     monkeypatch.setenv('ROS_DOMAIN_ID', os.environ.get('TS_TEST_ROS_DOMAIN_ID', '92'))
     monkeypatch.setenv('FASTDDS_BUILTIN_TRANSPORTS', 'UDPv4')
     share = Path(get_package_share_directory('nav2_colregs_bringup'))
-    config = yaml.safe_load((share / 'params/ts_subsystem.yaml').read_text())
+    config = yaml.safe_load((share / 'params' / profile).read_text())
     config['ts_state_manager']['ros__parameters'].update(
         update_frequency=20.0, track_list_timeout=2.5, threat_tcpa_horizon=40.0,
         threat_radius_scale=threat_scale, os_radius=4.0)
@@ -160,7 +162,9 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
                 d.read_only == (name != 'avoidance_point_node' or
                                 d.name in ('snapshot_timeout', 'max_request_position_delta',
                                            'heading_smoothing_alpha', 'smooth_initial_heading',
-                                           'speed_tolerance', 'speed_sample_count'))
+                                           'speed_tolerance', 'speed_sample_count',
+                                           'asymmetric_heading_smoothing',
+                                           'heading_alpha_increase', 'heading_alpha_decrease'))
                 for d in descriptors)
             print('YAML effective:', name, values, flush=True)
         set_values('ts_state_manager', {'threat_radius_scale': 9.0}, False)
@@ -168,6 +172,9 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
         set_values('barrier_node', {'closing_segment_length': 9.0}, False)
         set_values('avoidance_point_node', {'heading_smoothing_alpha': 0.75}, False)
         set_values('avoidance_point_node', {'smooth_initial_heading': True}, False)
+        set_values('avoidance_point_node', {'asymmetric_heading_smoothing': True}, False)
+        set_values('avoidance_point_node', {'heading_alpha_increase': 0.8}, False)
+        set_values('avoidance_point_node', {'heading_alpha_decrease': 0.3}, False)
         for invalid in (-1.0, 0.0, 0.5, float('nan'), float('inf'), 'bad'):
             set_values('avoidance_point_node', {'avoidance_radius_scale': invalid}, False)
         set_values('avoidance_point_node', {'point_extension_distance': -1.0}, False)
@@ -209,7 +216,19 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
         barrier_req.snapshot_id = response.snapshot_id
         barrier_req.target_id = target.target_id
         barrier_req.avoid_direction = 'right'
-        barrier = call(GetBarrierLines, '/get_barrier_lines', barrier_req).barriers.points
+        barrier_response = call(GetBarrierLines, '/get_barrier_lines', barrier_req)
+        # Avoidance and barrier are independent subscribers. The first avoidance
+        # response does not prove this exact UUID has arrived at the barrier yet.
+        # Retry only startup/cache arrival, retaining the SAME request/snapshot.
+        deadline = time.monotonic() + 0.5
+        pending = (barrier_response.NO_DATA, barrier_response.SNAPSHOT_MISMATCH)
+        while barrier_response.status in pending and time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=0.02)
+            barrier_response = call(GetBarrierLines, '/get_barrier_lines', barrier_req)
+        assert barrier_response.status == barrier_response.SUCCESS, barrier_response.message
+        assert barrier_response.snapshot_id == response.snapshot_id
+        assert barrier_response.header == response.header
+        barrier = barrier_response.barriers.points
         assert len(barrier) == 6
         assert math.hypot(barrier[1].x - barrier[0].x,
                           barrier[1].y - barrier[0].y) == pytest.approx(3.0)
@@ -237,6 +256,13 @@ def test_ts_launch_and_outputs(tmp_path, monkeypatch, threat_scale, expected_thr
     ('barrier_node', 'closing_segment_length:=0.0'),
     ('avoidance_point_node', 'heading_smoothing_alpha:=0.0'),
     ('avoidance_point_node', 'heading_smoothing_alpha:=1.1'),
+    ('avoidance_point_node', 'heading_alpha_increase:=0.0'),
+    ('avoidance_point_node', 'heading_alpha_increase:=0.1'),  # below default decrease gain
+    ('avoidance_point_node', 'heading_alpha_increase:=1.1'),
+    ('avoidance_point_node', 'heading_alpha_decrease:=0.0'),
+    ('avoidance_point_node', 'heading_alpha_decrease:=-0.1'),
+    ('avoidance_point_node', 'heading_alpha_decrease:=1.1'),
+    ('avoidance_point_node', 'heading_alpha_decrease:=.nan'),
 ])
 def test_invalid_startup(tmp_path, monkeypatch, executable, argument):
     """Reject invalid startup overrides in real TS executables.
