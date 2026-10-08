@@ -459,6 +459,19 @@ bool RRTStar::collisionFree(
   const nav2_costmap_2d::Costmap2D * costmap,
   const std::vector<geometry_msgs::msg::Point> & barriers)
 {
+  if (!costmap || !std::isfinite(x1) || !std::isfinite(y1) || !std::isfinite(x2) ||
+    !std::isfinite(y2) || barriers.size() % 2 != 0)
+  {
+    return false;
+  }
+  const auto inside = [&](double x, double y) {
+      return x >= costmap->getOriginX() && y >= costmap->getOriginY() &&
+             x < costmap->getOriginX() + costmap->getSizeInCellsX() * costmap->getResolution() &&
+             y < costmap->getOriginY() + costmap->getSizeInCellsY() * costmap->getResolution();
+    };
+  if (!inside(x1, y1) || !inside(x2, y2)) {
+    return false;
+  }
   for (size_t i = 0; i + 1 < barriers.size(); i += 2) {
     const auto & a = barriers[i];
     const auto & b = barriers[i + 1];
@@ -470,12 +483,6 @@ bool RRTStar::collisionFree(
   const double res = costmap->getResolution();
   const double seg_len = std::hypot(x2 - x1, y2 - y1);
   const double step = res * 0.5;  // oversample 2x for safety
-
-  if (seg_len < 1e-9) {
-    unsigned int mx, my;
-    costmap->worldToMap(x1, y1, mx, my);
-    return costmap->getCost(mx, my) < nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
-  }
 
   int n_samples = std::max(1, static_cast<int>(seg_len / step));
   for (int i = 0; i <= n_samples; ++i) {

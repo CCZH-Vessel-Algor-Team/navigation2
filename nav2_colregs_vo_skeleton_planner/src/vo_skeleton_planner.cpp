@@ -1,4 +1,5 @@
 #include "nav2_colregs_vo_skeleton_planner/vo_skeleton_planner.hpp"
+#include "nav2_colregs_vo_skeleton_planner/parameter_contract.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -32,48 +33,7 @@ void VOSkeletonPlanner::configure(
   auto node = parent_node_.lock();
   logger_ = node->get_logger();
 
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".step_size", rclcpp::ParameterValue(4.0));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".goal_bias", rclcpp::ParameterValue(0.1));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".eta", rclcpp::ParameterValue(50.0));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".node_limit", rclcpp::ParameterValue(1024));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".path_limit", rclcpp::ParameterValue(256));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".near_limit", rclcpp::ParameterValue(16));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".connector_limit", rclcpp::ParameterValue(128));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".recovery_near_limit", rclcpp::ParameterValue(16));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".global_iterations", rclcpp::ParameterValue(2400));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".local_iterations", rclcpp::ParameterValue(600));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".refine_iterations", rclcpp::ParameterValue(200));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".max_work", rclcpp::ParameterValue(12000000));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".time_limit", rclcpp::ParameterValue(0.0));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".goal_tolerance", rclcpp::ParameterValue(2.0));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".allow_recovery", rclcpp::ParameterValue(true));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".allow_skip", rclcpp::ParameterValue(true));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".reuse_iterations", rclcpp::ParameterValue(64));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".switch_margin", rclcpp::ParameterValue(0.03));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".prune_period", rclcpp::ParameterValue(10));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".safety_dist", rclcpp::ParameterValue(1.5));
-  nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".cost_weight", rclcpp::ParameterValue(0.3));
+  declareSkeletonParameters(node, name_);
 
   node->get_parameter(name_ + ".step_size", config_.step);
   node->get_parameter(name_ + ".goal_bias", config_.goal_bias);
@@ -93,7 +53,6 @@ void VOSkeletonPlanner::configure(
   node->get_parameter(name_ + ".allow_skip", config_.allow_skip);
   node->get_parameter(name_ + ".reuse_iterations", config_.reuse_iterations);
   node->get_parameter(name_ + ".switch_margin", config_.switch_margin);
-  node->get_parameter(name_ + ".prune_period", config_.prune_period);
   node->get_parameter(name_ + ".safety_dist", safety_dist_);
   node->get_parameter(name_ + ".cost_weight", cost_weight_);
   config_.validate();
@@ -115,11 +74,10 @@ void VOSkeletonPlanner::configure(
 
   RCLCPP_INFO(logger_,
     "VOSkeletonPlanner configured: step=%.1f eta=%.1f nodes=%d paths=%d "
-    "global=%d local=%d refine=%d reuse=%d margin=%.2f prune_period=%d",
+    "global=%d local=%d refine=%d reuse=%d margin=%.2f (startup-only)",
     config_.step, config_.eta, config_.node_limit, config_.path_limit,
     config_.global_iterations, config_.local_iterations,
-    config_.refine_iterations, config_.reuse_iterations, config_.switch_margin,
-    config_.prune_period);
+    config_.refine_iterations, config_.reuse_iterations, config_.switch_margin);
 }
 
 void VOSkeletonPlanner::cleanup()
@@ -193,6 +151,8 @@ nav_msgs::msg::Path VOSkeletonPlanner::createPlan(
   {
     auto request =
       std::make_shared<nav2_colregs_msgs::srv::GetAvoidancePoint::Request>();
+    request->header.frame_id = costmap_ros_->getGlobalFrameID();
+    request->header.stamp = parent_node_.lock()->now();
     request->os_pose = start.pose;
     request->goal = goal.pose;
     request->avoid_direction = "right";
@@ -200,11 +160,37 @@ nav_msgs::msg::Path VOSkeletonPlanner::createPlan(
     auto result = avoidance_client_->async_send_request(request);
     if (result.wait_for(std::chrono::seconds(1)) == std::future_status::ready) {
       const auto resp = result.get();
-      if (resp->has_feasible_angle) {
+      using Response = nav2_colregs_msgs::srv::GetAvoidancePoint::Response;
+      if (resp->status != Response::SUCCESS && resp->status != Response::NO_THREAT) {
+        throw nav2_core::PlannerException("COLREGS avoidance failed: " + resp->message);
+      }
+      if (resp->header.frame_id != request->header.frame_id ||
+        std::all_of(resp->snapshot_id.uuid.begin(), resp->snapshot_id.uuid.end(),
+        [](uint8_t v) {return v == 0;}))
+      {
+        throw nav2_core::PlannerException("COLREGS: avoidance frame/snapshot mismatch");
+      }
+      if (resp->status == Response::SUCCESS) {
+        if (!resp->has_feasible_angle || !std::isfinite(resp->point.x) ||
+          !std::isfinite(resp->point.y) || !std::isfinite(resp->point.z))
+        {
+          throw nav2_core::PlannerException("COLREGS: malformed avoidance response");
+        }
         avoidance_point = resp->point;
+        if (avoidance_point.x < query_map->getOriginX() ||
+          avoidance_point.y < query_map->getOriginY() ||
+          avoidance_point.x >= query_map->getOriginX() +
+          query_map->getSizeInCellsX() * query_map->getResolution() ||
+          avoidance_point.y >= query_map->getOriginY() +
+          query_map->getSizeInCellsY() * query_map->getResolution())
+        {
+          throw nav2_core::PlannerException("COLREGS: avoidance point is outside the costmap");
+        }
 
         auto barrier_req =
           std::make_shared<nav2_colregs_msgs::srv::GetBarrierLines::Request>();
+        barrier_req->header = resp->header;
+        barrier_req->snapshot_id = resp->snapshot_id;
         barrier_req->os_pose = start.pose;
         barrier_req->target_id = resp->primary_target_id;
         barrier_req->avoid_direction = "right";
@@ -213,14 +199,27 @@ nav_msgs::msg::Path VOSkeletonPlanner::createPlan(
         if (barrier_result.wait_for(std::chrono::seconds(1)) ==
           std::future_status::ready)
         {
-          barrier_points = barrier_result.get()->barriers.points;
+          const auto br = barrier_result.get();
+          if (br->status != nav2_colregs_msgs::srv::GetBarrierLines::Response::SUCCESS ||
+            br->snapshot_id != resp->snapshot_id || br->header != resp->header ||
+            br->barriers.points.size() != 6 ||
+            std::any_of(br->barriers.points.begin(), br->barriers.points.end(),
+            [](const auto & p) {
+              return !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z);
+            }))
+          {
+            throw nav2_core::PlannerException("COLREGS barrier failed/mismatched: " + br->message);
+          }
+          barrier_points = br->barriers.points;
           has_colregs_route = true;
         } else {
-          RCLCPP_WARN(logger_, "VOSkeletonPlanner: /get_barrier_lines timed out");
+          barrier_client_->remove_pending_request(barrier_result);
+          throw nav2_core::PlannerException("COLREGS: /get_barrier_lines timed out");
         }
       }
     } else {
-      RCLCPP_WARN(logger_, "VOSkeletonPlanner: /get_avoidance_point timed out");
+      avoidance_client_->remove_pending_request(result);
+      throw nav2_core::PlannerException("COLREGS: /get_avoidance_point timed out");
     }
   }
 
@@ -244,6 +243,8 @@ nav_msgs::msg::Path VOSkeletonPlanner::createPlan(
   planner_->beginQuery(world_revision_);
   space_->setBarriers(barrier_points);
 
+  // Search constraints apply from AP onward. The initial open-water VO leg uses
+  // predicted relative motion and is prepended without a costmap occupancy test.
   std::vector<Pt> skeleton_path;
   const PlanStats stats = planner_->replan(query, skeleton_path);
   if (skeleton_path.empty()) {

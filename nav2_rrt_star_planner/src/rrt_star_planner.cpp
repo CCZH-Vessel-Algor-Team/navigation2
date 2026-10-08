@@ -4,6 +4,8 @@
 #include <cmath>
 #include <chrono>
 #include <memory>
+#include <mutex>
+#include <limits>
 #include <string>
 
 #include "nav2_costmap_2d/cost_values.hpp"
@@ -52,28 +54,21 @@ void RRTStarPlanner::configure(
     node, name_ + ".max_optimize_iters", rclcpp::ParameterValue(200));
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".eta", rclcpp::ParameterValue(1.1));
+  rcl_interfaces::msg::ParameterDescriptor deprecated;
+  deprecated.read_only = true;
+  deprecated.description = "Deprecated: ignored; this planner returns the exact goal.";
   nav2_util::declare_parameter_if_not_declared(
-    node, name_ + ".tolerance", rclcpp::ParameterValue(0.5));
+    node, name_ + ".tolerance", rclcpp::ParameterValue(0.5), deprecated);
+  RCLCPP_WARN(logger_, "%s.tolerance is deprecated and has no effect", name_.c_str());
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".prune_path", rclcpp::ParameterValue(true));
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".use_informed_sampling", rclcpp::ParameterValue(true));
 
-  node->get_parameter(name_ + ".step_size", step_size_);
-  node->get_parameter(name_ + ".max_iterations", max_iterations_);
-  node->get_parameter(name_ + ".goal_bias", goal_bias_);
-  node->get_parameter(name_ + ".goal_threshold", goal_threshold_);
-  node->get_parameter(name_ + ".safety_dist", safety_dist_);
-  node->get_parameter(name_ + ".cost_weight", cost_weight_);
-  node->get_parameter(name_ + ".max_optimize_iters", max_optimize_iters_);
-  node->get_parameter(name_ + ".eta", eta_);
-  node->get_parameter(name_ + ".tolerance", tolerance_);
-  node->get_parameter(name_ + ".prune_path", prune_path_);
-  node->get_parameter(name_ + ".use_informed_sampling", use_informed_sampling_);
-
-  rrt_star_ = std::make_unique<RRTStar>(
-    step_size_, max_iterations_, goal_bias_, goal_threshold_,
-    safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
+  applied_parameters_.clear();
+  applyParameters();
+  dyn_params_handler_ = node->add_on_set_parameters_callback(
+    std::bind(&RRTStarPlanner::dynamicParametersCallback, this, std::placeholders::_1));
 
   RCLCPP_INFO(logger_, "RRTStarPlanner configured: step=%.1f max_iter=%d "
     "goal_bias=%.2f goal_thresh=%.2f safety_dist=%.2f cost_weight=%.1f "
@@ -87,25 +82,19 @@ void RRTStarPlanner::cleanup()
 {
   RCLCPP_INFO(logger_, "Cleaning up RRTStarPlanner: %s", name_.c_str());
   rrt_star_.reset();
+  dyn_params_handler_.reset();
+  applied_parameters_.clear();
 }
 
 void RRTStarPlanner::activate()
 {
   RCLCPP_INFO(logger_, "Activating RRTStarPlanner: %s", name_.c_str());
 
-  auto node = parent_node_.lock();
-  if (node) {
-    dyn_params_handler_ = node->add_on_set_parameters_callback(
-      std::bind(
-        &RRTStarPlanner::dynamicParametersCallback, this,
-        std::placeholders::_1));
-  }
 }
 
 void RRTStarPlanner::deactivate()
 {
   RCLCPP_INFO(logger_, "Deactivating RRTStarPlanner: %s", name_.c_str());
-  dyn_params_handler_.reset();
 }
 
 // ---------------------------------------------------------------------------
@@ -117,24 +106,31 @@ nav_msgs::msg::Path RRTStarPlanner::createPlan(
   const geometry_msgs::msg::PoseStamped & goal
 )
 {
+  applyParameters();
+  nav2_costmap_2d::Costmap2D snapshot;
+  {
+    std::lock_guard<nav2_costmap_2d::Costmap2D::mutex_t> lock(*costmap_->getMutex());
+    snapshot = nav2_costmap_2d::Costmap2D(*costmap_);
+  }
+  const auto * query_map = &snapshot;
   // Validate start/goal are within costmap bounds.
   unsigned int start_mx, start_my, goal_mx, goal_my;
-  if (!costmap_->worldToMap(start.pose.position.x, start.pose.position.y,
+  if (!query_map->worldToMap(start.pose.position.x, start.pose.position.y,
                             start_mx, start_my))
   {
     throw nav2_core::PlannerException("Start is outside the map bounds.");
   }
-  if (!costmap_->worldToMap(goal.pose.position.x, goal.pose.position.y,
+  if (!query_map->worldToMap(goal.pose.position.x, goal.pose.position.y,
                             goal_mx, goal_my))
   {
     throw nav2_core::PlannerException("Goal is outside the map bounds.");
   }
 
   // Start/goal occupied check.
-  if (costmap_->getCost(start_mx, start_my) >= nav2_costmap_2d::LETHAL_OBSTACLE) {
+  if (query_map->getCost(start_mx, start_my) >= nav2_costmap_2d::LETHAL_OBSTACLE) {
     throw nav2_core::PlannerException("Start is occupied.");
   }
-  if (costmap_->getCost(goal_mx, goal_my) >= nav2_costmap_2d::LETHAL_OBSTACLE) {
+  if (query_map->getCost(goal_mx, goal_my) >= nav2_costmap_2d::LETHAL_OBSTACLE) {
     throw nav2_core::PlannerException("Goal is occupied.");
   }
 
@@ -144,7 +140,7 @@ nav_msgs::msg::Path RRTStarPlanner::createPlan(
   bool success = rrt_star_->planPath(
     start.pose.position.x, start.pose.position.y,
     goal.pose.position.x, goal.pose.position.y,
-    costmap_, raw_path);
+    query_map, raw_path);
   auto t_end = std::chrono::steady_clock::now();
   double elapsed_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
 
@@ -155,11 +151,11 @@ nav_msgs::msg::Path RRTStarPlanner::createPlan(
 
   // Optional prune.
   if (prune_path_) {
-    rrt_star_->prunePath(raw_path, costmap_);
+    rrt_star_->prunePath(raw_path, query_map);
   }
 
   // Densify: linear interpolation at costmap resolution.
-  nav_msgs::msg::Path plan = linearInterpolation(raw_path, costmap_->getResolution());
+  nav_msgs::msg::Path plan = linearInterpolation(raw_path, query_map->getResolution());
 
   // Set header.
   plan.header.stamp = clock_->now();
@@ -226,6 +222,79 @@ nav_msgs::msg::Path RRTStarPlanner::linearInterpolation(
   return plan;
 }
 
+std::vector<rclcpp::Parameter> RRTStarPlanner::validatedParameters(
+  const std::vector<rclcpp::Parameter> & overrides) const
+{
+  auto node = parent_node_.lock();
+  if (!node) {
+    throw std::runtime_error("Planner parent expired");
+  }
+  std::vector<std::string> names;
+  for (const auto * key : {"step_size", "max_iterations", "goal_bias", "goal_threshold",
+      "safety_dist", "cost_weight", "max_optimize_iters", "eta", "prune_path",
+      "use_informed_sampling"})
+  {
+    names.push_back(name_ + "." + key);
+  }
+  auto values = node->get_parameters(names);
+  for (auto & value : values) {
+    for (const auto & replacement : overrides) {
+      if (replacement.get_name() == value.get_name()) {
+        value = replacement;
+      }
+    }
+    const auto key = value.get_name().substr(name_.size() + 1);
+    if (key == "prune_path" || key == "use_informed_sampling") {
+      (void)value.as_bool();
+    } else if (key == "max_iterations" || key == "max_optimize_iters") {
+      const auto n = value.as_int();
+      if (n < (key == "max_iterations" ? 1 : 0) || n > std::numeric_limits<int>::max()) {
+        throw std::invalid_argument(key + " is outside the supported integer range");
+      }
+    } else {
+      const auto v = value.as_double();
+      if (!std::isfinite(v) || v < 0.0 ||
+        ((key == "step_size" || key == "eta") && v == 0.0) ||
+        (key == "goal_bias" && v > 1.0))
+      {
+        throw std::invalid_argument(key + " has an invalid finite/range value");
+      }
+    }
+  }
+  if (values[1].as_int() + values[6].as_int() > std::numeric_limits<int>::max()) {
+    throw std::invalid_argument("Combined iteration budget exceeds INT_MAX");
+  }
+  return values;
+}
+
+void RRTStarPlanner::applyParameters()
+{
+  const auto values = validatedParameters();
+  if (rrt_star_ && values == applied_parameters_) {
+    return;
+  }
+  step_size_ = values[0].as_double();
+  max_iterations_ = static_cast<int>(values[1].as_int());
+  goal_bias_ = values[2].as_double();
+  goal_threshold_ = values[3].as_double();
+  safety_dist_ = values[4].as_double();
+  cost_weight_ = values[5].as_double();
+  max_optimize_iters_ = static_cast<int>(values[6].as_int());
+  eta_ = values[7].as_double();
+  prune_path_ = values[8].as_bool();
+  use_informed_sampling_ = values[9].as_bool();
+  rrt_star_ = std::make_unique<RRTStar>(
+    step_size_, max_iterations_, goal_bias_, goal_threshold_,
+    safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
+  applied_parameters_ = values;
+  RCLCPP_INFO(logger_,
+    "Applied %s parameters: step=%.3f iterations=%d+%d bias=%.3f goal=%.3f "
+    "safety=%.3f weight=%.3f eta=%.3f prune=%d informed=%s",
+    name_.c_str(), step_size_, max_iterations_, max_optimize_iters_, goal_bias_,
+    goal_threshold_, safety_dist_, cost_weight_, eta_, prune_path_,
+    use_informed_sampling_ ? "true" : "false");
+}
+
 }  // namespace nav2_rrt_star_planner
 
 // ---------------------------------------------------------------------------
@@ -239,59 +308,11 @@ nav2_rrt_star_planner::RRTStarPlanner::dynamicParametersCallback(
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = true;
 
-  for (const auto & param : parameters) {
-    const auto & pname = param.get_name();
-    if (pname == name_ + ".step_size") {
-      step_size_ = param.as_double();
-      rrt_star_ = std::make_unique<RRTStar>(
-        step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
-    } else if (pname == name_ + ".max_iterations") {
-      max_iterations_ = param.as_int();
-      rrt_star_ = std::make_unique<RRTStar>(
-        step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
-    } else if (pname == name_ + ".goal_bias") {
-      goal_bias_ = param.as_double();
-      rrt_star_ = std::make_unique<RRTStar>(
-        step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
-    } else if (pname == name_ + ".goal_threshold") {
-      goal_threshold_ = param.as_double();
-      rrt_star_ = std::make_unique<RRTStar>(
-        step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
-    } else if (pname == name_ + ".safety_dist") {
-      safety_dist_ = param.as_double();
-      rrt_star_ = std::make_unique<RRTStar>(
-        step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
-    } else if (pname == name_ + ".cost_weight") {
-      cost_weight_ = param.as_double();
-      rrt_star_ = std::make_unique<RRTStar>(
-        step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
-    } else if (pname == name_ + ".max_optimize_iters") {
-      max_optimize_iters_ = param.as_int();
-      rrt_star_ = std::make_unique<RRTStar>(
-        step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
-    } else if (pname == name_ + ".eta") {
-      eta_ = param.as_double();
-      rrt_star_ = std::make_unique<RRTStar>(
-        step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_, use_informed_sampling_);
-    } else if (pname == name_ + ".tolerance") {
-      tolerance_ = param.as_double();
-    } else if (pname == name_ + ".prune_path") {
-      prune_path_ = param.as_bool();
-    } else if (pname == name_ + ".use_informed_sampling") {
-      use_informed_sampling_ = param.as_bool();
-      rrt_star_ = std::make_unique<RRTStar>(
-        step_size_, max_iterations_, goal_bias_, goal_threshold_,
-        safety_dist_, cost_weight_, max_optimize_iters_, eta_,
-        use_informed_sampling_);
-    }
+  try {
+    (void)validatedParameters(parameters);
+  } catch (const std::exception & ex) {
+    result.successful = false;
+    result.reason = ex.what();
   }
 
   return result;

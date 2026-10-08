@@ -2,6 +2,7 @@
 #define NAV2_COLREGS_TS_MANAGER__BARRIER_NODE_HPP_
 
 #include <memory>
+#include <deque>
 #include <string>
 #include <unordered_map>
 
@@ -19,6 +20,7 @@ public:
   BarrierNode();
 
 private:
+  void clearMarkers();
   void tsListCallback(
     nav2_colregs_msgs::msg::ProcessedTSList::ConstSharedPtr msg);
 
@@ -40,9 +42,13 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr barrier_markers_pub_;
 
   nav2_colregs_msgs::msg::ProcessedTSList::ConstSharedPtr last_ts_list_;
+  std::deque<nav2_colregs_msgs::msg::ProcessedTSList::ConstSharedPtr> snapshots_;
+  rclcpp::TimerBase::SharedPtr expiry_timer_;
+  double snapshot_timeout_{1.0};
+  double max_request_position_delta_{3.0};
 
-  double ray_length_{999.0};
-  double os_radius_{0.3};
+  double closing_segment_length_{999.0};
+  double lateral_margin_{0.3};
 };
 
 }  // namespace nav2_colregs_ts_manager

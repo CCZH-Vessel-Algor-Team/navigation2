@@ -28,6 +28,11 @@
   <test_depend>lifecycle_msgs</test_depend>
   <test_depend>nav2_planner</test_depend>
   <test_depend>rclpy</test_depend>
+  <test_depend>rcl_interfaces</test_depend>
+  <test_depend>python3-yaml</test_depend>
+  <test_depend>nav2_rrt_star_planner</test_depend>
+  <test_depend>nav2_skeleton_planner</test_depend>
+  <test_depend>nav2_colregs_vo_skeleton_planner</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

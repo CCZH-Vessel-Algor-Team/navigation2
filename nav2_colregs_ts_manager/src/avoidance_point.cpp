@@ -1,4 +1,6 @@
 #include "nav2_colregs_ts_manager/avoidance_point.hpp"
+#include "nav2_colregs_ts_manager/parameter_contract.hpp"
+#include "nav2_colregs_ts_manager/decision_geometry.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -10,8 +12,73 @@ namespace nav2_colregs_ts_manager
 AvoidancePointNode::AvoidancePointNode()
 : rclcpp::Node("avoidance_point_node")
 {
-  declare_parameter("os_radius", 5.0);
-  declare_parameter("safety_factor", 1.5);
+  declare_parameter("avoidance_radius_scale", 1.5,
+    parameterDescription("Radius inflation >= 1 for candidate heading collision checks.", false));
+  declare_parameter("point_extension_distance", 20.0,
+    parameterDescription("Point range beyond current OS-TS distance [m], independent of inflation.",
+      false));
+  validateRadiusScale("avoidance_radius_scale", get_parameter("avoidance_radius_scale").as_double());
+  validateNumber("point_extension_distance", get_parameter("point_extension_distance").as_double());
+  snapshot_timeout_ = declare_parameter("snapshot_timeout", 1.0,
+    parameterDescription("Maximum decision snapshot age [s].", true));
+  max_request_position_delta_ = declare_parameter("max_request_position_delta", 3.0,
+    parameterDescription("Maximum request/snapshot OS XY position difference [m].", true));
+  validateNumber("snapshot_timeout", snapshot_timeout_, true);
+  validateNumber("max_request_position_delta", max_request_position_delta_);
+  heading_smoothing_alpha_ = declare_parameter("heading_smoothing_alpha", 1.0,
+    parameterDescription("Experimental output heading blend in (0, 1]; 1 disables damping.", true));
+  smooth_initial_heading_ = declare_parameter("smooth_initial_heading", false,
+    parameterDescription("Blend the first heading from measured course (yaw at low speed).", true));
+  validateNumber("heading_smoothing_alpha", heading_smoothing_alpha_, true);
+  if (heading_smoothing_alpha_ > 1.0) {
+    throw std::invalid_argument("heading_smoothing_alpha must be at most 1");
+  }
+  asymmetric_heading_smoothing_ = declare_parameter("asymmetric_heading_smoothing", false,
+    parameterDescription("Fast increase / slow decrease of passing-side deflection; also filters "
+      "fallback outputs when the blend is feasible. Startup-only.", true));
+  heading_alpha_increase_ = declare_parameter("heading_alpha_increase", 1.0,
+    parameterDescription("Blend gain when increasing passing-side deflection (0,1].", true));
+  heading_alpha_decrease_ = declare_parameter("heading_alpha_decrease", 0.15,
+    parameterDescription("Blend gain when decreasing passing-side deflection (0,1].", true));
+  for (const auto & name : {"heading_alpha_increase", "heading_alpha_decrease"}) {
+    const double value = get_parameter(name).as_double();
+    validateNumber(name, value, true);
+    if (value > 1.0) {
+      throw std::invalid_argument(std::string(name) + " must be <= 1");
+    }
+  }
+  if (heading_alpha_decrease_ > heading_alpha_increase_) {
+    throw std::invalid_argument("heading_alpha_decrease must be <= heading_alpha_increase");
+  }
+  speed_tolerance_ = declare_parameter("speed_tolerance", 0.0,
+    parameterDescription("Own-speed interval half-width [m/s]; zero disables sampling.", true));
+  validateNumber("speed_tolerance", speed_tolerance_);
+  const auto sample_count = declare_parameter<int64_t>("speed_sample_count", 5,
+    parameterDescription("Uniform speed samples including endpoints [2, 101]; measured speed "
+      "is additionally checked if off-grid. Startup-only.", true));
+  if (sample_count < 2 || sample_count > 101) {
+    throw std::invalid_argument("speed_sample_count must be in [2, 101]");
+  }
+  speed_sample_count_ = static_cast<int>(sample_count);
+  parameter_callback_ = add_on_set_parameters_callback(
+    [](const std::vector<rclcpp::Parameter> & parameters) {
+      rcl_interfaces::msg::SetParametersResult result;
+      result.successful = true;
+      try {
+        for (const auto & parameter : parameters) {
+          if (parameter.get_name() == "avoidance_radius_scale") {
+            validateRadiusScale(parameter.get_name(), parameter.as_double());
+          } else if (parameter.get_name() == "point_extension_distance")
+          {
+            validateNumber(parameter.get_name(), parameter.as_double());
+          }
+        }
+      } catch (const std::exception & ex) {
+        result.successful = false;
+        result.reason = ex.what();
+      }
+      return result;
+    });
 
   ts_list_sub_ = create_subscription<nav2_colregs_msgs::msg::ProcessedTSList>(
     "processed_ts_list", rclcpp::SystemDefaultsQoS(),
@@ -23,8 +90,21 @@ AvoidancePointNode::AvoidancePointNode()
               std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
   marker_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("avoidance_point_marker", 10);
+  expiry_timer_ = create_wall_timer(std::chrono::milliseconds(200), [this]() {
+      if (!last_ts_list_ || !validSnapshot(*last_ts_list_) ||
+        !fresh(last_ts_list_->header.stamp, now(), snapshot_timeout_))
+      {
+        clearMarkers();
+      }
+    });
 
   RCLCPP_INFO(get_logger(), "AvoidancePointNode started");
+  RCLCPP_INFO(get_logger(),
+    "Avoidance effective parameters: os_radius=ProcessedTSList.os_radius "
+    "avoidance_radius_scale=%.3f point_extension_distance=%.3fm "
+    "speed_tolerance=%.3fm/s speed_sample_count=%d",
+    get_parameter("avoidance_radius_scale").as_double(),
+    get_parameter("point_extension_distance").as_double(), speed_tolerance_, speed_sample_count_);
 }
 
 // ---------------------------------------------------------------------------
@@ -34,7 +114,32 @@ AvoidancePointNode::AvoidancePointNode()
 void AvoidancePointNode::tsListCallback(
   nav2_colregs_msgs::msg::ProcessedTSList::ConstSharedPtr msg)
 {
+  if (last_ts_list_ && fresh(last_ts_list_->header.stamp, now(), snapshot_timeout_) &&
+    rclcpp::Time(msg->header.stamp) < rclcpp::Time(last_ts_list_->header.stamp))
+  {
+    return;
+  }
   last_ts_list_ = msg;
+  if (!validSnapshot(*msg) || std::none_of(msg->ships.begin(), msg->ships.end(),
+    [](const auto & ship) {return ship.has_threat;}))
+  {
+    clearMarkers();
+  }
+}
+
+void AvoidancePointNode::clearMarkers()
+{
+  // A clear/no-threat/invalid-data interval ends the filter's encounter history,
+  // including intervals in which no planner service request arrives.
+  if (previous_heading_) {
+    RCLCPP_INFO(get_logger(), "Heading smoothing reset");
+  }
+  previous_heading_.reset();
+  visualization_msgs::msg::MarkerArray markers;
+  visualization_msgs::msg::Marker clear;
+  clear.action = visualization_msgs::msg::Marker::DELETEALL;
+  markers.markers.push_back(clear);
+  marker_pub_->publish(markers);
 }
 
 // ---------------------------------------------------------------------------
@@ -48,46 +153,188 @@ void AvoidancePointNode::handleService(
 {
   response->has_feasible_angle = false;
   response->safe_heading = 0.0;
-
-  if (!last_ts_list_ || last_ts_list_->ships.empty()) {
+  using Response = nav2_colregs_msgs::srv::GetAvoidancePoint::Response;
+  auto fail = [&](uint8_t status, const std::string & message) {
+      response->status = status;
+      response->message = message;
+      clearMarkers();
+    };
+  if (!last_ts_list_) {
+    fail(Response::NO_DATA, "No processed TS snapshot received");
     return;
   }
-
-  int idx = selectPrimary(*last_ts_list_);
+  const auto & state = *last_ts_list_;
+  response->header = state.header;
+  response->snapshot_id = state.snapshot_id;
+  if (!validSnapshot(state) || !fresh(state.header.stamp, now(), snapshot_timeout_)) {
+    fail(Response::STALE_STATE, "Invalid or expired snapshot: " + state.status_message);
+    return;
+  }
+  if (request->header.frame_id != state.header.frame_id ||
+    !finitePoint(request->os_pose.position) || !finitePoint(request->goal.position) ||
+    (request->avoid_direction != "right" && request->avoid_direction != "left"))
+  {
+    fail(Response::INVALID_REQUEST, "Invalid frame, coordinates or avoidance direction");
+    return;
+  }
+  const double os_x = request->os_pose.position.x;
+  const double os_y = request->os_pose.position.y;
+  if (std::hypot(os_x - state.os_pose.position.x,
+    os_y - state.os_pose.position.y) > max_request_position_delta_)
+  {
+    fail(Response::INVALID_REQUEST, "Request is not anchored near the snapshot OS pose");
+    return;
+  }
+  const auto parameters = get_parameters({"avoidance_radius_scale", "point_extension_distance"});
+  const double avoidance_radius_scale = parameters[0].as_double();
+  const double extension = parameters[1].as_double();
+  int idx = selectPrimary(state, os_x, os_y, avoidance_radius_scale);
   if (idx < 0) {
+    fail(Response::NO_THREAT, "Fresh snapshot contains no qualifying threat");
     return;
   }
-  const auto & ts = last_ts_list_->ships[idx];
+  const auto & ts = state.ships[idx];
   response->primary_target_id = ts.target_id;
 
-  double os_x = request->os_pose.position.x;
-  double os_y = request->os_pose.position.y;
   double goal_x = request->goal.position.x;
   double goal_y = request->goal.position.y;
 
   double safe_heading = 0.0;
-  bool found = findSafeHeading(ts, request->avoid_direction,
-                               goal_x, goal_y, os_x, os_y, safe_heading);
-  if (!found) {
-    response->has_feasible_angle = false;
+  const double speed = std::hypot(state.os_twist.linear.x, state.os_twist.linear.y);
+  if (!std::isfinite(speed + speed_tolerance_)) {
+    fail(Response::INVALID_REQUEST, "Nonfinite own-speed sampling interval");
     return;
+  }
+  const auto speeds = sampleSpeeds(speed, speed_tolerance_, speed_sample_count_);
+  bool found = findSafeHeading(state, request->avoid_direction,
+      goal_x, goal_y, os_x, os_y, avoidance_radius_scale, speeds, safe_heading);
+  bool physical_fallback = false;
+  if (!found && speed_tolerance_ > 0.0) {
+    double nominal_heading = 0.0;
+    if (findSafeHeading(state, request->avoid_direction, goal_x, goal_y, os_x, os_y,
+      avoidance_radius_scale, {speed}, nominal_heading))
+    {
+      RCLCPP_WARN(get_logger(), "No common heading for sampled speeds; measured-speed heading "
+        "exists at scale=%.3f, retaining radius", avoidance_radius_scale);
+      fail(Response::INESCAPABLE,
+        "No common heading for sampled speeds; measured-speed heading exists, radius retained");
+      return;
+    }
+  }
+  if (!found && avoidance_radius_scale > 1.0) {
+    RCLCPP_WARN(get_logger(),
+      "No feasible VO heading at scale=%.3f; retrying at scale=1.000 "
+      "(physical radii; asymmetric filter=%d)", avoidance_radius_scale,
+      asymmetric_heading_smoothing_);
+    found = findSafeHeading(state, request->avoid_direction,
+        goal_x, goal_y, os_x, os_y, 1.0, speeds, safe_heading);
+    physical_fallback = found;
+  }
+  if (!found) {
+    fail(Response::INESCAPABLE,
+      "No heading satisfies the collision radii for the checked own-ship speeds");
+    return;
+  }
+  const double effective_scale = physical_fallback ? 1.0 : avoidance_radius_scale;
+
+  const double raw_heading = safe_heading;
+  const bool first = !previous_heading_.has_value();
+  double reference = previous_heading_.value_or(raw_heading);
+  const bool can_blend = asymmetric_heading_smoothing_ ?
+    (heading_alpha_increase_ < 1.0 || heading_alpha_decrease_ < 1.0) : heading_smoothing_alpha_ < 1.0;
+  if ((!physical_fallback || asymmetric_heading_smoothing_) && first &&
+    smooth_initial_heading_ && can_blend)
+  {
+    if (speed > 0.1) {
+      reference = std::atan2(state.os_twist.linear.y, state.os_twist.linear.x);
+    } else {
+      const auto & q = state.os_pose.orientation;
+      reference = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+          1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+      if (!std::isfinite(reference)) {
+        fail(Response::INVALID_REQUEST, "Nonfinite initial heading for smoothing");
+        return;
+      }
+    }
+  }
+  double alpha = heading_smoothing_alpha_;
+  if (asymmetric_heading_smoothing_) {
+    // Unwrap about the previous heading. Positive deflection change means further
+    // into the requested passing side; the current goal-frame reference cancels.
+    const double change = std::atan2(std::sin(raw_heading - reference),
+      std::cos(raw_heading - reference));
+    const double side = request->avoid_direction == "right" ? -1.0 : 1.0;
+    alpha = side * change > 0.0 ? heading_alpha_increase_ : heading_alpha_decrease_;
+  }
+  if ((!physical_fallback || asymmetric_heading_smoothing_) && alpha < 1.0 &&
+    (!first || smooth_initial_heading_))
+  {
+    const double difference = std::atan2(
+      std::sin(raw_heading - reference), std::cos(raw_heading - reference));
+    safe_heading = std::fmod(reference + alpha * difference,
+        2.0 * M_PI);
+    if (safe_heading < 0.0) {
+      safe_heading += 2.0 * M_PI;
+    }
+  }
+  const bool smoothing_limited = (speed_tolerance_ > 0.0 || asymmetric_heading_smoothing_) &&
+    !headingSafeForSpeeds(state, os_x, os_y, safe_heading, effective_scale, speeds);
+  if (smoothing_limited) {
+    safe_heading = raw_heading;
   }
 
   double ts_x = ts.pose.position.x;
   double ts_y = ts.pose.position.y;
   double dist = std::hypot(ts_x - os_x, ts_y - os_y);
-  double safe_dist = dist + (ts.radius + get_parameter("os_radius").as_double())
-                           * get_parameter("safety_factor").as_double();
+  double point_range = dist + extension;
 
-  response->point.x = os_x + safe_dist * std::cos(safe_heading);
-  response->point.y = os_y + safe_dist * std::sin(safe_heading);
+  response->point.x = os_x + point_range * std::cos(safe_heading);
+  response->point.y = os_y + point_range * std::sin(safe_heading);
   response->point.z = 0.0;
+  if (!finitePoint(response->point)) {
+    fail(Response::INVALID_REQUEST, "Avoidance point is not finite");
+    return;
+  }
   response->safe_heading = safe_heading;
   response->has_feasible_angle = true;
+  response->status = Response::SUCCESS;
+  response->message = "Heading validated using inflated OS/TS radii (factor=" +
+    std::to_string(avoidance_radius_scale) + ")";
+  if (physical_fallback) {
+    response->message = "Physical-radius fallback: scale=1.000";
+  } else if (alpha < 1.0) {
+    response->message = "Experimental smoothed output; raw VO candidate passed collision checks";
+  }
+  if (speed_tolerance_ > 0.0) {
+    response->message = physical_fallback ?
+      "Physical-radius fallback: sampled speeds checked" :
+      "Heading validated at finite speed samples (including measured speed)";
+  }
+  if (smoothing_limited) {
+    response->message += "; smoothing rejected, raw heading used";
+  }
+  // Subsequent updates blend from this emitted direction, including a feasible
+  // asymmetric fallback blend; no planner-execution acknowledgment is implied.
+  previous_heading_ = safe_heading;
+  // Symmetric single-speed mode preserves the original damping experiment.
+  // Asymmetric mode always checks blends, including without speed sampling.
+  RCLCPP_INFO(get_logger(),
+    "Heading update: raw=%.9f output=%.9f reference=%.9f alpha=%.9f first=%d "
+    "smooth_initial=%d speed=%.6f output_safe=%d snapshot_time=%.9f "
+    "effective_scale=%.3f fallback=%d speed_min=%.6f speed_max=%.6f "
+    "speed_checks=%zu sampled_safe=%d smoothing_limited=%d asymmetric=%d",
+    raw_heading, safe_heading, reference, alpha, first,
+    smooth_initial_heading_, speed,
+    headingSafe(state, os_x, os_y, safe_heading, effective_scale),
+    rclcpp::Time(state.header.stamp).seconds(), effective_scale, physical_fallback,
+    *std::min_element(speeds.begin(), speeds.end()),
+    *std::max_element(speeds.begin(), speeds.end()),
+    speeds.size(), headingSafeForSpeeds(state, os_x, os_y, safe_heading, effective_scale, speeds),
+    smoothing_limited, asymmetric_heading_smoothing_);
 
   visualization_msgs::msg::MarkerArray markers;
   visualization_msgs::msg::Marker arrow;
-  arrow.header.frame_id = "map";
+  arrow.header.frame_id = state.header.frame_id;
   arrow.header.stamp = now();
   arrow.ns = "avoidance";
   arrow.id = 0;
@@ -98,7 +345,7 @@ void AvoidancePointNode::handleService(
   arrow.points[1].x = response->point.x;  arrow.points[1].y = response->point.y;
   arrow.scale.x = 0.1;  arrow.scale.y = 0.2;  arrow.scale.z = 0.2;
   arrow.color.r = 0.2;  arrow.color.g = 0.8;  arrow.color.b = 0.2;  arrow.color.a = 0.8;
-  arrow.lifetime.sec = 0;
+  arrow.lifetime = rclcpp::Duration::from_seconds(snapshot_timeout_);
   markers.markers.push_back(arrow);
   marker_pub_->publish(markers);
 }
@@ -108,15 +355,19 @@ void AvoidancePointNode::handleService(
 // ---------------------------------------------------------------------------
 
 int AvoidancePointNode::selectPrimary(
-  const nav2_colregs_msgs::msg::ProcessedTSList & list)
+  const nav2_colregs_msgs::msg::ProcessedTSList & list, double ox, double oy,
+  double avoidance_radius_scale)
 {
   int best = -1;
   double best_tcpa = std::numeric_limits<double>::infinity();
 
   for (size_t i = 0; i < list.ships.size(); ++i) {
     const auto & ts = list.ships[i];
-    if (ts.has_threat && ts.tcpa < best_tcpa) {
-      best_tcpa = ts.tcpa;
+    const bool overlap = std::hypot(ts.pose.position.x - ox, ts.pose.position.y - oy) <=
+      avoidance_radius_scale * (list.os_radius + ts.radius);
+    const double score = overlap || !std::isfinite(ts.tcpa) ? 0.0 : std::max(0.0, ts.tcpa);
+    if ((ts.has_threat || overlap) && score < best_tcpa) {
+      best_tcpa = score;
       best = static_cast<int>(i);
     }
   }
@@ -139,80 +390,26 @@ double wrapAngle(double a)
 }  // namespace
 
 bool AvoidancePointNode::findSafeHeading(
-  const nav2_colregs_msgs::msg::ProcessedTS & ts,
+  const nav2_colregs_msgs::msg::ProcessedTSList & state,
   const std::string & avoid_direction,
   double goal_x, double goal_y,
   double os_x, double os_y,
+  double avoidance_radius_scale,
+  const std::vector<double> & speeds,
   double & safe_heading)
 {
-  const auto & mins = ts.collision_cone_min;
-  const auto & maxs = ts.collision_cone_max;
-
-  // Inescapable: [[0, 2π]].
-  if (mins.size() == 1 && maxs.size() == 1 &&
-      mins[0] < 1e-6 && std::abs(maxs[0] - 2.0 * M_PI) < 1e-6)
-  {
-    return false;
-  }
-
-  // No cone → all headings safe.
-  if (mins.empty()) {
-    safe_heading = std::atan2(goal_y - os_y, goal_x - os_x);
-    return true;
-  }
-
-  // Build safe intervals = complement of all unsafe intervals.
-  std::vector<std::pair<double, double>> safe;
-  double cursor = 0.0;
-
-  std::vector<std::pair<double, double>> unsafe;
-  for (size_t i = 0; i < mins.size(); ++i) {
-    unsafe.emplace_back(mins[i], maxs[i]);
-  }
-  std::sort(unsafe.begin(), unsafe.end());
-
-  for (const auto & u : unsafe) {
-    if (u.first > cursor + 1e-6) {
-      safe.emplace_back(cursor, u.first);
-    }
-    cursor = std::max(cursor, u.second);
-  }
-  if (cursor < 2.0 * M_PI - 1e-6) {
-    safe.emplace_back(cursor, 2.0 * M_PI);
-  }
-
-  if (safe.empty()) {
-    return false;
-  }
-
-  double goal_angle = wrapAngle(std::atan2(goal_y - os_y, goal_x - os_x));
-
-  for (const auto & s : safe) {
-    if (goal_angle >= s.first && goal_angle <= s.second) {
-      safe_heading = goal_angle;
+  const double goal_angle = std::atan2(goal_y - os_y, goal_x - os_x);
+  const double direction = avoid_direction == "right" ? -1.0 : 1.0;
+  // Sample candidates, but never infer safety from inclusive interval endpoints.
+  // Validate each selected heading analytically against every current target.
+  for (int i = 0; i < 180; ++i) {
+    const double candidate = wrapAngle(goal_angle + direction * i * M_PI / 90.0);
+    if (headingSafeForSpeeds(state, os_x, os_y, candidate, avoidance_radius_scale, speeds)) {
+      safe_heading = candidate;
       return true;
     }
   }
-
-  // ENU: CCW is +. "right" = CW = decreasing angle → scan backward from goal.
-  if (avoid_direction == "right") {
-    for (auto it = safe.rbegin(); it != safe.rend(); ++it) {
-      if (it->second < goal_angle) {
-        safe_heading = it->second;
-        return true;
-      }
-    }
-    safe_heading = safe.back().second;
-  } else {
-    for (const auto & s : safe) {
-      if (s.first > goal_angle) {
-        safe_heading = s.first;
-        return true;
-      }
-    }
-    safe_heading = safe.front().first;
-  }
-  return true;
+  return false;
 }
 
 }  // namespace nav2_colregs_ts_manager

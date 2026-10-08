@@ -1,0 +1,29 @@
+# Standalone TS algorithm settings. Pass with ts_params_file, not params_file.
+# Launch overrides use_sim_time and input topic/base-frame wiring explicitly.
+ts_state_manager:
+  ros__parameters:
+    update_frequency: 10.0      # wall-timer Hz; startup-only
+    track_list_timeout: 1.0     # maximum receipt AND measurement age [s]
+    own_ship_state_timeout: 1.0 # maximum own-ship odometry/TF age [s]
+    threat_tcpa_horizon: 40.0   # threat eligibility horizon [s]
+    threat_radius_scale: 3.0    # combined-radius scale for detection and diagnostic cones
+    os_radius: 5.0              # physical own-ship radius [m], shared in ProcessedTSList
+    global_frame: map
+
+avoidance_point_node:
+  ros__parameters:
+    snapshot_timeout: 1.0          # maximum processed snapshot age [s]
+    max_request_position_delta: 3.0 # request/snapshot OS XY distance limit [m]
+    avoidance_radius_scale: 1.5    # combined-radius scale; OS radius comes from the snapshot
+    point_extension_distance: 20.0  # independent endpoint range extension [m]
+    heading_smoothing_alpha: 0.5    # heading blend per request; 1.0 disables damping
+    smooth_initial_heading: false  # first output is direct; fallback always hard-sets
+    speed_tolerance: 0.0           # +/- m/s around measured speed; 0 disables sampling
+    speed_sample_count: 5          # uniform interval samples; also check measured speed
+
+barrier_node:
+  ros__parameters:
+    snapshot_timeout: 1.0
+    max_request_position_delta: 3.0
+    closing_segment_length: 8.0   # short third segment [m]; L1=5.3m for the default 5m TS
+    lateral_margin: 0.3           # first segment length = TS radius + this offset [m]

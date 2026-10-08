@@ -2,6 +2,7 @@
 #define NAV2_COLREGS_TS_MANAGER__AVOIDANCE_POINT_HPP_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -27,13 +28,17 @@ private:
     const std::shared_ptr<nav2_colregs_msgs::srv::GetAvoidancePoint::Request> request,
     const std::shared_ptr<nav2_colregs_msgs::srv::GetAvoidancePoint::Response> response);
 
-  int selectPrimary(const nav2_colregs_msgs::msg::ProcessedTSList & list);
+  int selectPrimary(const nav2_colregs_msgs::msg::ProcessedTSList & list,
+    double ox, double oy, double avoidance_radius_scale);
+  void clearMarkers();
 
   bool findSafeHeading(
-    const nav2_colregs_msgs::msg::ProcessedTS & ts,
+    const nav2_colregs_msgs::msg::ProcessedTSList & state,
     const std::string & avoid_direction,
     double goal_x, double goal_y,
     double os_x, double os_y,
+    double avoidance_radius_scale,
+    const std::vector<double> & speeds,
     double & safe_heading);
 
   rclcpp::Subscription<nav2_colregs_msgs::msg::ProcessedTSList>::SharedPtr
@@ -43,6 +48,18 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
 
   nav2_colregs_msgs::msg::ProcessedTSList::ConstSharedPtr last_ts_list_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
+  rclcpp::TimerBase::SharedPtr expiry_timer_;
+  double snapshot_timeout_{1.0};
+  double max_request_position_delta_{3.0};
+  double heading_smoothing_alpha_{1.0};
+  bool asymmetric_heading_smoothing_{false};
+  double heading_alpha_increase_{1.0};
+  double heading_alpha_decrease_{0.15};
+  bool smooth_initial_heading_{false};
+  double speed_tolerance_{0.0};
+  int speed_sample_count_{5};
+  std::optional<double> previous_heading_;
 };
 
 }  // namespace nav2_colregs_ts_manager
