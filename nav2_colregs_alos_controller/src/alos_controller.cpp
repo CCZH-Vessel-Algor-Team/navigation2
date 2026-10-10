@@ -63,7 +63,22 @@ void ALOSController::configure(
   nav2_util::declare_parameter_if_not_declared(
     node, plugin_name_ + ".debug_log_enabled", rclcpp::ParameterValue(false));
 
+  rcl_interfaces::msg::ParameterDescriptor startup_parameter;
+  startup_parameter.read_only = true;
+  for (const auto & setting : {
+      std::make_pair("fallback_linear_vel", rclcpp::ParameterValue(1.0)),
+      std::make_pair("publish_carrot", rclcpp::ParameterValue(true)),
+      std::make_pair("publish_heading_error_ned", rclcpp::ParameterValue(true)),
+      std::make_pair("publish_target_velocity_ned", rclcpp::ParameterValue(true)),
+      std::make_pair("enu_frame", rclcpp::ParameterValue("map"))})
+  {
+    if (!node->has_parameter(plugin_name_ + "." + setting.first)) {
+      node->declare_parameter(plugin_name_ + "." + setting.first, setting.second, startup_parameter);
+    }
+  }
+
   node->get_parameter(plugin_name_ + ".desired_linear_vel", desired_linear_vel_);
+  guidance_linear_vel_ = desired_linear_vel_;
   node->get_parameter(plugin_name_ + ".max_linear_accel", max_linear_accel_);
   node->get_parameter(plugin_name_ + ".max_angular_vel", max_angular_vel_);
   node->get_parameter(plugin_name_ + ".max_angular_accel", max_angular_accel_);
@@ -77,6 +92,14 @@ void ALOSController::configure(
   node->get_parameter(plugin_name_ + ".max_robot_pose_search_dist",
                       max_robot_pose_search_dist_);
   node->get_parameter(plugin_name_ + ".debug_log_enabled", debug_log_enabled_);
+  node->get_parameter(plugin_name_ + ".fallback_linear_vel", fallback_linear_vel_);
+  node->get_parameter(plugin_name_ + ".publish_carrot", publish_carrot_);
+  node->get_parameter(plugin_name_ + ".publish_heading_error_ned", publish_heading_error_ned_);
+  node->get_parameter(plugin_name_ + ".publish_target_velocity_ned", publish_target_velocity_ned_);
+  node->get_parameter(plugin_name_ + ".enu_frame", enu_frame_);
+  if (!std::isfinite(fallback_linear_vel_) || fallback_linear_vel_ < 0.0 || enu_frame_.empty()) {
+    throw nav2_core::PlannerException("ALOS requires a finite nonnegative fallback speed and ENU frame");
+  }
 
   beta_hat_ = beta_hat0_;
   previous_goal_position_.reset();
@@ -90,8 +113,18 @@ void ALOSController::configure(
     nav2_costmap_2d::FootprintCollisionChecker<nav2_costmap_2d::Costmap2D *>>(
     costmap_);
 
-  carrot_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>(
-    "lookahead_point", 1);
+  if (publish_carrot_) {
+    carrot_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>(
+      "lookahead_point", 1);
+  }
+  if (publish_heading_error_ned_) {
+    heading_error_ned_pub_ = node->create_publisher<std_msgs::msg::Float64>(
+      "alos/heading_error_ned", 1);
+  }
+  if (publish_target_velocity_ned_) {
+    target_velocity_ned_pub_ = node->create_publisher<geometry_msgs::msg::Vector3Stamped>(
+      "alos/target_velocity_ned", 1);
+  }
   closest_pub_ = node->create_publisher<geometry_msgs::msg::PointStamped>(
     "closest_point", 1);
   plan_pub_ = node->create_publisher<nav_msgs::msg::Path>(
@@ -102,6 +135,8 @@ void ALOSController::cleanup()
 {
   RCLCPP_INFO(logger_, "Cleaning up ALOSController: %s", plugin_name_.c_str());
   carrot_pub_.reset();
+  heading_error_ned_pub_.reset();
+  target_velocity_ned_pub_.reset();
   closest_pub_.reset();
   plan_pub_.reset();
   global_plan_.poses.clear();
@@ -113,7 +148,15 @@ void ALOSController::cleanup()
 void ALOSController::activate()
 {
   RCLCPP_INFO(logger_, "Activating ALOSController: %s", plugin_name_.c_str());
-  carrot_pub_->on_activate();
+  if (carrot_pub_) {
+    carrot_pub_->on_activate();
+  }
+  if (heading_error_ned_pub_) {
+    heading_error_ned_pub_->on_activate();
+  }
+  if (target_velocity_ned_pub_) {
+    target_velocity_ned_pub_->on_activate();
+  }
   closest_pub_->on_activate();
   plan_pub_->on_activate();
 }
@@ -121,7 +164,15 @@ void ALOSController::activate()
 void ALOSController::deactivate()
 {
   RCLCPP_INFO(logger_, "Deactivating ALOSController: %s", plugin_name_.c_str());
-  carrot_pub_->on_deactivate();
+  if (carrot_pub_) {
+    carrot_pub_->on_deactivate();
+  }
+  if (heading_error_ned_pub_) {
+    heading_error_ned_pub_->on_deactivate();
+  }
+  if (target_velocity_ned_pub_) {
+    target_velocity_ned_pub_->on_deactivate();
+  }
   closest_pub_->on_deactivate();
   plan_pub_->on_deactivate();
 }
@@ -211,12 +262,14 @@ geometry_msgs::msg::TwistStamped ALOSController::computeVelocityCommands(
   auto P_f = findForwardPoint(transformed_plan, closest_idx, forward_dist_);
 
   // Publish debug: lookahead = P_f, closest = P_c
-  auto carrot_msg = std::make_unique<geometry_msgs::msg::PointStamped>();
-  carrot_msg->header.frame_id = costmap_ros_->getBaseFrameID();
-  carrot_msg->header.stamp = pose.header.stamp;
-  carrot_msg->point.x = P_f.x;
-  carrot_msg->point.y = P_f.y;
-  carrot_pub_->publish(std::move(carrot_msg));
+  if (carrot_pub_) {
+    auto carrot_msg = std::make_unique<geometry_msgs::msg::PointStamped>();
+    carrot_msg->header.frame_id = costmap_ros_->getBaseFrameID();
+    carrot_msg->header.stamp = pose.header.stamp;
+    carrot_msg->point.x = P_f.x;
+    carrot_msg->point.y = P_f.y;
+    carrot_pub_->publish(std::move(carrot_msg));
+  }
 
   auto closest_msg = std::make_unique<geometry_msgs::msg::PointStamped>();
   closest_msg->header.frame_id = costmap_ros_->getBaseFrameID();
@@ -240,13 +293,16 @@ geometry_msgs::msg::TwistStamped ALOSController::computeVelocityCommands(
   double pi_h = std::atan2(P_f.y - P_c.y, P_f.x - P_c.x);
   double y_e = std::sin(pi_h) * P_c.x - std::cos(pi_h) * P_c.y;
   double target_angle = pi_h - beta_hat_ - std::atan(y_e / forward_dist_);
-  double angle_error = target_angle;   // robot yaw = 0 in base_link frame
+  double angle_error = std::atan2(std::sin(target_angle), std::cos(target_angle));
+  if (!std::isfinite(angle_error)) {
+    throw nav2_core::PlannerException("ALOS computed a nonfinite heading error");
+  }
 
   // Update sideslip estimate for the NEXT control cycle.
   //  dot_beta = gamma * Delta * y_e / sqrt(Delta^2 + y_e^2)  (Fossen 2023, Ch. 10)
   //
   //  NOTE: beta_hat_ is updated unconditionally every cycle, including during
-  //  turn-in-place (max_angle_for_motion gate).  During pure rotation the robot
+  //  large-angle fallback. With a zero fallback, during pure rotation the robot
   //  is stationary, so y_e is purely geometric and does not represent actual
   //  sideslip.  This may cause beta_hat_ to accumulate spurious corrections.
   //  A future improvement would gate the update on the linear velocity exceeding
@@ -256,18 +312,9 @@ geometry_msgs::msg::TwistStamped ALOSController::computeVelocityCommands(
   beta_hat_ += gamma_ * forward_dist_ * y_e / denom * control_duration_;
 
   // 5 — Angular velocity with trapezoidal profile.
-	//   !!! potential issue: beta hat accumulates even when turning-in-place
-	//   which is against the hypothesis of the ALOS algor
   geometry_msgs::msg::TwistStamped cmd_vel;
   cmd_vel.header = pose.header;
   cmd_vel.twist.angular.z = computeAngularVelocity(angle_error, speed);
-
-  // 5b — Turn-in-place gate.
-  if (max_angle_for_motion_ > 0.0 &&
-      std::fabs(angle_error) > max_angle_for_motion_)
-  {
-    return cmd_vel;
-  }
 
   // 6 — Linear velocity with trapezoidal profile.
   //     is_goal_point: true when P_f has reached or passed the final goal
@@ -276,7 +323,18 @@ geometry_msgs::msg::TwistStamped ALOSController::computeVelocityCommands(
   bool is_goal_point = (closest_idx >= transformed_plan.poses.size() - 1 ||
                         P_f == transformed_plan.poses.back().pose.position);
   double dist_to_goal = std::hypot(P_f.x, P_f.y);
-  cmd_vel.twist.linear.x = computeLinearVelocity(speed, is_goal_point, dist_to_goal);
+  const bool stopped = is_goal_point && dist_to_goal <= goal_dist_tol_;
+  const double reference_velocity = referenceLinearVelocity(angle_error, stopped);
+  if (stopped) {
+    cmd_vel.twist.linear.x = 0.0;
+  } else if (max_angle_for_motion_ > 0.0 && std::fabs(angle_error) > max_angle_for_motion_) {
+    cmd_vel.twist.linear.x = std::clamp(
+      std::min(fallback_linear_vel_, desired_linear_vel_),
+      speed.linear.x - max_linear_accel_ * control_duration_,
+      speed.linear.x + max_linear_accel_ * control_duration_);
+  } else {
+    cmd_vel.twist.linear.x = computeLinearVelocity(speed, is_goal_point, dist_to_goal);
+  }
 
   // 7 — Footprint collision check.
   double footprint_cost = collision_checker_->footprintCostAtPose(
@@ -287,6 +345,8 @@ geometry_msgs::msg::TwistStamped ALOSController::computeVelocityCommands(
   if (footprint_cost >= static_cast<double>(nav2_costmap_2d::LETHAL_OBSTACLE)) {
     throw nav2_core::PlannerException("ALOSController detected collision ahead!");
   }
+
+  publishGuidance(pose, angle_error, reference_velocity);
 
   // 8 — Optional CSV debug log.
   if (debug_log_enabled_) {
@@ -314,6 +374,49 @@ geometry_msgs::msg::TwistStamped ALOSController::computeVelocityCommands(
   }
 
   return cmd_vel;
+}
+
+double ALOSController::referenceLinearVelocity(double angle_error, bool stopped) const
+{
+  if (stopped) {
+    return 0.0;
+  }
+  if (!std::isfinite(guidance_linear_vel_) || guidance_linear_vel_ < 0.0) {
+    throw nav2_core::PlannerException("ALOS requires a finite nonnegative cruise speed");
+  }
+  if (max_angle_for_motion_ > 0.0 && std::fabs(angle_error) > max_angle_for_motion_) {
+    return fallback_linear_vel_;
+  }
+  return guidance_linear_vel_;
+}
+
+void ALOSController::publishGuidance(
+  const geometry_msgs::msg::PoseStamped & pose, double angle_error, double reference_velocity)
+{
+  geometry_msgs::msg::Vector3Stamped velocity;
+  if (target_velocity_ned_pub_) {
+    geometry_msgs::msg::PoseStamped enu_pose;
+    if (!transformPose(enu_frame_, pose, enu_pose)) {
+      throw nav2_core::PlannerException("Unable to transform ALOS pose to ENU frame");
+    }
+    const double target_yaw_enu = tf2::getYaw(enu_pose.pose.orientation) + angle_error;
+    if (!std::isfinite(target_yaw_enu)) {
+      throw nav2_core::PlannerException("ALOS received a nonfinite ENU heading");
+    }
+    velocity.header.stamp = pose.header.stamp;
+    velocity.header.frame_id = enu_frame_ + "_ned";
+    velocity.vector.x = reference_velocity * std::sin(target_yaw_enu);  // North
+    velocity.vector.y = reference_velocity * std::cos(target_yaw_enu);  // East
+    velocity.vector.z = 0.0;
+  }
+  if (heading_error_ned_pub_) {
+    std_msgs::msg::Float64 error;
+    error.data = -angle_error;  // Clockwise/right positive, radians in [-pi, pi].
+    heading_error_ned_pub_->publish(error);
+  }
+  if (target_velocity_ned_pub_) {
+    target_velocity_ned_pub_->publish(velocity);
+  }
 }
 
 // ---------------------------------------------------------------------------

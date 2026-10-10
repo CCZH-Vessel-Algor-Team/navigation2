@@ -299,6 +299,52 @@ ros2 param set /avoidance_point_node point_extension_distance 20.0
 
 ### Controller registration
 
+#### ALOS large-angle speed and NED guidance outputs
+
+ALOS uses `fallback_linear_vel` (default **1.0 m/s**) when the wrapped heading
+error exceeds `max_angle_for_motion`. The body-frame fallback is capped at the
+current command speed limit and applies the existing acceleration limit. The
+NED output is an independent guidance reference: its magnitude uses the configured
+cruise/fallback speed, without command speed limits, acceleration or angular limits.
+Within the final XY goal tolerance, both linear
+outputs are zero, even for a large heading error. Angular control remains active.
+
+The following ALOS parameters are read at configure time; changes require
+cleanup/configure or a new launch. Publication switches are independent:
+
+```yaml
+controller_server:
+  ros__parameters:
+    FollowPath:
+      fallback_linear_vel: 1.0     # Finite, >= 0; zero restores a zero-speed turn.
+      publish_carrot: true         # Existing lookahead_point (PointStamped).
+      publish_heading_error_ned: true
+      publish_target_velocity_ned: true
+      enu_frame: map               # Must represent local East/North/Up axes.
+```
+
+- `alos/heading_error_ned` (`std_msgs/Float64`): target minus current heading,
+  radians in `[-pi, pi]`, clockwise/right positive. It uses the ALOS heading
+  including cross-track and sideslip compensation, not the final waypoint yaw.
+- `alos/target_velocity_ned` (`geometry_msgs/Vector3Stamped`): North/East/Down
+  components in m/s, zero Down component. Direction is the ALOS target heading;
+  magnitude is configured cruise speed, configured fallback speed, or zero as above.
+  `setSpeedLimit()` affects only body commands, not this NED guidance reference. The timestamp is
+  the current controller pose timestamp. With `enu_frame: map`, `frame_id` is
+  `map_ned`: the documented axis conversion of map, not an automatically
+  broadcast TF frame. Transform the own-ship pose into `enu_frame` before the
+  conversion; failure prevents both new outputs for that cycle and fails the
+  control computation. Disabling NED velocity publication avoids that extra TF.
+- Topic names are relative to the controller node namespace (e.g. `/usv_1/alos/...`).
+  The scalar heading message has no header; consumers requiring paired timestamps
+  must account for this. Messages use reliable volatile QoS, depth 1, and are
+  published only while the lifecycle publishers are active and control is running.
+  On cancellation or failed control, no further reference is produced; consumers
+  must expire old references rather than latch them as continuing commands.
+
+Publication toggles do not change the control law, and `publish_carrot` affects
+only lookahead_point; closest_point and received_global_plan remain available.
+
 ```yaml
 controller_server:
   ros__parameters:

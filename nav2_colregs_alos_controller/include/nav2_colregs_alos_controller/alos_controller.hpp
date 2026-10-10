@@ -14,6 +14,8 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "tf2/utils.h"
+#include "geometry_msgs/msg/vector3_stamped.hpp"
+#include "std_msgs/msg/float64.hpp"
 
 namespace nav2_colregs_alos_controller
 {
@@ -112,6 +114,11 @@ protected:
 
   bool updateGoalAndCheckIfNew(const nav_msgs::msg::Path & path);
 
+  double referenceLinearVelocity(double angle_error, bool stopped) const;
+  void publishGuidance(
+    const geometry_msgs::msg::PoseStamped & pose, double angle_error,
+    double reference_velocity);
+
   mutable std::mutex mutex_;
   rclcpp_lifecycle::LifecycleNode::WeakPtr node_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
@@ -125,10 +132,15 @@ protected:
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::PointStamped>>
     closest_pub_;
   std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<nav_msgs::msg::Path>> plan_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<std_msgs::msg::Float64>>
+    heading_error_ned_pub_;
+  std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<geometry_msgs::msg::Vector3Stamped>>
+    target_velocity_ned_pub_;
   std::string plugin_name_;
   rclcpp::Logger logger_{rclcpp::get_logger("ALOSController")};
 
   double desired_linear_vel_{0.5};
+  double guidance_linear_vel_{0.5};
   double max_linear_accel_{1.0};
   double max_angular_vel_{1.8};
   double max_angular_accel_{3.2};
@@ -144,6 +156,11 @@ protected:
   double goal_dist_tol_{0.25};
   double control_duration_{0.05};
   double max_angle_for_motion_{0.3};
+  double fallback_linear_vel_{1.0};
+  bool publish_carrot_{true};
+  bool publish_heading_error_ned_{true};
+  bool publish_target_velocity_ned_{true};
+  std::string enu_frame_{"map"};
   bool debug_log_enabled_{false};
 };
 
