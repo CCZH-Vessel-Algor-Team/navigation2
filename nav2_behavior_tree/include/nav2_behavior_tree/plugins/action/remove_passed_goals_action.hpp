@@ -23,6 +23,7 @@
 #include "nav2_util/geometry_utils.hpp"
 #include "nav2_util/robot_utils.hpp"
 #include "behaviortree_cpp_v3/action_node.h"
+#include "usv_interfaces/srv/navigation_control.hpp"
 
 namespace nav2_behavior_tree
 {
@@ -56,6 +57,9 @@ private:
   std::string robot_base_frame_, global_frame_;
   double transform_tolerance_;
   std::shared_ptr<tf2_ros::Buffer> tf_;
+  rclcpp::CallbackGroup::SharedPtr usv_group_;
+  rclcpp::executors::SingleThreadedExecutor usv_executor_;
+  rclcpp::Client<usv_interfaces::srv::NavigationControl>::SharedPtr usv_client_;
 };
 
 }  // namespace nav2_behavior_tree

@@ -1,0 +1,22 @@
+<root main_tree_to_execute="Navigate">
+  <BehaviorTree ID="Navigate">
+    <!-- TaskStore enforces the authoritative budget; this bound is a second cap. -->
+    <RecoveryNode number_of_retries="12" name="BoundedNavigationRecovery">
+      <Sequence>
+        <NavigationContract operation="begin"/>
+        <PipelineSequence>
+          <RateController hz="0.333">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="VORRTStar"/>
+          </RateController>
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+        </PipelineSequence>
+      </Sequence>
+      <Sequence name="StoppedWaitRecovery">
+        <NavigationContract operation="stop"/>
+        <NavigationContract operation="quiet"/>
+        <NavigationContract operation="retry"/>
+        <Wait wait_duration="5"/>
+      </Sequence>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

@@ -18,6 +18,7 @@
 #include <string>
 #include <utility>
 #include <limits>
+#include <random>
 
 #include "lifecycle_msgs/msg/state.hpp"
 #include "nav2_core/exceptions.hpp"
@@ -61,6 +62,7 @@ ControllerServer::ControllerServer(const rclcpp::NodeOptions & options)
 
   declare_parameter("failure_tolerance", rclcpp::ParameterValue(0.0));
   declare_parameter("publish_zero_velocity", rclcpp::ParameterValue(true));
+  declare_parameter("require_managed_execution", false);
 
   // The costmap node is used in the implementation of the controller
   costmap_ros_ = std::make_shared<nav2_costmap_2d::Costmap2DROS>(
@@ -196,6 +198,25 @@ ControllerServer::on_configure(const rclcpp_lifecycle::State & /*state*/)
 
   odom_sub_ = std::make_unique<nav_2d_utils::OdomSubscriber>(node);
   vel_publisher_ = create_publisher<geometry_msgs::msg::Twist>("cmd_vel", 1);
+  get_parameter("require_managed_execution", require_managed_execution_);
+  usv_producer_boot_ = std::to_string(std::random_device{}()) + ":" +
+    std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  usv_motion_pub_ = rclcpp::create_publisher<usv_interfaces::msg::ManagedMotion>(
+    node, "autonomy/motion_raw", rclcpp::QoS(1));
+  usv_evidence_pub_ = rclcpp::create_publisher<usv_interfaces::msg::ExecutionEvidence>(
+    node, "autonomy/producer", rclcpp::QoS(10));
+  usv_timer_ = create_wall_timer(std::chrono::milliseconds(100), [this]() {
+      std::lock_guard<std::mutex> context_lock(usv_mutex_);
+      usv_interfaces::msg::ExecutionEvidence evidence;
+      evidence.header.stamp = now();
+      evidence.role = "controller";
+      evidence.boot_id = usv_producer_boot_;
+      evidence.execution_id = usv_goal_.usv_execution_id;
+      evidence.attempt_id = usv_goal_.usv_attempt_id;
+      evidence.epoch = usv_goal_.usv_epoch;
+      evidence.active = usv_active_;
+      usv_evidence_pub_->publish(evidence);
+    });
 
   // Create the action server that we implement with our followPath method
   action_server_ = std::make_unique<ActionServer>(
@@ -357,6 +378,23 @@ bool ControllerServer::findGoalCheckerId(
 void ControllerServer::computeControl()
 {
   std::lock_guard<std::mutex> lock(dynamic_params_lock_);
+  {
+    std::lock_guard<std::mutex> context_lock(usv_mutex_);
+    usv_goal_ = *action_server_->get_current_goal();
+    if (require_managed_execution_ &&
+      (usv_goal_.usv_execution_id.empty() || usv_goal_.usv_boot_id.empty() || usv_goal_.usv_epoch == 0))
+    {
+      action_server_->terminate_current();
+      return;
+    }
+    usv_active_ = true;
+    usv_sequence_ = 0;
+  }
+  // This guard runs AFTER terminal publication and every exceptional/early return.
+  auto idle_guard = std::shared_ptr<void>(nullptr, [this](void *) {
+      std::lock_guard<std::mutex> context_lock(usv_mutex_);
+      usv_active_ = false;
+    });
 
   RCLCPP_INFO(get_logger(), "Received a goal, begin computing control effort.");
 
@@ -400,6 +438,13 @@ void ControllerServer::computeControl()
       // Don't compute a trajectory until costmap is valid (after clear costmap)
       rclcpp::Rate r(100);
       while (!costmap_ros_->isCurrent()) {
+        if (!rclcpp::ok() || action_server_->is_cancel_requested() ||
+          !action_server_->is_server_active())
+        {
+          publishZeroVelocity();
+          action_server_->terminate_all();
+          return;
+        }
         r.sleep();
       }
 
@@ -421,7 +466,9 @@ void ControllerServer::computeControl()
   } catch (nav2_core::PlannerException & e) {
     RCLCPP_ERROR(this->get_logger(), "%s", e.what());
     publishZeroVelocity();
-    action_server_->terminate_current();
+    auto result = std::make_shared<Action::Result>();
+    result->usv_retryable = !action_server_->get_current_goal()->path.poses.empty();
+    action_server_->terminate_current(result);
     return;
   } catch (std::exception & e) {
     RCLCPP_ERROR(this->get_logger(), "%s", e.what());
@@ -537,6 +584,18 @@ void ControllerServer::computeAndPublishVelocity()
 void ControllerServer::updateGlobalPath()
 {
   if (action_server_->is_preempt_requested()) {
+    const auto pending = action_server_->get_pending_goal();
+    {
+      std::lock_guard<std::mutex> context_lock(usv_mutex_);
+      if (require_managed_execution_ &&
+        (pending->usv_execution_id != usv_goal_.usv_execution_id ||
+        pending->usv_attempt_id != usv_goal_.usv_attempt_id ||
+        pending->usv_epoch != usv_goal_.usv_epoch || pending->usv_boot_id != usv_goal_.usv_boot_id))
+      {
+        action_server_->terminate_pending_goal();
+        return;
+      }
+    }
     RCLCPP_INFO(get_logger(), "Passing new path to controller.");
     auto goal = action_server_->accept_pending_goal();
     std::string current_controller;
@@ -565,6 +624,22 @@ void ControllerServer::updateGlobalPath()
 
 void ControllerServer::publishVelocity(const geometry_msgs::msg::TwistStamped & velocity)
 {
+  {
+    std::lock_guard<std::mutex> context_lock(usv_mutex_);
+    if (usv_active_ && !usv_goal_.usv_execution_id.empty()) {
+      usv_interfaces::msg::ManagedMotion command;
+      command.header.stamp = now();
+      command.boot_id = usv_goal_.usv_boot_id;
+      command.execution_id = usv_goal_.usv_execution_id;
+      command.attempt_id = usv_goal_.usv_attempt_id;
+      command.epoch = usv_goal_.usv_epoch;
+      command.sequence = ++usv_sequence_;
+      command.valid_for.nanosec = 250000000;
+      command.velocity = velocity.twist;
+      usv_motion_pub_->publish(command);
+    }
+  }
+  if (require_managed_execution_) {return;}
   auto cmd_vel = std::make_unique<geometry_msgs::msg::Twist>(velocity.twist);
   if (vel_publisher_->is_activated() && vel_publisher_->get_subscription_count() > 0) {
     vel_publisher_->publish(std::move(cmd_vel));

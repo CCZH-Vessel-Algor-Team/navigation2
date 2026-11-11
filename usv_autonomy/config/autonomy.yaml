@@ -1,0 +1,54 @@
+/**:
+  ros__parameters:
+    automatic_authority_return: false
+    cancel_timeout: 3.0
+    leg_retries: 3
+    task_retries: 12
+    recovery_timeout: 120.0
+    input_timeout: 1.0
+    command_timeout: 0.3
+    pose_timeout: 1.0
+    goal_tolerance: 1.5
+    require_radar: true
+    require_estop_heartbeat: false
+    emergency_requires_reset: true
+    emergency_clear_time: 3.0
+    emergency_distance: 5.0
+    slow_distance: 15.0
+    max_speed: 6.0
+    slow_speed: 0.3
+    odom_timeout: 0.5
+    sensor_timeout: 1.0
+    observe_time: 5.0
+    clear_time: 5.0
+    observation_timeout: 1.5
+    # Missing locked targets require manual takeover/reset, never auto-clear.
+    missing_target_timeout: 5.0
+    # Opt in with launch left_crossing_stand_on:=true. Simulation policy defaults,
+    # not vessel-certified stopping/avoidance limits; tune before deployment.
+    stand_on_confirm_time: 1.0
+    # Preserve a confirmed head-on responsibility across own-ship avoidance turns.
+    # Safe release needs continuous valid passed/opening observations, not a new
+    # instantaneous geometry label or a target disappearing from the stream.
+    encounter_confirm_time: 1.0
+    encounter_end_time: 5.0
+    encounter_release_range: 40.0
+    planner_switch_settle_time: 0.5
+    maritime_wait_tcpa: 30.0
+    maritime_wait_dcpa: 20.0
+    maritime_critical_range: 10.0
+    maritime_critical_tcpa: 5.0
+    maritime_fault_timeout: 5.0
+    handover_timeout: 5.0
+    handover_retry_interval: 5.0
+    manual_takeover_modes: [MANUAL, SIM_MANUAL]
+    dcpa_improvement: 10.0
+    release_dcpa: 40.0
+    wait_risk: 2
+    regular_timeout: 1.0
+    regular_clear_time: 2.0
+    degraded_xy_variance: 4.0
+    inhibited_xy_variance: 9.0
+    # Comma-separated NavigationInputState sources (e.g. gnss,perception,weather).
+    # Enabling a source requires its monitor to publish fresh explicit NORMAL.
+    required_health_sources: ""

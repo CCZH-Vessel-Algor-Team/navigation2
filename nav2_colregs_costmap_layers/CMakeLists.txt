@@ -68,5 +68,11 @@ if(BUILD_TESTING)
     nav2_costmap_2d usv_interfaces geometry_msgs tf2_ros rclcpp pluginlib)
   set_tests_properties(test_perceived_obstacle_layer PROPERTIES
     ENVIRONMENT "ROS_DOMAIN_ID=92;FASTDDS_BUILTIN_TRANSPORTS=UDPv4")
+  ament_add_gtest(test_stand_on_projection test/test_stand_on_projection.cpp)
+  target_link_libraries(test_stand_on_projection ${library_name})
+  ament_target_dependencies(test_stand_on_projection
+    nav2_costmap_2d nav2_colregs_msgs usv_interfaces tf2_ros rclcpp)
+  set_tests_properties(test_stand_on_projection PROPERTIES
+    ENVIRONMENT "ROS_DOMAIN_ID=93;FASTDDS_BUILTIN_TRANSPORTS=UDPv4")
 endif()
 ament_package()

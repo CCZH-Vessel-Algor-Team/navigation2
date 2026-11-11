@@ -11,6 +11,7 @@ find_package(rclcpp_components REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(nav2_util REQUIRED)
 find_package(nav2_msgs REQUIRED)
+find_package(usv_interfaces REQUIRED)
 find_package(nav_2d_utils REQUIRED)
 find_package(nav_2d_msgs REQUIRED)
 find_package(pluginlib REQUIRED)
@@ -40,6 +41,7 @@ set(dependencies
   rclcpp_components
   std_msgs
   nav2_msgs
+  usv_interfaces
   nav_2d_utils
   nav_2d_msgs
   nav2_util

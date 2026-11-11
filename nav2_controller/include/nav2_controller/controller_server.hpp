@@ -35,6 +35,8 @@
 #include "nav2_util/robot_utils.hpp"
 #include "pluginlib/class_loader.hpp"
 #include "pluginlib/class_list_macros.hpp"
+#include "usv_interfaces/msg/managed_motion.hpp"
+#include "usv_interfaces/msg/execution_evidence.hpp"
 
 namespace nav2_controller
 {
@@ -266,6 +268,15 @@ protected:
   nav_msgs::msg::Path current_path_;
 
 private:
+  bool require_managed_execution_{false};
+  std::mutex usv_mutex_;
+  Action::Goal usv_goal_;
+  bool usv_active_{false};
+  uint64_t usv_sequence_{0};
+  std::string usv_producer_boot_;
+  rclcpp::Publisher<usv_interfaces::msg::ManagedMotion>::SharedPtr usv_motion_pub_;
+  rclcpp::Publisher<usv_interfaces::msg::ExecutionEvidence>::SharedPtr usv_evidence_pub_;
+  rclcpp::TimerBase::SharedPtr usv_timer_;
   /**
     * @brief Callback for speed limiting messages
     * @param msg Shared pointer to nav2_msgs::msg::SpeedLimit

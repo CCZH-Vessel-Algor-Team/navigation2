@@ -33,6 +33,7 @@
 #include "nav2_costmap_2d/footprint_collision_checker.hpp"
 
 #include "nav2_planner/planner_server.hpp"
+#include "nav2_core/exceptions.hpp"
 
 using namespace std::chrono_literals;
 using rcl_interfaces::msg::ParameterType;
@@ -312,7 +313,9 @@ bool PlannerServer::getStartPose(
   if (goal->use_start) {
     start = goal->start;
   } else if (!costmap_ros_->getRobotPose(start)) {
-    action_server->terminate_current();
+    auto result = std::make_shared<typename T::Result>();
+    result->usv_retryable = true;
+    action_server->terminate_current(result);
     return false;
   }
 
@@ -330,7 +333,9 @@ bool PlannerServer::transformPosesToGlobalFrame(
   {
     RCLCPP_WARN(
       get_logger(), "Could not transform the start or goal pose in the costmap frame");
-    action_server->terminate_current();
+    auto result = std::make_shared<typename T::Result>();
+    result->usv_retryable = true;
+    action_server->terminate_current(result);
     return false;
   }
 
@@ -349,7 +354,10 @@ bool PlannerServer::validatePath(
       get_logger(), "Planning algorithm %s failed to generate a valid"
       " path to (%.2f, %.2f)", planner_id.c_str(),
       goal.pose.position.x, goal.pose.position.y);
-    action_server->terminate_current();
+    auto result = std::make_shared<typename T::Result>();
+    result->usv_retryable = planners_.find(planner_id) != planners_.end() ||
+      (planner_id.empty() && planners_.size() == 1);
+    action_server->terminate_current(result);
     return false;
   }
 
@@ -388,6 +396,7 @@ PlannerServer::computePlanThroughPoses()
         get_logger(),
         "Compute path through poses requested a plan with no viapoint poses, returning.");
       action_server_poses_->terminate_current();
+      return;
     }
 
     // Use start pose if provided otherwise use current robot pose
@@ -444,12 +453,17 @@ PlannerServer::computePlanThroughPoses()
     }
 
     action_server_poses_->succeeded_current(result);
+  } catch (const nav2_core::PlannerTransientException & ex) {
+    RCLCPP_WARN(get_logger(), "Planning input temporarily unavailable: %s", ex.what());
+    result->usv_retryable = true;
+    action_server_poses_->terminate_current(result);
   } catch (std::exception & ex) {
     RCLCPP_WARN(
       get_logger(),
       "%s plugin failed to plan through %zu points with final goal (%.2f, %.2f): \"%s\"",
-      goal->planner_id.c_str(), goal->goals.size(), goal->goals.back().pose.position.x,
-      goal->goals.back().pose.position.y, ex.what());
+      goal->planner_id.c_str(), goal->goals.size(),
+      goal->goals.empty() ? 0.0 : goal->goals.back().pose.position.x,
+      goal->goals.empty() ? 0.0 : goal->goals.back().pose.position.y, ex.what());
     action_server_poses_->terminate_current();
   }
 }
@@ -506,6 +520,10 @@ PlannerServer::computePlan()
     }
 
     action_server_pose_->succeeded_current(result);
+  } catch (const nav2_core::PlannerTransientException & ex) {
+    RCLCPP_WARN(get_logger(), "Planning input temporarily unavailable: %s", ex.what());
+    result->usv_retryable = true;
+    action_server_pose_->terminate_current(result);
   } catch (std::exception & ex) {
     RCLCPP_WARN(
       get_logger(), "%s plugin failed to plan calculation to (%.2f, %.2f): \"%s\"",

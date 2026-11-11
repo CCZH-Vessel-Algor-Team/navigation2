@@ -1,0 +1,77 @@
+<root main_tree_to_execute="Task">
+  <BehaviorTree ID="Task">
+    <ReactiveFallback name="TaskPriority">
+      <ReactiveSequence name="Emergency">
+        <TaskCondition kind="emergency"/>
+        <Primitive operation="quiesce"/>
+        <Primitive operation="wait_emergency"/>
+      </ReactiveSequence>
+      <ReactiveSequence name="MaritimeManualTakeover">
+        <TaskCondition kind="handover"/>
+        <Primitive operation="quiesce"/>
+        <Primitive operation="request_manual"/>
+        <Primitive operation="wait_manual_reset"/>
+      </ReactiveSequence>
+      <ReactiveSequence name="SafetyDegradation">
+        <TaskCondition kind="safety"/>
+        <Primitive operation="quiesce"/>
+        <Primitive operation="wait_safety"/>
+      </ReactiveSequence>
+      <ReactiveSequence name="MaritimeNeutralDrift">
+        <TaskCondition kind="maritime"/>
+        <Primitive operation="quiesce"/>
+        <Primitive operation="wait_maritime"/>
+      </ReactiveSequence>
+      <ReactiveSequence name="LifecycleWaiting">
+        <TaskCondition kind="not_runnable"/>
+        <Primitive operation="quiesce"/>
+        <Primitive operation="wait_lifecycle"/>
+      </ReactiveSequence>
+      <Sequence name="Navigation">
+        <TaskCondition kind="navigation"/>
+        <Fallback>
+          <Sequence>
+            <Primitive operation="next_goal"/>
+            <Primitive operation="navigate"/>
+            <Primitive operation="commit"/>
+          </Sequence>
+          <Sequence>
+            <TaskCondition kind="navigation_done"/>
+            <Primitive operation="complete"/>
+          </Sequence>
+          <Primitive operation="execution_failed"/>
+        </Fallback>
+      </Sequence>
+      <Sequence name="RegionHold">
+        <TaskCondition kind="hold"/>
+        <ReactiveFallback>
+          <Sequence name="HoldDurationComplete">
+            <TaskCondition kind="hold_done"/>
+            <Primitive operation="complete"/>
+          </Sequence>
+          <Sequence name="HoldExecution">
+            <Primitive operation="hold_anchor"/>
+            <ReactiveFallback>
+          <Sequence name="ReturnToAnchor">
+            <Primitive operation="hold_outside"/>
+            <Fallback name="HoldReturnOutcome">
+              <Sequence>
+                 <Primitive operation="hold_prepare"/>
+                 <Primitive operation="hold_return"/>
+               </Sequence>
+               <Primitive operation="execution_failed"/>
+             </Fallback>
+             <Primitive operation="hold_finish"/>
+             <Primitive operation="quiesce"/>
+          </Sequence>
+          <Primitive operation="hold_monitor"/>
+            </ReactiveFallback>
+          </Sequence>
+        </ReactiveFallback>
+      </Sequence>
+      <Sequence name="DockInterface"><TaskCondition kind="dock"/><Primitive operation="dock"/></Sequence>
+      <Sequence name="UndockInterface"><TaskCondition kind="undock"/><Primitive operation="undock"/></Sequence>
+      <Primitive operation="wait_idle"/>
+    </ReactiveFallback>
+  </BehaviorTree>
+</root>

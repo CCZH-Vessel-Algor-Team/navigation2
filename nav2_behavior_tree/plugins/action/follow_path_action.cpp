@@ -33,6 +33,10 @@ void FollowPathAction::on_tick()
   getInput("path", goal_.path);
   getInput("controller_id", goal_.controller_id);
   getInput("goal_checker_id", goal_.goal_checker_id);
+  config().blackboard->get<std::string>("usv_boot_id", goal_.usv_boot_id);
+  config().blackboard->get<std::string>("usv_execution_id", goal_.usv_execution_id);
+  config().blackboard->get<std::string>("usv_attempt_id", goal_.usv_attempt_id);
+  config().blackboard->get<uint64_t>("usv_epoch", goal_.usv_epoch);
 }
 
 void FollowPathAction::on_wait_for_result(

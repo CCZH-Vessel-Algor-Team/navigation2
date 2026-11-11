@@ -251,6 +251,7 @@ def test_planner_actions(tmp_path, monkeypatch):
         assert bool(result.result.path.poses) == (expected == GoalStatus.STATUS_SUCCEEDED)
         assert proc.poll() is None
         print('DECISION POLICY:', planner, behavior, 'status=', result.status, flush=True)
+        return result
 
     try:
         node.create_service(GetAvoidancePoint, '/get_avoidance_point', avoidance)
@@ -337,7 +338,10 @@ def test_planner_actions(tmp_path, monkeypatch):
                            GetAvoidancePoint.Response.INVALID_REQUEST):
                 behavior['avoidance_status'] = status
                 before = len(calls['barrier'])
-                decision_plan(planner, GoalStatus.STATUS_ABORTED)
+                result = decision_plan(planner, GoalStatus.STATUS_ABORTED)
+                if planner == 'VORRTStar':
+                    assert result.result.usv_retryable == (status in (
+                        GetAvoidancePoint.Response.NO_DATA, GetAvoidancePoint.Response.STALE_STATE))
                 assert len(calls['barrier']) == before
             behavior['avoidance_status'] = GetAvoidancePoint.Response.NO_THREAT
             before = len(calls['barrier'])
@@ -351,7 +355,11 @@ def test_planner_actions(tmp_path, monkeypatch):
                                ('bad_point', True), ('bad_frame', True),
                                ('avoidance_delay', 1.2), ('barrier_delay', 1.2)]:
                 behavior[key] = value
-                decision_plan(planner, GoalStatus.STATUS_ABORTED)
+                result = decision_plan(planner, GoalStatus.STATUS_ABORTED)
+                if planner == 'VORRTStar':
+                    retryable = key in ('avoidance_delay', 'barrier_delay') or (
+                        key == 'barrier_status' and value == GetBarrierLines.Response.STALE_STATE)
+                    assert result.result.usv_retryable == retryable
                 behavior.clear()
             behavior['crossing_barrier'] = True
             decision_plan(planner, GoalStatus.STATUS_SUCCEEDED)

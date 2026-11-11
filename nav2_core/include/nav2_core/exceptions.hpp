@@ -51,6 +51,15 @@ public:
   using Ptr = std::shared_ptr<PlannerException>;
 };
 
+// Missing or expired observations / unavailable services may recover after a
+// stopped wait. This is not permission to plan without the required evidence.
+class PlannerTransientException : public PlannerException
+{
+public:
+  explicit PlannerTransientException(const std::string & description)
+  : PlannerException(description) {}
+};
+
 }  // namespace nav2_core
 
 #endif  // NAV2_CORE__EXCEPTIONS_HPP_

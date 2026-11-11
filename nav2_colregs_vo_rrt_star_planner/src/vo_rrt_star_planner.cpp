@@ -209,6 +209,9 @@ nav_msgs::msg::Path VORRTStarPlanner::createPlan(
         resp->has_feasible_angle, resp->safe_heading, resp->point.x, resp->point.y);
 
       using Response = nav2_colregs_msgs::srv::GetAvoidancePoint::Response;
+      if (resp->status == Response::NO_DATA || resp->status == Response::STALE_STATE) {
+        throw nav2_core::PlannerTransientException("COLREGS observation unavailable: " + resp->message);
+      }
       if (resp->status != Response::SUCCESS && resp->status != Response::NO_THREAT) {
         throw nav2_core::PlannerException("COLREGS avoidance failed: " + resp->message);
       }
@@ -236,6 +239,10 @@ nav_msgs::msg::Path VORRTStarPlanner::createPlan(
         auto barrier_result = barrier_client_->async_send_request(barrier_req);
         if (barrier_result.wait_for(std::chrono::seconds(1)) == std::future_status::ready) {
           auto br = barrier_result.get();
+          using BarrierResponse = nav2_colregs_msgs::srv::GetBarrierLines::Response;
+          if (br->status == BarrierResponse::NO_DATA || br->status == BarrierResponse::STALE_STATE) {
+            throw nav2_core::PlannerTransientException("COLREGS barrier observation unavailable: " + br->message);
+          }
           if (br->status != nav2_colregs_msgs::srv::GetBarrierLines::Response::SUCCESS ||
             br->snapshot_id != resp->snapshot_id || br->header != resp->header ||
             br->barriers.points.size() != 6 ||
@@ -253,12 +260,12 @@ nav_msgs::msg::Path VORRTStarPlanner::createPlan(
           has_colregs_route = true;
         } else {
           barrier_client_->remove_pending_request(barrier_result);
-          throw nav2_core::PlannerException("COLREGS: /get_barrier_lines timed out");
+          throw nav2_core::PlannerTransientException("COLREGS: /get_barrier_lines timed out");
         }
       }
     } else {
       avoidance_client_->remove_pending_request(result);
-      throw nav2_core::PlannerException("COLREGS: /get_avoidance_point timed out");
+      throw nav2_core::PlannerTransientException("COLREGS: /get_avoidance_point timed out");
     }
   }
 

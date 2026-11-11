@@ -1,0 +1,21 @@
+<root main_tree_to_execute="Navigate">
+  <BehaviorTree ID="Navigate">
+    <RecoveryNode number_of_retries="12" name="BoundedStandOnRecovery">
+      <Sequence>
+        <NavigationContract operation="begin"/>
+        <PipelineSequence>
+          <RateController hz="0.333">
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
+          </RateController>
+          <FollowPath path="{path}" controller_id="FollowPath"/>
+        </PipelineSequence>
+      </Sequence>
+      <Sequence>
+        <NavigationContract operation="stop"/>
+        <NavigationContract operation="quiet"/>
+        <NavigationContract operation="retry"/>
+        <Wait wait_duration="5"/>
+      </Sequence>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

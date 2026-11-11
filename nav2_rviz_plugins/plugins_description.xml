@@ -18,4 +18,15 @@
     <description>The Particle Cloud rviz display.</description>
   </class>
 
+  <class name="nav2_rviz_plugins/USV Autonomy"
+         type="nav2_rviz_plugins::UsvAutonomyPanel"
+         base_class_type="rviz_common::Panel">
+    <description>Managed USV task controls, state and CCS simulation tests.</description>
+  </class>
+  <class name="nav2_rviz_plugins/USV Goal"
+         type="nav2_rviz_plugins::UsvGoalTool"
+         base_class_type="rviz_common::Tool">
+    <description>Collect map waypoints and heading for the USV task panel.</description>
+  </class>
+
 </library>

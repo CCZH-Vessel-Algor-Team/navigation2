@@ -1,5 +1,29 @@
 # navigation2 — COLREGS / Maritime Extensions
 
+## Task BT + lifecycle v2
+
+`usv_autonomy` and `usv_autonomy_bt` implement the opt-in `feat/bt-test-v2`
+architecture. Task workflow is visible in `usv_autonomy_bt/trees/task.xml`;
+Nav2 planning/replanning/tracking remain separate nodes. Recovery uses only
+Wait, after motion revocation and confirmed child/producer exit. See
+[`usv_autonomy/README.md`](usv_autonomy/README.md) for entry points and contracts.
+
+The CCS simulator now loads the [USV BT v2 RViz panel and goal tool](nav2_rviz_plugins/README.md)
+for managed navigation, lifecycle/HOLD controls and explicit simulation tests.
+The original Navigation 2 panel, G goal tool and saved layout are retained;
+its navigation and lifecycle controls use the managed task adapter in v2.
+
+This feature extends Nav2 Action and maritime-report wire layouts. Rebuild
+the overlay's navigator, controller, planner and BT plugins together, source
+that overlay last, and do not connect older compiled Action clients to it.
+
+Maritime CPA boundary: 相对速度严格小于 `relative_speed_epsilon` 时 CPA 无效；
+等于该阈值且非零时仍计算 CPA。CPA 无效时的 `RISK_SAFE` 不表示已经安全解除。
+V2 reports add `current_range` for stable passed-target release and
+`SituationReportArray.observations_valid` to distinguish a valid empty scene
+from a missing/incomplete assessment. Producers and consumers must be rebuilt
+and restarted together.
+
 This repository extends the official [navigation2](https://github.com/ros-navigation/navigation2) `humble` branch with experimental COLREGS-oriented maritime navigation capabilities: velocity-obstacle RRT* planning, persistent skeleton-based replanning, target-ship state management, and LOS/ALOS guidance controllers.
 
 For upstream Nav2 documentation, see [docs.nav2.org](https://docs.nav2.org/). This README covers only the packages added in this fork.

@@ -5,12 +5,15 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <mutex>
+#include <chrono>
 
 #include "nav2_costmap_2d/layer.hpp"
 #include "nav2_costmap_2d/layered_costmap.hpp"
 #include "nav2_colregs_msgs/msg/tracked_ship_list.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "usv_interfaces/msg/maritime_rule_decision.hpp"
 
 namespace nav2_colregs_costmap_layers
 {
@@ -58,6 +61,10 @@ private:
     const std::string & from_frame);
 
   rclcpp::Subscription<nav2_colregs_msgs::msg::TrackedShipList>::SharedPtr sub_;
+  rclcpp::Subscription<usv_interfaces::msg::MaritimeRuleDecision>::SharedPtr policy_sub_;
+  std::mutex mutex_;
+  std::string stand_on_target_;
+  std::chrono::steady_clock::time_point policy_received_;
   std::string global_frame_;
   std::string tf_frame_;  // frame_id of last received TrackedShipList
 

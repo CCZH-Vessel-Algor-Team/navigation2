@@ -35,6 +35,25 @@ void TSProjectionLayer::onInitialize()
     tracked_ship_topic_, rclcpp::SystemDefaultsQoS(),
     std::bind(&TSProjectionLayer::trackedShipCallback, this, std::placeholders::_1));
 
+  // Opt-in, target-specific suppression for the global stand-on route only.
+  // Static/radar/perceived obstacles and the independent protection stay active.
+  declareParameter("stand_on_policy_topic", rclcpp::ParameterValue(std::string("")));
+  const auto policy_topic = node->get_parameter(name_ + ".stand_on_policy_topic").as_string();
+  if (!policy_topic.empty()) {
+    policy_sub_ = node->create_subscription<usv_interfaces::msg::MaritimeRuleDecision>(
+      policy_topic, 1, [this](usv_interfaces::msg::MaritimeRuleDecision::ConstSharedPtr msg) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const double age = (node_.lock()->now() - rclcpp::Time(msg->header.stamp)).seconds();
+        stand_on_target_.clear();
+        if (age >= 0.0 && age <= 1.0 && msg->header.frame_id == global_frame_ &&
+          msg->valid && msg->stand_on && !msg->intervention_required && !msg->handover_required)
+        {
+          stand_on_target_ = uuidToString(msg->target_id.uuid.data());
+          policy_received_ = std::chrono::steady_clock::now();
+        }
+      });
+  }
+
   global_frame_ = layered_costmap_->getGlobalFrameID();
   current_ = true;
   RCLCPP_INFO(logger_, "TSProjectionLayer initialized, subscribed to %s "
@@ -44,6 +63,7 @@ void TSProjectionLayer::onInitialize()
 void TSProjectionLayer::trackedShipCallback(
   nav2_colregs_msgs::msg::TrackedShipList::ConstSharedPtr msg)
 {
+  std::lock_guard<std::mutex> lock(mutex_);
   const auto now = node_.lock()->get_clock()->now();
   tf_frame_ = msg->header.frame_id;
 
@@ -115,6 +135,7 @@ void TSProjectionLayer::updateBounds(
   double * min_x, double * min_y,
   double * max_x, double * max_y)
 {
+  std::lock_guard<std::mutex> lock(mutex_);
   if (ships_.empty()) {
     return;
   }
@@ -165,6 +186,7 @@ void TSProjectionLayer::updateCosts(
   nav2_costmap_2d::Costmap2D & master_grid,
   int /*min_i*/, int /*min_j*/, int /*max_i*/, int /*max_j*/)
 {
+  std::lock_guard<std::mutex> lock(mutex_);
   if (!enabled_ || ships_.empty()) {
     return;
   }
@@ -172,6 +194,11 @@ void TSProjectionLayer::updateCosts(
   auto t = lookupTransform(tf_frame_);
 
   for (const auto & entry_pair : ships_) {
+    if (ships_.size() == 1 && entry_pair.first == stand_on_target_ &&
+      std::chrono::steady_clock::now() - policy_received_ < std::chrono::seconds(1))
+    {
+      continue;
+    }
     const auto & entry = entry_pair.second;
 
     geometry_msgs::msg::PointStamped ts_in, ts_cf;
@@ -227,7 +254,9 @@ void TSProjectionLayer::updateCosts(
 
 void TSProjectionLayer::reset()
 {
+  std::lock_guard<std::mutex> lock(mutex_);
   ships_.clear();
+  stand_on_target_.clear();
 }
 
 bool TSProjectionLayer::isClearable()

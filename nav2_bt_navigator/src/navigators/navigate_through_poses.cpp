@@ -29,6 +29,10 @@ NavigateThroughPosesNavigator::configure(
 {
   start_time_ = rclcpp::Time(0);
   auto node = parent_node.lock();
+  if (!node->has_parameter("require_managed_execution")) {
+    node->declare_parameter("require_managed_execution", false);
+  }
+  require_managed_execution_ = node->get_parameter("require_managed_execution").as_bool();
 
   if (!node->has_parameter("goals_blackboard_id")) {
     node->declare_parameter("goals_blackboard_id", std::string("goals"));
@@ -72,6 +76,10 @@ NavigateThroughPosesNavigator::getDefaultBTFilepath(
 bool
 NavigateThroughPosesNavigator::goalReceived(ActionT::Goal::ConstSharedPtr goal)
 {
+  if (require_managed_execution_ && goal->usv_execution_id.empty()) {
+    RCLCPP_ERROR(logger_, "Managed navigation requires an execution identity");
+    return false;
+  }
   auto bt_xml_filename = goal->behavior_tree;
 
   if (!bt_action_server_->loadBehaviorTree(bt_xml_filename)) {
@@ -176,6 +184,10 @@ NavigateThroughPosesNavigator::onLoop()
 void
 NavigateThroughPosesNavigator::onPreempt(ActionT::Goal::ConstSharedPtr goal)
 {
+  if (require_managed_execution_) {
+    bt_action_server_->terminatePendingGoal();
+    return;
+  }
   RCLCPP_INFO(logger_, "Received goal preemption request");
 
   if (goal->behavior_tree == bt_action_server_->getCurrentBTFilename() ||
@@ -211,6 +223,13 @@ NavigateThroughPosesNavigator::initializeGoalPoses(ActionT::Goal::ConstSharedPtr
   start_time_ = clock_->now();
   auto blackboard = bt_action_server_->getBlackboard();
   blackboard->set<int>("number_recoveries", 0);  // NOLINT
+  blackboard->set<std::string>("usv_execution_id", goal->usv_execution_id);
+  blackboard->set<std::string>("usv_attempt_id", "");
+  blackboard->set<std::string>("usv_boot_id", "");
+  blackboard->set<uint64_t>("usv_epoch", 0);
+  blackboard->set<uint32_t>("usv_goal_end_index", goal->usv_start_index + goal->poses.size());
+  blackboard->set<std::string>("usv_global_frame", feedback_utils_.global_frame);
+  blackboard->set<std::string>("usv_robot_frame", feedback_utils_.robot_frame);
 
   // Update the goal pose on the blackboard
   blackboard->set<Goals>(goals_blackboard_id_, goal->poses);

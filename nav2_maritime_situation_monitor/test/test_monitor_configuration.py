@@ -498,7 +498,7 @@ def _message_declarations(path):
     ]
 
 
-def test_situation_report_interface_fields_and_constants_are_unchanged():
+def test_situation_report_preserves_constants_and_adds_current_separation():
     assert _message_declarations(MESSAGE_ROOT / 'SituationReport.msg') == [
         'uint8 RISK_SAFE=0',
         'uint8 RISK_INFO=1',
@@ -513,8 +513,14 @@ def test_situation_report_interface_fields_and_constants_are_unchanged():
         'bool cpa_valid',
         'float64 dcpa',
         'float64 tcpa',
+        'float64 current_range',
         'uint8 encounter_type',
         'uint8 risk_level',
+    ]
+    assert _message_declarations(MESSAGE_ROOT / 'SituationReportArray.msg') == [
+        'std_msgs/Header header',
+        'bool observations_valid',
+        'SituationReport[] targets',
     ]
 
 

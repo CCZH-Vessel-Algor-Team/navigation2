@@ -29,6 +29,10 @@ NavigateToPoseNavigator::configure(
 {
   start_time_ = rclcpp::Time(0);
   auto node = parent_node.lock();
+  if (!node->has_parameter("require_managed_execution")) {
+    node->declare_parameter("require_managed_execution", false);
+  }
+  require_managed_execution_ = node->get_parameter("require_managed_execution").as_bool();
 
   if (!node->has_parameter("goal_blackboard_id")) {
     node->declare_parameter("goal_blackboard_id", std::string("goal"));
@@ -86,6 +90,10 @@ NavigateToPoseNavigator::cleanup()
 bool
 NavigateToPoseNavigator::goalReceived(ActionT::Goal::ConstSharedPtr goal)
 {
+  if (require_managed_execution_ && goal->usv_execution_id.empty()) {
+    RCLCPP_ERROR(logger_, "Managed navigation requires an execution identity");
+    return false;
+  }
   auto bt_xml_filename = goal->behavior_tree;
 
   if (!bt_action_server_->loadBehaviorTree(bt_xml_filename)) {
@@ -179,6 +187,10 @@ NavigateToPoseNavigator::onLoop()
 void
 NavigateToPoseNavigator::onPreempt(ActionT::Goal::ConstSharedPtr goal)
 {
+  if (require_managed_execution_) {
+    bt_action_server_->terminatePendingGoal();
+    return;
+  }
   RCLCPP_INFO(logger_, "Received goal preemption request");
 
   if (goal->behavior_tree == bt_action_server_->getCurrentBTFilename() ||
@@ -219,6 +231,10 @@ NavigateToPoseNavigator::initializeGoalPose(ActionT::Goal::ConstSharedPtr goal)
   start_time_ = clock_->now();
   auto blackboard = bt_action_server_->getBlackboard();
   blackboard->set<int>("number_recoveries", 0);  // NOLINT
+  blackboard->set<std::string>("usv_execution_id", goal->usv_execution_id);
+  blackboard->set<std::string>("usv_attempt_id", "");
+  blackboard->set<std::string>("usv_boot_id", "");
+  blackboard->set<uint64_t>("usv_epoch", 0);
 
   // Update the goal pose on the blackboard
   blackboard->set<geometry_msgs::msg::PoseStamped>(goal_blackboard_id_, goal->pose);

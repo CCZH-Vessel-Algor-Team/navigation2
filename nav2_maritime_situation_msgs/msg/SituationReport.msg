@@ -22,6 +22,8 @@ float64 dcpa
 # Time from the array header's evaluation time to CPA, in seconds.
 # Negative values indicate that CPA is in the past.
 float64 tcpa
+# Current separation at the array evaluation time, NOT distance at past CPA.
+float64 current_range
 # Must contain one of the ENCOUNTER_* constants defined above.
 uint8 encounter_type
 # Must contain one of the RISK_* constants defined above.

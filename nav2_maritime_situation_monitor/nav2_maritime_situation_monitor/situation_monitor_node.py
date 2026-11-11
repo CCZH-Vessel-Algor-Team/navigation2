@@ -718,9 +718,13 @@ class MaritimeSituationMonitor(Node):
             report.cpa_valid = result.cpa_valid
             report.dcpa = result.dcpa
             report.tcpa = result.tcpa
+            report.current_range = (
+                targets_by_id[result.target_id].motion.position - ownship.position
+            ).norm()
             report.encounter_type = int(result.encounter)
             report.risk_level = int(result.risk)
             output.targets.append(report)
+        output.observations_valid = len(results) == len(target_list.ships)
         self._publisher.publish(output)
         if self._enable_markers and self._marker_publisher is not None:
             self._publish_markers(now, ownship, targets_by_id, results)

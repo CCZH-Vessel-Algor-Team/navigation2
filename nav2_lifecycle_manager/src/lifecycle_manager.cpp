@@ -44,6 +44,10 @@ LifecycleManager::LifecycleManager(const rclcpp::NodeOptions & options)
   declare_parameter("bond_timeout", 4.0);
   declare_parameter("bond_respawn_max_duration", 10.0);
   declare_parameter("attempt_respawn_reconnection", true);
+  declare_parameter("transition_timeout", 10);
+  if (get_parameter("transition_timeout").as_int() <= 0) {
+    throw std::invalid_argument("transition_timeout must be positive seconds");
+  }
 
   registerRclPreshutdownCallback();
 
@@ -213,8 +217,16 @@ LifecycleManager::changeStateForNode(const std::string & node_name, std::uint8_t
 {
   message(transition_label_map_[transition] + node_name);
 
-  if (!node_map_[node_name]->change_state(transition) ||
-    !(node_map_[node_name]->get_state() == transition_state_map_[transition]))
+  try {
+    node_map_[node_name]->change_state(transition,
+      std::chrono::seconds(get_parameter("transition_timeout").as_int()));
+  } catch (const std::runtime_error & error) {
+    // A dropped response does not prove that configuration failed, nor that it
+    // succeeded. Confirm the target via GetState; never replay it blindly.
+    RCLCPP_WARN(get_logger(), "Transition response uncertain for %s: %s. Confirming actual state.",
+      node_name.c_str(), error.what());
+  }
+  if (node_map_[node_name]->get_state() != transition_state_map_[transition])
   {
     RCLCPP_ERROR(get_logger(), "Failed to change state for node: %s", node_name.c_str());
     return false;
