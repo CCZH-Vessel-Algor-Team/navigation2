@@ -13,6 +13,7 @@
   <exec_depend>marine_sensor_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend><exec_depend>tf2_ros_py</exec_depend>
   <exec_depend>mavros_msgs</exec_depend><exec_depend>robot_localization</exec_depend>
+  <exec_depend>cc_msgs</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>action_msgs</exec_depend>
@@ -20,5 +21,6 @@
   <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>launch_ros</exec_depend><exec_depend>ament_index_python</exec_depend>
   <test_depend>python3-pytest</test_depend>
+  <test_depend>rosgraph_msgs</test_depend>
   <export><build_type>ament_python</build_type></export>
 </package>

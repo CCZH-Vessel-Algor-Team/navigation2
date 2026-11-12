@@ -84,6 +84,7 @@ private:
   QLabel * response_;
   QLabel * frame_label_;
   QLabel * diagnostic_label_;
+  QLabel * test_source_label_;
   QTabWidget * tabs_;
   QWidget * tests_page_;
   QTimer * timer_;
@@ -94,6 +95,7 @@ private:
   QString namespace_{"usv_1"};
   QString frame_{"map"};
   bool simulation_tests_{false};
+  bool simulation_authority_{false};
   int base_width_{0}, base_height_{0};
   bool have_state_{false};
   bool have_gate_{false};

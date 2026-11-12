@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QGroupBox>
+#include <QFontMetrics>
 #include <QTest>
 #include <functional>
 #include <cmath>
@@ -73,6 +74,7 @@ protected:
     rviz_common::Config config;
     config.mapSetValue("Namespace", QString::fromStdString(ns));
     config.mapSetValue("Global Frame", "map"); config.mapSetValue("Simulation Tests", true);
+    config.mapSetValue("Simulation Authority", true);
     panel->load(config); panel->resize(550, 1000); panel->show();
     ASSERT_TRUE(waitFor([this]() {return widget<QPushButton>("pause_task")->isEnabled();}));
   }
@@ -192,6 +194,54 @@ TEST_F(PanelContract, SimulationServicesAndStaleBootFencing)
   EXPECT_EQ(requests.back().expected_boot_id, "new-boot"); EXPECT_EQ(requests.back().expected_revision, 1u);
   rviz_common::Config config; panel->save(config);
   QString saved; EXPECT_TRUE(config.mapGetString("Namespace", &saved)); EXPECT_EQ(saved.toStdString(), ns);
+}
+
+TEST_F(PanelContract, RealFcuKeepsTestPageAndFaultButtonsButCannotFakeAuthority)
+{
+  rviz_common::Config config;
+  config.mapSetValue("Namespace", QString::fromStdString(ns));
+  config.mapSetValue("Simulation Tests", true);
+  config.mapSetValue("Simulation Authority", false);
+  panel->load(config);
+  ASSERT_TRUE(waitFor([&]() {return widget<QPushButton>("test_maritime_wait_on")->isEnabled();}));
+  EXPECT_FALSE(widget<QPushButton>("test_authority_on")->isEnabled());
+  EXPECT_FALSE(widget<QPushButton>("test_authority_off")->isEnabled());
+  EXPECT_TRUE(widget<QPushButton>("test_authority_on")->toolTip().contains("真实飞控"));
+  auto tabs = widget<QTabWidget>("task_tabs");
+  bool visible = false;
+  for (int i=0; i<tabs->count(); ++i) {
+    if (tabs->tabText(i) == "测试") {visible = tabs->isTabVisible(i);}
+  }
+  EXPECT_TRUE(visible);
+  // Even if the UI button were externally enabled, the callback must refuse it.
+  auto authority = widget<QPushButton>("test_authority_on");
+  authority->setEnabled(true); authority->click();
+  QTest::qWait(100); QCoreApplication::processEvents();
+  EXPECT_TRUE(injections.empty());
+  click("test_maritime_wait_on");
+  ASSERT_TRUE(waitFor([&]() {return injections.size() == 1;}));
+  EXPECT_EQ(injections.front().first,1u);
+  panel->save(config);
+  bool saved = true; ASSERT_TRUE(config.mapGetBool("Simulation Authority", &saved)); EXPECT_FALSE(saved);
+}
+
+TEST_F(PanelContract, DisabledTestControlsRemainVisibleAndChineseButtonGlyphsAreAvailable)
+{
+  rviz_common::Config config;
+  config.mapSetValue("Namespace", QString::fromStdString(ns));
+  config.mapSetValue("Simulation Tests", false);
+  panel->load(config);
+  ASSERT_TRUE(waitFor([&]() {return !widget<QPushButton>("test_emergency_on")->isEnabled();}));
+  auto tabs = widget<QTabWidget>("task_tabs");
+  for (int i=0; i<tabs->count(); ++i) {
+    if (tabs->tabText(i) == "测试") {EXPECT_TRUE(tabs->isTabVisible(i));}
+  }
+  for (auto button : panel->findChildren<QPushButton *>()) {
+    EXPECT_FALSE(button->text().isEmpty());
+    EXPECT_TRUE(QFontMetrics(button->font()).inFontUcs4(0x6682))
+      << "Chinese glyph missing; install fonts-noto-cjk in the RViz container";
+  }
+  EXPECT_DOUBLE_EQ(panel->font().pointSizeF(), QApplication::font().pointSizeF());
 }
 
 TEST_F(PanelContract, HoldAnchorSourceSelectsManualMapPointOrCurrentPosition)

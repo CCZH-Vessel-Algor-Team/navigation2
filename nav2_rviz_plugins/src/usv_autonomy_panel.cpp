@@ -4,6 +4,7 @@
 #include <string>
 #include <utility>
 #include <QFormLayout>
+#include <QFontDatabase>
 #include <QGridLayout>
 #include <QDockWidget>
 #include <QMainWindow>
@@ -48,6 +49,17 @@ QDoubleSpinBox * UsvAutonomyPanel::number(const QString & name, double value, do
 
 UsvAutonomyPanel::UsvAutonomyPanel(QWidget * parent) : Panel(parent)
 {
+  // Container images without a CJK font render Chinese labels as empty boxes.
+  // Prefer an installed CJK family locally; preserve RViz's font size and DPI.
+  const auto families = QFontDatabase().families();
+  for (const auto & family : QStringList{"Noto Sans CJK SC", "WenQuanYi Micro Hei"}) {
+    if (families.contains(family)) {
+      auto readable = font();
+      readable.setFamily(family);
+      setFont(readable);
+      break;
+    }
+  }
   // Construct controls once, then place infrequent controls in separate tabs.
   // No change to the original RViz dock geometry is required.
   auto contents = new QWidget;
@@ -203,6 +215,10 @@ UsvAutonomyPanel::UsvAutonomyPanel(QWidget * parent) : Panel(parent)
   auto test_group = new QGroupBox("CCS 仿真功能测试");
   auto tests_layout = new QVBoxLayout(test_group);
   tests_layout->setSpacing(2);
+  test_source_label_ = new QLabel;
+  test_source_label_->setObjectName("test_authority_source");
+  test_source_label_->setWordWrap(true);
+  tests_layout->addWidget(test_source_label_);
   const std::array<QString, 8> labels = {"仿真自主权", "仿真人工接管", "触发海事等待", "解除测试等待",
     "触发急停输入", "解除急停输入", "仿真定位失效", "恢复仿真定位"};
   for (size_t i = 0; i < kTests.size(); ++i) {
@@ -523,7 +539,8 @@ void UsvAutonomyPanel::resetSafety()
 void UsvAutonomyPanel::test(size_t index, bool value)
 {
   if (namespace_edit_->text().trimmed() != namespace_) {return;}
-  if (!simulation_tests_ || pending_ != Pending::NONE || !tests_[index]->service_is_ready()) {return;}
+  if (!simulation_tests_ || (index == 0 && !simulation_authority_) ||
+    pending_ != Pending::NONE || !tests_[index]->service_is_ready()) {return;}
   auto request = std::make_shared<Test::Request>(); request->data = value;
   auto future = tests_[index]->async_send_request(request);
   request_id_ = future.request_id; test_future_ = future.share(); pending_test_ = index;
@@ -617,10 +634,21 @@ void UsvAutonomyPanel::render()
     widget->setEnabled(enabled);
   }
   reset_button_->setEnabled(matching && reset_ && reset_->service_is_ready() && pending_ == Pending::NONE);
-  tabs_->setTabVisible(tabs_->indexOf(tests_page_), simulation_tests_);
+  // Keep the original test controls discoverable even when unavailable. Disabled
+  // authority buttons must never synthesize authority while observing a real FCU.
+  tabs_->setTabVisible(tabs_->indexOf(tests_page_), true);
+  test_source_label_->setText(!simulation_tests_ ? "仿真故障注入未启用；测试按钮不可用。" :
+    simulation_authority_ ? "纯仿真：允许模拟控制权与故障注入。" :
+    "真实飞控独占控制权；模拟自主权/人工接管禁用，其余仅注入仿真故障。");
   response_->setToolTip(response_->text());
   for (size_t i = 0; i < test_buttons_.size(); ++i) {
-    test_buttons_[i]->setEnabled(matching && simulation_tests_ && tests_[i/2] && tests_[i/2]->service_is_ready() && pending_ == Pending::NONE);
+    const bool authority_allowed = i >= 2 || simulation_authority_;
+    test_buttons_[i]->setEnabled(matching && simulation_tests_ && authority_allowed &&
+      tests_[i/2] && tests_[i/2]->service_is_ready() && pending_ == Pending::NONE);
+    test_buttons_[i]->setToolTip(!authority_allowed ?
+      "真实飞控控制权只能从实时状态观察，不能通过此按钮伪造。请使用遥控器实际接管。" :
+      !simulation_tests_ ? "启动时设置 enable_autonomy_test_controls:=true 以启用仿真故障注入。" :
+      "仅注入仿真测试输入；完成以任务/安全状态反馈为准，不代表真实飞控已切换模式。");
   }
 }
 
@@ -631,6 +659,8 @@ void UsvAutonomyPanel::load(const rviz_common::Config & config)
   config.mapGetString("Namespace", &selected);
   config.mapGetString("Global Frame", &frame_);
   config.mapGetBool("Simulation Tests", &simulation_tests_);
+  simulation_authority_ = false;
+  config.mapGetBool("Simulation Authority", &simulation_authority_);
   config.mapGetInt("Base Window Width", &base_width_);
   config.mapGetInt("Base Window Height", &base_height_);
   namespace_edit_->setText(selected);
@@ -643,6 +673,7 @@ void UsvAutonomyPanel::save(rviz_common::Config config) const
   config.mapSetValue("Namespace", namespace_);
   config.mapSetValue("Global Frame", frame_);
   config.mapSetValue("Simulation Tests", simulation_tests_);
+  config.mapSetValue("Simulation Authority", simulation_authority_);
   if (auto main = qobject_cast<QMainWindow *>(window())) {
     config.mapSetValue("Base Window Width", main->width());
     config.mapSetValue("Base Window Height", main->height());

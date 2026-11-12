@@ -15,21 +15,29 @@ class SimulationControls(Node):
             descriptor=ParameterDescriptor(read_only=True)).value
         if not enabled:
             raise ValueError('simulation_controls requires explicit simulation_mode=true')
-        self.flags = dict(authority=False, maritime_wait=False, emergency=False,
-                          localization_failure=False)
-        self.authority_pub = self.create_publisher(ControlAuthorityState, 'control/authority', 1)
+        self.simulate_authority = self.declare_parameter('simulate_authority', False,
+            descriptor=ParameterDescriptor(read_only=True)).value
+        self.flags = dict(maritime_wait=False, emergency=False, localization_failure=False)
+        self.authority_pub = None
+        if self.simulate_authority:
+            self.flags['authority'] = False
+            self.authority_pub = self.create_publisher(ControlAuthorityState, 'control/authority', 1)
         self.test_publishers = {
             'maritime_wait': self.create_publisher(Bool, 'autonomy/test_maritime_wait', 1),
-            'emergency': self.create_publisher(Bool, 'safety/estop', 1),
+            'emergency': self.create_publisher(Bool, 'autonomy/test_emergency', 1),
             'localization_failure': self.create_publisher(Bool, 'autonomy/test_localization_failure', 1),
         }
         for key in self.flags:
             self.create_service(SetBool, 'autonomy/test/' + key, self.handler(key))
-        self.create_service(SetBool, 'control/request_manual', self.request_manual)
+        if self.simulate_authority:
+            self.create_service(SetBool, 'control/request_manual', self.request_manual)
         self.create_timer(.1, self.publish, clock=Clock(clock_type=ClockType.STEADY_TIME))
 
     def handler(self, key):
         def callback(request, response):
+            if key not in self.flags:
+                response.success, response.message = False, 'simulated authority is disabled; observe real FCU'
+                return response
             self.flags[key] = request.data
             self.publish()
             response.success = True
@@ -38,6 +46,9 @@ class SimulationControls(Node):
         return callback
 
     def request_manual(self, request, response):
+        if not self.simulate_authority:
+            response.success, response.message = False, 'real FCU authority cannot be changed by simulation controls'
+            return response
         if not request.data:
             response.success, response.message = False, 'this endpoint only requests manual takeover'
             return response
@@ -47,15 +58,16 @@ class SimulationControls(Node):
         return response
 
     def publish(self):
-        authority = ControlAuthorityState()
-        authority.header.stamp = self.get_clock().now().to_msg()
-        authority.valid = authority.connected = authority.armed = True
-        autonomous = self.flags['authority']
-        authority.authority = authority.AUTONOMOUS if autonomous else authority.EXTERNAL
-        authority.motion_allowed = autonomous
-        authority.mode = 'SIM_AUTONOMOUS' if autonomous else 'SIM_MANUAL'
-        authority.reason = 'CCS explicit simulation controls'
-        self.authority_pub.publish(authority)
+        if self.authority_pub is not None:
+            authority = ControlAuthorityState()
+            authority.header.stamp = self.get_clock().now().to_msg()
+            authority.valid = authority.connected = authority.armed = True
+            autonomous = self.flags['authority']
+            authority.authority = authority.AUTONOMOUS if autonomous else authority.EXTERNAL
+            authority.motion_allowed = autonomous
+            authority.mode = 'SIM_AUTONOMOUS' if autonomous else 'SIM_MANUAL'
+            authority.reason = 'CCS explicit simulation controls'
+            self.authority_pub.publish(authority)
         for key, publisher in self.test_publishers.items():
             publisher.publish(Bool(data=self.flags[key]))
 

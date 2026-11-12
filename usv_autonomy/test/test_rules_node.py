@@ -15,6 +15,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.task import Future
 from ament_index_python.packages import get_package_prefix
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Bool
 from usv_interfaces.msg import ExecutionEvidence, MaritimeRuleDecision, GateState, AutonomyState
 from usv_interfaces.srv import ResetSafetyLatch
 from usv_interfaces.srv import ResetMaritimeEvent
@@ -32,6 +33,7 @@ def test_missing_target_takeover_and_public_reset_with_real_task_tree(tmp_path):
         '-p', 'database:=' + str(tmp_path / 'tasks.db'),
         '-p', 'rules_checkpoint:=' + str(checkpoint),
         '-p', 'missing_target_timeout:=2.0', '-p', 'simulation_mode:=true',
+        '-p', 'simulate_authority:=true',
         '-p', 'left_crossing_stand_on:=true', '-p', 'require_radar:=false',
         '-p', 'emergency_clear_time:=0.0'])
     rules, mission, gate, controls, peer = RulesNode(), Mission(), MotionGate(), SimulationControls(), Node('peer')
@@ -44,6 +46,7 @@ def test_missing_target_takeover_and_public_reset_with_real_task_tree(tmp_path):
     now = [0.]
     rules.rules.clock = lambda: now[0]
     odom_pub = peer.create_publisher(Odometry, 'odom', 1)
+    estop_pub = peer.create_publisher(Bool, 'safety/estop', 1)
     producer_pub = peer.create_publisher(ExecutionEvidence, 'autonomy/producer', 1)
     def inputs():
         odom = Odometry()
@@ -115,12 +118,12 @@ def test_missing_target_takeover_and_public_reset_with_real_task_tree(tmp_path):
         mission.manual_modes = ['SIM_MANUAL']
         until(lambda: mission.manual_authority_time > 0)
         # An actual emergency cannot be cleared through a maritime reset.
-        controls.flags['emergency'] = True
+        estop_pub.publish(Bool(data=True))
         until(lambda: gate.latched and gate.estop)
         future = reset.call_async(ResetSafetyLatch.Request(confirmed=True))
         until(future.done)
         assert not future.result().accepted and rules.rules.event_id == event
-        controls.flags['emergency'] = False
+        estop_pub.publish(Bool(data=False))
         until(lambda: not gate.estop and gate.clear_since is not None)
         future = reset.call_async(ResetSafetyLatch.Request(confirmed=True))
         until(future.done)

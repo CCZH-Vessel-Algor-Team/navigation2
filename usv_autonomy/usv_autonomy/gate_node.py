@@ -64,6 +64,7 @@ class MotionGate(Node):
         self.previous_safety = None
         self.regular_constraint = (False, 0., float('-inf'))
         self.test_maritime_wait = False
+        self.test_emergency = False
         self.stand_on_enabled = param('left_crossing_stand_on', False)
         self.maritime_time = float('-inf')
         self.maritime_event = ''
@@ -74,6 +75,8 @@ class MotionGate(Node):
         if self.declare_parameter('enable_simulation_tests', False,
                 descriptor=ParameterDescriptor(read_only=True)).value:
             self.create_subscription(Bool, 'autonomy/test_maritime_wait', self.test_wait, 1)
+            self.create_subscription(Bool, 'autonomy/test_emergency',
+                                     lambda msg: setattr(self, 'test_emergency', msg.data), 1)
         self.create_subscription(ControlAuthorityState, 'control/authority', self.authority, 1)
         self.create_subscription(MotionPermit, 'autonomy/permit', self.permit, 1)
         self.create_subscription(ManagedMotion, 'autonomy/motion_raw', self.command, 1)
@@ -227,9 +230,11 @@ class MotionGate(Node):
             reasons.append('emergency_observation_invalid')
         if self.require_estop and now - self.estop_time > self.sensor_timeout:
             reasons.append('estop_input_stale')
-        emergency = self.estop or (self.require_radar and self.closest < self.stop_distance)
+        emergency = self.estop or self.test_emergency or (self.require_radar and self.closest < self.stop_distance)
         if self.estop:
             reasons.append('estop')
+        if self.test_emergency:
+            reasons.append('simulation_estop')
         if self.require_radar and self.closest < self.stop_distance:
             reasons.append('emergency_distance')
         return reasons, emergency

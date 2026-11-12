@@ -27,10 +27,12 @@ def generate_launch_description():
         ros_namespace = '/' + ns if ns else '/'
         simulated = arg('use_sim_time').lower() == 'true'
         tests = arg('simulation_test_controls').lower() == 'true'
+        simulated_authority = arg('simulation_authority').lower() == 'true'
         stand_on = arg('left_crossing_stand_on').lower() == 'true'
-        if tests and (arg('simulation_thrusters').lower() != 'true'
-                      or arg('authority_adapter').lower() == 'true'):
-            raise ValueError('simulation test controls require the simulation backend and no FCU authority adapter')
+        if tests and arg('simulation_thrusters').lower() != 'true':
+            raise ValueError('simulation fault-test controls require the simulation backend')
+        if simulated_authority and (not tests or arg('authority_adapter').lower() == 'true'):
+            raise ValueError('simulated authority requires test controls and no FCU authority adapter')
         base = ns + '/base_link' if ns else 'base_link'
         common = [arg('autonomy_params'), {'use_sim_time': simulated, 'enable_simulation_tests': tests,
                                          'left_crossing_stand_on': stand_on}]
@@ -73,10 +75,13 @@ def generate_launch_description():
                 remappings=[('/tf', 'tf'), ('/tf_static', 'tf_static')]))
         if tests:
             nodes.append(Node(package='usv_autonomy', executable='simulation_controls', namespace=ros_namespace,
-                              output='screen', parameters=[{'use_sim_time': simulated, 'simulation_mode': True}]))
+                               output='screen', parameters=[{'use_sim_time': simulated, 'simulation_mode': True,
+                                                           'simulate_authority': simulated_authority}]))
         if arg('authority_adapter').lower() == 'true':
             nodes.append(Node(package='usv_autonomy', executable='authority_adapter', namespace=ros_namespace,
-                              output='screen', parameters=common))
+                               output='screen', parameters=common + [{
+                                   'fcu_state_topic': arg('fcu_state_topic'),
+                                   'fcu_state_clock': arg('fcu_state_clock')}]))
         if arg('launch_nav2').lower() == 'true':
             params_path = arg('nav2_params')
             if not params_path:
@@ -153,8 +158,13 @@ def generate_launch_description():
         DeclareLaunchArgument('launch_nav2', default_value='true'),
         DeclareLaunchArgument('nav2_params', default_value=''),
         DeclareLaunchArgument('authority_adapter', default_value='true'),
+        DeclareLaunchArgument('fcu_state_topic', default_value='/usv1/cc/state'),
+        DeclareLaunchArgument('fcu_state_clock', default_value='system',
+                              description='Source stamp clock, independent of BT use_sim_time: system or ros'),
         DeclareLaunchArgument('simulation_thrusters', default_value='false'),
         DeclareLaunchArgument('simulation_test_controls', default_value='false'),
+        DeclareLaunchArgument('simulation_authority', default_value='false',
+                              description='Synthetic FCU authority; forbidden with the real authority adapter'),
         DeclareLaunchArgument('thruster_params', default_value=''),
         DeclareLaunchArgument('safety_points', default_value='safety/points'),
         DeclareLaunchArgument('safety_sector', default_value='safety/radar_sector'),
