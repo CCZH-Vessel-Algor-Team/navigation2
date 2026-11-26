@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -96,6 +97,8 @@ void ALOSController::configure(
     "closest_point", 1);
   plan_pub_ = node->create_publisher<nav_msgs::msg::Path>(
     "received_global_plan", 1);
+  dyn_params_handler_ = node->add_on_set_parameters_callback(
+    std::bind(&ALOSController::dynamicParametersCallback, this, std::placeholders::_1));
 }
 
 void ALOSController::cleanup()
@@ -108,6 +111,68 @@ void ALOSController::cleanup()
   previous_goal_position_.reset();
   previous_goal_frame_.clear();
   collision_checker_.reset();
+  dyn_params_handler_.reset();
+}
+
+rcl_interfaces::msg::SetParametersResult ALOSController::dynamicParametersCallback(
+  std::vector<rclcpp::Parameter> parameters)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (const auto & parameter : parameters) {
+    const auto & name = parameter.get_name();
+    if (name == plugin_name_ + ".forward_dist") {
+      const double value = parameter.as_double();
+      if (value < 1.0 || value > 80.0) {
+        result.successful = false;
+        result.reason = "forward_dist must be between 1 and 80 m";
+        return result;
+      }
+      forward_dist_ = value;
+      RCLCPP_INFO(logger_, "ALOS forward distance set to %.1f m", forward_dist_);
+    } else if (name == plugin_name_ + ".max_angle_for_motion") {
+      const double value = parameter.as_double();
+      if (value < 0.0 || value > 3.2) {
+        result.successful = false;
+        result.reason = "max_angle_for_motion must be between 0 and 3.2 rad";
+        return result;
+      }
+      max_angle_for_motion_ = value;
+      RCLCPP_INFO(logger_, "ALOS max_angle_for_motion set to %.2f rad", max_angle_for_motion_);
+    } else if (name == plugin_name_ + ".desired_linear_vel") {
+      const double value = parameter.as_double();
+      if (value <= 0.0 || value > 10.0) {
+        result.successful = false;
+        result.reason = "desired_linear_vel must be in (0, 10] m/s";
+        return result;
+      }
+      desired_linear_vel_ = value;
+      RCLCPP_INFO(logger_, "ALOS desired_linear_vel set to %.2f m/s", desired_linear_vel_);
+    } else if (name == plugin_name_ + ".gamma") {
+      gamma_ = parameter.as_double();
+      RCLCPP_INFO(logger_, "ALOS gamma set to %.6f", gamma_);
+    } else if (name == plugin_name_ + ".max_angular_vel") {
+      const double value = parameter.as_double();
+      if (value <= 0.0 || value > 5.0) {
+        result.successful = false;
+        result.reason = "max_angular_vel must be in (0, 5] rad/s";
+        return result;
+      }
+      max_angular_vel_ = value;
+      RCLCPP_INFO(logger_, "ALOS max_angular_vel set to %.2f rad/s", max_angular_vel_);
+    } else if (name == plugin_name_ + ".max_linear_accel") {
+      const double value = parameter.as_double();
+      if (value <= 0.0 || value > 5.0) {
+        result.successful = false;
+        result.reason = "max_linear_accel must be in (0, 5] m/s^2";
+        return result;
+      }
+      max_linear_accel_ = value;
+      RCLCPP_INFO(logger_, "ALOS max_linear_accel set to %.2f m/s^2", max_linear_accel_);
+    }
+  }
+  return result;
 }
 
 void ALOSController::activate()

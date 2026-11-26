@@ -1,0 +1,33 @@
+# Complete standalone TS profile with opt-in asymmetric heading damping.
+# Pass with ts_params_file; the default ts_subsystem.yaml remains unchanged.
+# Gains apply per decision request, not per second. Launch supplies clock/TF/topic wiring.
+ts_state_manager:
+  ros__parameters:
+    update_frequency: 10.0
+    track_list_timeout: 1.0
+    own_ship_state_timeout: 1.0
+    threat_tcpa_horizon: 40.0
+    threat_radius_scale: 3.0
+    os_radius: 5.0
+    global_frame: map
+
+avoidance_point_node:
+  ros__parameters:
+    snapshot_timeout: 1.0
+    max_request_position_delta: 3.0
+    avoidance_radius_scale: 1.5
+    point_extension_distance: 20.0
+    heading_smoothing_alpha: 0.5  # used only when asymmetric mode is disabled
+    smooth_initial_heading: false
+    speed_tolerance: 0.3         # existing finite-speed sampling, half-width [m/s]
+    speed_sample_count: 5
+    asymmetric_heading_smoothing: true
+    heading_alpha_increase: 1.0
+    heading_alpha_decrease: 0.15
+
+barrier_node:
+  ros__parameters:
+    snapshot_timeout: 1.0
+    max_request_position_delta: 3.0
+    closing_segment_length: 8.0
+    lateral_margin: 0.3

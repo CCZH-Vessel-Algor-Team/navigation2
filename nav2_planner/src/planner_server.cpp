@@ -585,6 +585,18 @@ void PlannerServer::isPathValid(
       }
     }
 
+    // A lawnmower folds back. The Euclidean nearest sample can sit on a later
+    // lane, and the rejoin would then be placed on that far leg. Prefer the
+    // earliest sample that is essentially as close.
+    for (unsigned int i = 0; i < closest_point_index; ++i) {
+      const float distance = nav2_util::geometry_utils::euclidean_distance(
+        current_point, request->path.poses[i].pose.position);
+      if (distance <= closest_distance + 8.0f) {
+        closest_point_index = i;
+        break;
+      }
+    }
+
     /**
      * The lethal check starts at the closest point to avoid points that have already been passed
      * and may have become occupied
@@ -612,15 +624,16 @@ void PlannerServer::isPathValid(
             position.x, position.y, theta, footprint));
       }
 
-      if (use_radius &&
+      const bool blocked = use_radius ?
         (cost == nav2_costmap_2d::LETHAL_OBSTACLE ||
-        cost == nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE))
-      {
+        cost == nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) :
+        cost == nav2_costmap_2d::LETHAL_OBSTACLE;
+      if (blocked) {
+        // Keep every blocked sample. Callers place the rejoin past the
+        // farthest one; stopping at the first leaves the goal on the
+        // straight line in front of the obstacle.
         response->is_valid = false;
-        break;
-      } else if (cost == nav2_costmap_2d::LETHAL_OBSTACLE) {
-        response->is_valid = false;
-        break;
+        response->invalid_pose_indices.push_back(static_cast<int32_t>(i));
       }
     }
   }

@@ -13,6 +13,11 @@ install(
 )
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_ts_parameter_contract test/test_ts_parameter_contract.py TIMEOUT 90)
+  ament_add_pytest_test(test_ts_decisions test/test_ts_decisions.py TIMEOUT 120)
+  ament_add_pytest_test(test_heading_smoothing test/test_heading_smoothing.py TIMEOUT 90)
+  ament_add_pytest_test(test_speed_sampling test/test_speed_sampling.py TIMEOUT 90)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)

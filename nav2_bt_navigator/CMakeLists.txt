@@ -53,6 +53,7 @@ add_library(${library_name} SHARED
   src/bt_navigator.cpp
   src/navigators/navigate_to_pose.cpp
   src/navigators/navigate_through_poses.cpp
+  src/navigators/follow_reference_path.cpp
 )
 
 ament_target_dependencies(${executable_name}

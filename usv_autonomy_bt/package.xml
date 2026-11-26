@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>usv_autonomy_bt</name><version>0.1.0</version>
+  <description>Visible task trees and managed Nav2 recovery primitives.</description>
+  <maintainer email="dev@usv.local">USV team</maintainer><license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend><depend>behaviortree_cpp_v3</depend>
+  <depend>usv_interfaces</depend><depend>std_msgs</depend><depend>ament_index_cpp</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

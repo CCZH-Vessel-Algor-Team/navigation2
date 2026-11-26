@@ -37,11 +37,18 @@ RemovePassedGoals::RemovePassedGoals(
   tf_ = config().blackboard->get<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer");
   auto node = config().blackboard->get<rclcpp::Node::SharedPtr>("node");
   node->get_parameter("transform_tolerance", transform_tolerance_);
+  usv_group_ = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
+  usv_executor_.add_callback_group(usv_group_, node->get_node_base_interface());
+  usv_client_ = node->create_client<usv_interfaces::srv::NavigationControl>(
+    "autonomy/navigation_control", rmw_qos_profile_services_default, usv_group_);
 }
 
 inline BT::NodeStatus RemovePassedGoals::tick()
 {
   setStatus(BT::NodeStatus::RUNNING);
+  getInput("radius", viapoint_achieved_radius_);
+  getInput("global_frame", global_frame_);
+  getInput("robot_base_frame", robot_base_frame_);
 
   Goals goal_poses;
   getInput("input_goals", goal_poses);
@@ -69,6 +76,29 @@ inline BT::NodeStatus RemovePassedGoals::tick()
       break;
     }
 
+    std::string execution;
+    config().blackboard->get<std::string>("usv_execution_id", execution);
+    if (!execution.empty()) {
+      using Control = usv_interfaces::srv::NavigationControl;
+      auto request = std::make_shared<Control::Request>();
+      request->operation = "passed";
+      request->execution_id = execution;
+      config().blackboard->get<std::string>("usv_attempt_id", request->attempt_id);
+      config().blackboard->get<uint64_t>("usv_epoch", request->epoch);
+      uint32_t end_index = 0;
+      config().blackboard->get<uint32_t>("usv_goal_end_index", end_index);
+      request->key = std::to_string(end_index - goal_poses.size());
+      auto future = usv_client_->async_send_request(request);
+      auto timeout = config().blackboard->get<std::chrono::milliseconds>("server_timeout");
+      if (usv_executor_.spin_until_future_complete(future, timeout) != rclcpp::FutureReturnCode::SUCCESS)
+      {return BT::NodeStatus::FAILURE;}
+      auto response = future.get();
+      if (response->status == Control::Response::RUNNING) {
+        setOutput("output_goals", goal_poses);
+        return BT::NodeStatus::SUCCESS;
+      }
+      if (response->status != Control::Response::SUCCESS) {return BT::NodeStatus::FAILURE;}
+    }
     goal_poses.erase(goal_poses.begin());
   }
 

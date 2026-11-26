@@ -18,16 +18,27 @@
 #include <memory>
 #include <string>
 #include <chrono>
+#include <random>
+#include <iomanip>
+#include <sstream>
+#include <type_traits>
 
 #include "behaviortree_cpp_v3/action_node.h"
 #include "nav2_util/node_utils.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "nav2_behavior_tree/bt_conversions.hpp"
+#include "usv_interfaces/srv/navigation_control.hpp"
 
 namespace nav2_behavior_tree
 {
 
 using namespace std::chrono_literals;  // NOLINT
+
+template<typename T, typename = void>
+struct UsvRetryable {static bool get(const T &) {return false;}};
+template<typename T>
+struct UsvRetryable<T, std::void_t<decltype(std::declval<T>().usv_retryable)>>
+{static bool get(const T & value) {return value.usv_retryable;}};
 
 /**
  * @brief Abstract class representing an action based BT node
@@ -76,6 +87,8 @@ public:
       action_name_ = remapped_action_name;
     }
     createActionClient(action_name_);
+    usv_client_ = node_->create_client<usv_interfaces::srv::NavigationControl>(
+      "autonomy/navigation_control", rmw_qos_profile_services_default, callback_group_);
 
     // Give the derive class a chance to do any initialization
     RCLCPP_DEBUG(node_->get_logger(), "\"%s\" BtActionNode initialized", xml_tag_name.c_str());
@@ -191,24 +204,24 @@ public:
    */
   BT::NodeStatus tick() override
   {
-    // first step to be done only at the beginning of the Action
-    if (status() == BT::NodeStatus::IDLE) {
-      // setting the status to RUNNING to notify the BT Loggers (if any)
-      setStatus(BT::NodeStatus::RUNNING);
-
-      // reset the flag to send the goal or not, allowing the user the option to set it in on_tick
-      should_send_goal_ = true;
-
-      // user defined callback, may modify "should_send_goal_".
-      on_tick();
-
-      if (!should_send_goal_) {
-        return BT::NodeStatus::FAILURE;
-      }
-      send_new_goal();
-    }
-
     try {
+      // first step to be done only at the beginning of the Action
+      if (status() == BT::NodeStatus::IDLE) {
+        // setting the status to RUNNING to notify the BT Loggers (if any)
+        setStatus(BT::NodeStatus::RUNNING);
+
+        // reset the flag to send the goal or not, allowing the user the option to set it in on_tick
+        should_send_goal_ = true;
+
+        // user defined callback, may modify "should_send_goal_".
+        on_tick();
+
+        if (!should_send_goal_) {
+          return BT::NodeStatus::FAILURE;
+        }
+        send_new_goal();
+      }
+
       // if new goal was sent and action server has not yet responded
       // check the future goal handle
       if (future_goal_handle_) {
@@ -267,6 +280,20 @@ public:
         }
       }
     } catch (const std::runtime_error & e) {
+      if (e.what() == std::string("managed navigation registration timed out") ||
+        e.what() == std::string("managed navigation registration unavailable or refused"))
+      {
+        // No Goal was sent for this registration. Freeze the whole attempt,
+        // including any FollowPath still running during a path replacement.
+        // Return FAILURE to RecoveryNode instead of aborting the outer tree.
+        // Its quiet/retry sequence still requires all actual exit evidence and
+        // charges the persisted budget. A refused registration is not retryable.
+        const bool retryable =
+          e.what() == std::string("managed navigation registration timed out");
+        stop_managed_attempt(retryable);
+        RCLCPP_WARN(node_->get_logger(), "%s for %s", e.what(), action_name_.c_str());
+        return BT::NodeStatus::FAILURE;
+      }
       if (e.what() == std::string("send_goal failed") ||
         e.what() == std::string("Goal was rejected by the action server"))
       {
@@ -285,10 +312,12 @@ public:
         break;
 
       case rclcpp_action::ResultCode::ABORTED:
+        stop_managed_attempt(UsvRetryable<typename ActionT::Result>::get(result_.result ? *result_.result : typename ActionT::Result()));
         status = on_aborted();
         break;
 
       case rclcpp_action::ResultCode::CANCELED:
+        stop_managed_attempt(false);
         status = on_cancelled();
         break;
 
@@ -306,6 +335,9 @@ public:
    */
   void halt() override
   {
+    // Exit reporting remains live, but no callback from this retired send may
+    // update the node after its blackboard is reused for another execution.
+    ++callback_generation_;
     if (should_cancel_goal()) {
       auto future_result = action_client_->async_get_result(goal_handle_);
       auto future_cancel = action_client_->async_cancel_goal(goal_handle_);
@@ -327,11 +359,30 @@ public:
 
       on_cancelled();
     }
-
+    goal_handle_.reset();
+    future_goal_handle_.reset();
+    feedback_.reset();
+    goal_result_available_ = false;
+    goal_updated_ = false;
     setStatus(BT::NodeStatus::IDLE);
   }
 
 protected:
+  void stop_managed_attempt(bool retryable)
+  {
+    if (action_name_ != "follow_path" && action_name_ != "compute_path_to_pose" &&
+      action_name_ != "compute_path_through_poses") {return;}
+    using Control = usv_interfaces::srv::NavigationControl;
+    auto request = std::make_shared<Control::Request>();
+    config().blackboard->get<std::string>("usv_execution_id", request->execution_id);
+    if (request->execution_id.empty()) {return;}
+    request->operation = "failure";
+    config().blackboard->get<std::string>("usv_attempt_id", request->attempt_id);
+    config().blackboard->get<uint64_t>("usv_epoch", request->epoch);
+    request->retryable = retryable;
+    auto response = usv_client_->async_send_request(request);
+    callback_group_executor_.spin_until_future_complete(response, server_timeout_);
+  }
   /**
    * @brief Function to check if current goal should be cancelled
    * @return bool True if current goal should be cancelled, false otherwise
@@ -361,30 +412,81 @@ protected:
    */
   void send_new_goal()
   {
+    const auto generation = ++callback_generation_;
     goal_result_available_ = false;
-    auto send_goal_options = typename rclcpp_action::Client<ActionT>::SendGoalOptions();
-    send_goal_options.result_callback =
-      [this](const typename rclcpp_action::ClientGoalHandle<ActionT>::WrappedResult & result) {
-        if (future_goal_handle_) {
-          RCLCPP_DEBUG(
-            node_->get_logger(),
-            "Goal result for %s available, but it hasn't received the goal response yet. "
-            "It's probably a goal result for the last goal request", action_name_.c_str());
-          return;
-        }
-
-        // TODO(#1652): a work around until rcl_action interface is updated
-        // if goal ids are not matched, the older goal call this callback so ignore the result
-        // if matched, it must be processed (including aborted)
-        if (this->goal_handle_->get_goal_id() == result.goal_id) {
-          goal_result_available_ = true;
-          result_ = result;
+    feedback_.reset();
+    using Control = usv_interfaces::srv::NavigationControl;
+    auto tracking = std::make_shared<Control::Request>();
+    config().blackboard->get<std::string>("usv_execution_id", tracking->execution_id);
+    const bool managed = !tracking->execution_id.empty() &&
+      (action_name_ == "follow_path" || action_name_ == "compute_path_to_pose" ||
+      action_name_ == "compute_path_through_poses");
+    if (managed) {
+      config().blackboard->get<std::string>("usv_attempt_id", tracking->attempt_id);
+      config().blackboard->get<uint64_t>("usv_epoch", tracking->epoch);
+      tracking->operation = "register";
+      tracking->key = action_name_ + ":" + std::to_string(std::random_device{}()) + ":" +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+      auto registered = usv_client_->async_send_request(tracking);
+      const auto registration_status =
+        callback_group_executor_.spin_until_future_complete(registered, server_timeout_);
+      if (registration_status != rclcpp::FutureReturnCode::SUCCESS ||
+        registered.get()->status != Control::Response::SUCCESS)
+      {
+        // This branch has NOT called async_send_goal. The registration can
+        // nevertheless have reached the coordinator before its reply timed
+        // out. Retire that exact unsent registration, even after BT halt.
+        // The coordinator remembers a tombstone if this arrives first.
+        auto unsent = std::make_shared<Control::Request>(*tracking);
+        unsent->operation = "not_sent";
+        usv_client_->async_send_request(unsent);
+        throw std::runtime_error(registration_status == rclcpp::FutureReturnCode::TIMEOUT ?
+          "managed navigation registration timed out" :
+          "managed navigation registration unavailable or refused");
+      }
+    }
+    auto report_terminal = [client = usv_client_, tracking, managed](uint8_t outcome) {
+        if (managed) {
+          auto request = std::make_shared<Control::Request>(*tracking);
+          request->operation = "terminal";
+          request->outcome = outcome;
+          client->async_send_request(request);
         }
       };
+    auto send_goal_options = typename rclcpp_action::Client<ActionT>::SendGoalOptions();
+    send_goal_options.goal_response_callback =
+      [report_terminal, client = usv_client_, tracking, managed](typename rclcpp_action::ClientGoalHandle<ActionT>::SharedPtr handle) {
+        if (!handle) {report_terminal(3);}
+        else if (managed) {
+          auto request = std::make_shared<Control::Request>(*tracking);
+          request->operation = "accepted";
+          // Humble's to_string does not pad individual bytes. GetResult needs
+          // an unambiguous UUID, including bytes below 0x10 and leading zeros.
+          std::ostringstream uuid;
+          uuid << std::hex << std::setfill('0');
+          for (const auto byte : handle->get_goal_id()) {
+            uuid << std::setw(2) << static_cast<unsigned>(byte);
+          }
+          request->goal_id = uuid.str();
+          client->async_send_request(request);
+        }
+      };
+    send_goal_options.result_callback =
+      [this, report_terminal, generation](const typename rclcpp_action::ClientGoalHandle<ActionT>::WrappedResult & result) {
+        report_terminal(result.code == rclcpp_action::ResultCode::SUCCEEDED ? 0 :
+          (result.code == rclcpp_action::ResultCode::CANCELED ? 2 : 1));
+        if (generation != callback_generation_) {return;}
+        // The send identity is fixed in this closure. This also handles a fast
+        // result arriving before tick() consumes the goal-acceptance future.
+        goal_result_available_ = true;
+        result_ = result;
+      };
     send_goal_options.feedback_callback =
-      [this](typename rclcpp_action::ClientGoalHandle<ActionT>::SharedPtr,
+      [this, generation](typename rclcpp_action::ClientGoalHandle<ActionT>::SharedPtr handle,
         const std::shared_ptr<const typename ActionT::Feedback> feedback) {
-        feedback_ = feedback;
+        if (generation == callback_generation_ && goal_handle_ && handle->get_goal_id() == goal_handle_->get_goal_id()) {
+          feedback_ = feedback;
+        }
       };
 
     future_goal_handle_ = std::make_shared<
@@ -444,6 +546,7 @@ protected:
 
   std::string action_name_;
   typename std::shared_ptr<rclcpp_action::Client<ActionT>> action_client_;
+  rclcpp::Client<usv_interfaces::srv::NavigationControl>::SharedPtr usv_client_;
 
   // All ROS2 actions have a goal and a result
   typename ActionT::Goal goal_;
@@ -474,6 +577,7 @@ protected:
   std::shared_ptr<std::shared_future<typename rclcpp_action::ClientGoalHandle<ActionT>::SharedPtr>>
   future_goal_handle_;
   rclcpp::Time time_goal_sent_;
+  uint64_t callback_generation_{0};
 
   // Can be set in on_tick or on_wait_for_result to indicate if a goal should be sent.
   bool should_send_goal_;

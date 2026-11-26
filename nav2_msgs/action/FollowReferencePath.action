@@ -1,0 +1,31 @@
+# Follow a stored reference path. The original path is not replaced by replanning.
+nav_msgs/Path reference_path
+float32 desired_speed
+uint8 POLICY_FORWARD_REJOIN=0
+uint8 POLICY_WAIT_THEN_MANUAL=1
+uint8 blockage_policy
+float32 wait_timeout_sec
+float32 cross_track_tolerance
+string behavior_tree
+---
+uint16 NONE=0
+uint16 SUCCESS=1
+uint16 MANUAL_HANDOVER=2
+uint16 FAILED=3
+uint16 CANCELED=4
+uint16 error_code
+string message
+---
+geometry_msgs/PoseStamped current_pose
+uint8 STATE_TRACKING=0
+uint8 STATE_AVOIDING=1
+uint8 STATE_WAITING=2
+uint8 STATE_MANUAL=3
+uint8 state
+int32 segment_index
+float32 along_track
+float32 cross_track_error
+float32 distance_remaining
+nav_msgs/Path execution_path
+builtin_interfaces/Duration navigation_time
+string event

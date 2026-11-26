@@ -34,6 +34,7 @@
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "nav2_util/geometry_utils.hpp"
+#include "nav2_rviz_plugins/managed_navigation.hpp"
 
 class QPushButton;
 
@@ -70,6 +71,12 @@ private Q_SLOTS:
   void onNewGoal(double x, double y, double theta, QString frame);
 
 private:
+  void renderManaged();
+  bool managed_mode_{false};
+  bool managed_accumulating_{false};
+  QString managed_namespace_;
+  std::unique_ptr<ManagedNavigation> managed_;
+  QLabel * managed_response_{nullptr};
   void loadLogFiles();
   void onCancelButtonPressed();
   void timerEvent(QTimerEvent * event) override;
@@ -204,7 +211,7 @@ public:
     SystemStatus status_nav = SystemStatus::TIMEOUT;
     SystemStatus status_loc = SystemStatus::TIMEOUT;
 
-    while (status_nav == SystemStatus::TIMEOUT) {
+    while (status_nav == SystemStatus::TIMEOUT && rclcpp::ok()) {
       if (status_nav == SystemStatus::TIMEOUT) {
         status_nav = client_nav_->is_active(std::chrono::seconds(1));
       }

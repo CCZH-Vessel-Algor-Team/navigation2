@@ -31,12 +31,16 @@ find_package(rviz_rendering REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(usv_interfaces REQUIRED)
+find_package(std_srvs REQUIRED)
 
 set(nav2_rviz_plugins_headers_to_moc
   include/nav2_rviz_plugins/goal_pose_updater.hpp
   include/nav2_rviz_plugins/goal_common.hpp
   include/nav2_rviz_plugins/goal_tool.hpp
   include/nav2_rviz_plugins/nav2_panel.hpp
+  include/nav2_rviz_plugins/usv_autonomy_panel.hpp
+  include/nav2_rviz_plugins/usv_goal_tool.hpp
   include/nav2_rviz_plugins/particle_cloud_display/flat_weighted_arrows_array.hpp
   include/nav2_rviz_plugins/particle_cloud_display/particle_cloud_display.hpp
 )
@@ -50,6 +54,9 @@ set(library_name ${PROJECT_NAME})
 add_library(${library_name} SHARED
   src/goal_tool.cpp
   src/nav2_panel.cpp
+  src/usv_autonomy_panel.cpp
+  src/usv_goal_tool.cpp
+  src/managed_navigation.cpp
   src/particle_cloud_display/flat_weighted_arrows_array.cpp
   src/particle_cloud_display/particle_cloud_display.cpp
   ${nav2_rviz_plugins_headers_to_moc}
@@ -71,6 +78,8 @@ set(dependencies
   rviz_rendering
   std_msgs
   tf2_geometry_msgs
+  usv_interfaces
+  std_srvs
 )
 
 ament_target_dependencies(${library_name}
@@ -112,6 +121,15 @@ if(BUILD_TESTING)
   ament_lint_auto_find_test_dependencies()
 endif()
 
+option(USV_PANEL_TESTING "Build the offscreen managed-task panel contract tests" OFF)
+if(USV_PANEL_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_usv_autonomy_panel test/test_usv_autonomy_panel.cpp SKIP_LINKING_MAIN_LIBRARIES)
+  target_link_libraries(test_usv_autonomy_panel ${library_name} Qt5::Test)
+  ament_target_dependencies(test_usv_autonomy_panel rclcpp usv_interfaces std_srvs pluginlib rviz_common)
+  install(TARGETS test_usv_autonomy_panel DESTINATION lib/${PROJECT_NAME})
+endif()
+
 ament_export_include_directories(include)
 ament_export_targets(${library_name} HAS_LIBRARY_TARGET)
 ament_export_dependencies(
@@ -121,6 +139,8 @@ ament_export_dependencies(
   map_msgs
   nav_msgs
   rclcpp
+  usv_interfaces
+  std_srvs
 )
 
 ament_package()

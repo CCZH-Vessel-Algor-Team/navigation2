@@ -2,9 +2,14 @@
 nav_msgs/Path path
 string controller_id
 string goal_checker_id
+string usv_boot_id
+string usv_execution_id
+string usv_attempt_id
+uint64 usv_epoch
 ---
 #result definition
 std_msgs/Empty result
+bool usv_retryable
 ---
 #feedback definition
 float32 distance_to_goal

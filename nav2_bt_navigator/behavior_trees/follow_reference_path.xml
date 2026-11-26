@@ -1,0 +1,36 @@
+<root main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <ReactiveSequence name="LineFollowRoot">
+      <LineFollowUpdate
+        reference_path="{reference_path}"
+        blockage_policy="{blockage_policy}"
+        wait_timeout_sec="{wait_timeout_sec}"
+        cross_track_tolerance="{cross_track_tolerance}"
+        line_follow_epoch="{line_follow_epoch}"
+        path="{path}"
+        segment_index="{segment_index}"
+        along_track="{along_track}"
+        cross_track="{cross_track}"
+        distance_remaining="{distance_remaining}"
+        line_state="{line_state}"
+        mission_complete="{mission_complete}"
+        manual_requested="{manual_requested}"
+        waiting="{waiting}"
+        detour_pending="{detour_pending}"
+        line_event="{line_event}"/>
+      <ReactiveFallback name="LineFollowDispatch">
+        <LineFollowFlag value="{mission_complete}"/>
+        <ReactiveSequence name="TrackReference">
+          <Inverter>
+            <LineFollowFlag value="{waiting}"/>
+          </Inverter>
+          <Inverter>
+            <LineFollowFlag value="{detour_pending}"/>
+          </Inverter>
+          <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="general_goal_checker"/>
+        </ReactiveSequence>
+        <LineFollowHold cmd_vel_topic="cmd_vel"/>
+      </ReactiveFallback>
+    </ReactiveSequence>
+  </BehaviorTree>
+</root>

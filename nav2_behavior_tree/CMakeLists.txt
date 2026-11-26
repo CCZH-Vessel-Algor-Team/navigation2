@@ -9,6 +9,7 @@ find_package(rclcpp_lifecycle REQUIRED)
 find_package(builtin_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(behaviortree_cpp_v3 REQUIRED)
@@ -17,6 +18,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(nav2_util REQUIRED)
+find_package(usv_interfaces REQUIRED)
 
 nav2_package()
 
@@ -32,6 +34,7 @@ set(dependencies
   rclcpp_lifecycle
   geometry_msgs
   sensor_msgs
+  visualization_msgs
   nav2_msgs
   nav_msgs
   behaviortree_cpp_v3
@@ -41,6 +44,7 @@ set(dependencies
   std_msgs
   std_srvs
   nav2_util
+  usv_interfaces
 )
 
 add_library(${library_name} SHARED
@@ -116,6 +120,9 @@ list(APPEND plugin_libs nav2_goal_updated_condition_bt_node)
 
 add_library(nav2_is_path_valid_condition_bt_node SHARED plugins/condition/is_path_valid_condition.cpp)
 list(APPEND plugin_libs nav2_is_path_valid_condition_bt_node)
+
+add_library(nav2_line_follow_bt_node SHARED plugins/action/line_follow_update_action.cpp)
+list(APPEND plugin_libs nav2_line_follow_bt_node)
 
 add_library(nav2_time_expired_condition_bt_node SHARED plugins/condition/time_expired_condition.cpp)
 list(APPEND plugin_libs nav2_time_expired_condition_bt_node)

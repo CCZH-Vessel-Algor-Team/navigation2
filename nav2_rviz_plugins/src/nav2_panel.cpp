@@ -19,6 +19,7 @@
 
 #include <memory>
 #include <vector>
+#include <algorithm>
 #include <utility>
 #include <chrono>
 #include <string>
@@ -43,8 +44,11 @@ Nav2Panel::Nav2Panel(QWidget * parent)
   // Create the control button and its tooltip
 
   start_reset_button_ = new QPushButton;
+  start_reset_button_->setObjectName("nav2_start_reset");
   pause_resume_button_ = new QPushButton;
+  pause_resume_button_->setObjectName("nav2_pause_resume");
   navigation_mode_button_ = new QPushButton;
+  navigation_mode_button_->setObjectName("nav2_navigation_mode");
   navigation_status_indicator_ = new QLabel;
   localization_status_indicator_ = new QLabel;
   navigation_goal_status_indicator_ = new QLabel;
@@ -284,6 +288,7 @@ Nav2Panel::Nav2Panel(QWidget * parent)
     "lifecycle_manager_localization", client_node_);
   initial_thread_ = new InitialThread(client_nav_, client_loc_);
   connect(initial_thread_, &InitialThread::finished, initial_thread_, &QObject::deleteLater);
+  connect(initial_thread_, &QObject::destroyed, this, [this]() {initial_thread_ = nullptr;});
 
   QSignalTransition * activeSignal = new QSignalTransition(
     initial_thread_,
@@ -336,7 +341,7 @@ Nav2Panel::Nav2Panel(QWidget * parent)
 
   // delay starting initial thread until state machine has started or a race occurs
   QObject::connect(&state_machine_, SIGNAL(started()), this, SLOT(startThread()));
-  state_machine_.start();
+  QTimer::singleShot(0, this, [this]() {if (!managed_mode_) {state_machine_.start();}});
 
   // Lay out the items in the panel
   QVBoxLayout * main_layout = new QVBoxLayout;
@@ -379,6 +384,7 @@ Nav2Panel::Nav2Panel(QWidget * parent)
 
 Nav2Panel::~Nav2Panel()
 {
+  if (initial_thread_ && !initial_thread_->isRunning()) {delete initial_thread_;}
 }
 
 void
@@ -407,6 +413,7 @@ Nav2Panel::onInitialize()
     "navigate_to_pose/_action/status",
     rclcpp::SystemDefaultsQoS(),
     [this](const action_msgs::msg::GoalStatusArray::SharedPtr msg) {
+      if (msg->status_list.empty()) {return;}
       navigation_goal_status_indicator_->setText(
         getGoalStatusLabel(msg->status_list.back().status));
       if (msg->status_list.back().status != action_msgs::msg::GoalStatus::STATUS_EXECUTING) {
@@ -417,6 +424,7 @@ Nav2Panel::onInitialize()
     "navigate_through_poses/_action/status",
     rclcpp::SystemDefaultsQoS(),
     [this](const action_msgs::msg::GoalStatusArray::SharedPtr msg) {
+      if (msg->status_list.empty()) {return;}
       navigation_goal_status_indicator_->setText(
         getGoalStatusLabel(msg->status_list.back().status));
       if (msg->status_list.back().status != action_msgs::msg::GoalStatus::STATUS_EXECUTING) {
@@ -428,6 +436,7 @@ Nav2Panel::onInitialize()
 void
 Nav2Panel::startThread()
 {
+  if (managed_mode_) {return;}
   // start initial thread now that state machine is started
   initial_thread_->start();
 }
@@ -435,6 +444,7 @@ Nav2Panel::startThread()
 void
 Nav2Panel::onPause()
 {
+  if (managed_) {managed_->send("pause"); return;}
   QFuture<void> futureNav =
     QtConcurrent::run(
     std::bind(
@@ -450,6 +460,7 @@ Nav2Panel::onPause()
 void
 Nav2Panel::onResume()
 {
+  if (managed_) {managed_->send("resume"); return;}
   QFuture<void> futureNav =
     QtConcurrent::run(
     std::bind(
@@ -480,6 +491,7 @@ Nav2Panel::onStartup()
 void
 Nav2Panel::onShutdown()
 {
+  if (managed_) {managed_->send("stop"); return;}
   QFuture<void> futureNav =
     QtConcurrent::run(
     std::bind(
@@ -515,6 +527,12 @@ Nav2Panel::onNewGoal(double x, double y, double theta, QString frame)
   pose.pose.position.z = 0.0;
   pose.pose.orientation = orientationAroundZAxis(theta);
 
+  if (managed_) {
+    if (managed_accumulating_) {acummulated_poses_.push_back(pose);}
+    else {managed_->send("start", {pose});}
+    updateWpNavigationMarkers();
+    return;
+  }
   if (state_machine_.configuration().contains(accumulating_)) {
     acummulated_poses_.push_back(pose);
   } else {
@@ -528,6 +546,7 @@ Nav2Panel::onNewGoal(double x, double y, double theta, QString frame)
 void
 Nav2Panel::onCancelButtonPressed()
 {
+  if (managed_) {managed_->send("stop"); return;}
   if (navigation_goal_handle_) {
     auto future_cancel = navigation_action_client_->async_cancel_goal(navigation_goal_handle_);
 
@@ -664,6 +683,7 @@ Nav2Panel::timerEvent(QTimerEvent * event)
 void
 Nav2Panel::startWaypointFollowing(std::vector<geometry_msgs::msg::PoseStamped> poses)
 {
+  if (managed_) {managed_->send("start", poses, "REQUIRED"); return;}
   auto is_action_server_ready =
     waypoint_follower_action_client_->wait_for_action_server(std::chrono::seconds(5));
   if (!is_action_server_ready) {
@@ -714,6 +734,7 @@ Nav2Panel::startWaypointFollowing(std::vector<geometry_msgs::msg::PoseStamped> p
 void
 Nav2Panel::startNavThroughPoses(std::vector<geometry_msgs::msg::PoseStamped> poses)
 {
+  if (managed_) {managed_->send("start", poses, "VIA"); return;}
   auto is_action_server_ready =
     nav_through_poses_action_client_->wait_for_action_server(std::chrono::seconds(5));
   if (!is_action_server_ready) {
@@ -766,6 +787,7 @@ Nav2Panel::startNavThroughPoses(std::vector<geometry_msgs::msg::PoseStamped> pos
 void
 Nav2Panel::startNavigation(geometry_msgs::msg::PoseStamped pose)
 {
+  if (managed_) {managed_->send("start", {pose}); return;}
   auto is_action_server_ready =
     navigation_action_client_->wait_for_action_server(std::chrono::seconds(5));
   if (!is_action_server_ready) {
@@ -813,12 +835,73 @@ void
 Nav2Panel::save(rviz_common::Config config) const
 {
   Panel::save(config);
+  config.mapSetValue("Managed Task", managed_mode_);
+  config.mapSetValue("Namespace", managed_namespace_);
 }
 
 void
 Nav2Panel::load(const rviz_common::Config & config)
 {
   Panel::load(config);
+  config.mapGetBool("Managed Task", &managed_mode_);
+  config.mapGetString("Namespace", &managed_namespace_);
+  if (!managed_mode_ || managed_) {return;}
+  state_machine_.stop();
+  managed_response_ = new QLabel;
+  managed_response_->setObjectName("nav2_managed_response");
+  managed_response_->setWordWrap(true);
+  managed_response_->setTextFormat(Qt::PlainText);
+  managed_response_->setMaximumHeight(60);
+  layout()->addWidget(managed_response_);
+  managed_ = std::make_unique<ManagedNavigation>(managed_namespace_.toStdString(), this,
+    [this]() {renderManaged();}, [this]() {
+      managed_accumulating_ = false; acummulated_poses_.clear(); updateWpNavigationMarkers();
+    });
+  connect(start_reset_button_, &QPushButton::clicked, this, [this]() {
+      if (managed_accumulating_) {
+        managed_accumulating_ = false; acummulated_poses_.clear(); updateWpNavigationMarkers(); renderManaged();
+      } else {managed_->send("stop");}
+    });
+  connect(pause_resume_button_, &QPushButton::clicked, this, [this]() {
+      if (managed_accumulating_) {managed_->send("start", acummulated_poses_, "VIA"); return;}
+      const auto & s = managed_->state();
+      const bool confirm = std::find(s.blockers.begin(), s.blockers.end(),
+        "authority_return_confirmation") != s.blockers.end();
+      managed_->send(s.user_intent == "PAUSE" || confirm || s.phase == "FAULT" ? "resume" : "pause");
+    });
+  connect(navigation_mode_button_, &QPushButton::clicked, this, [this]() {
+      if (managed_accumulating_) {managed_->send("start", acummulated_poses_, "REQUIRED");}
+      else {managed_accumulating_ = true; acummulated_poses_.clear(); renderManaged();}
+    });
+  renderManaged();
+}
+
+void Nav2Panel::renderManaged()
+{
+  if (!managed_) {return;}
+  const auto & s = managed_->state();
+  const bool ready = managed_->ready();
+  const bool active_task = !s.task_id.empty() && s.user_intent != "END";
+  navigation_status_indicator_->setText(managed_->fresh() ?
+    "Navigation (Task BT): " + QString::fromStdString(s.phase) : "Navigation (Task BT): waiting");
+  navigation_status_indicator_->setToolTip(QString::fromStdString(s.reason));
+  managed_response_->setText(managed_->message());
+  managed_response_->setToolTip(managed_->message());
+  start_reset_button_->setText(managed_accumulating_ ? "Cancel Accumulation" : "Cancel");
+  start_reset_button_->setEnabled(ready && (managed_accumulating_ || active_task));
+  if (managed_accumulating_) {
+    pause_resume_button_->setText("Start Nav Through Poses");
+    navigation_mode_button_->setText("Start Waypoint Following");
+    pause_resume_button_->setEnabled(ready && !acummulated_poses_.empty());
+    navigation_mode_button_->setEnabled(ready && !acummulated_poses_.empty());
+  } else {
+    const bool confirm = std::find(s.blockers.begin(), s.blockers.end(),
+      "authority_return_confirmation") != s.blockers.end();
+    pause_resume_button_->setText(s.user_intent == "PAUSE" || confirm || s.phase == "FAULT" ? "Resume" : "Pause");
+    pause_resume_button_->setEnabled(ready && active_task);
+    navigation_mode_button_->setText("Waypoint / Nav Through Poses Mode");
+    navigation_mode_button_->setEnabled(ready);
+  }
 }
 
 void

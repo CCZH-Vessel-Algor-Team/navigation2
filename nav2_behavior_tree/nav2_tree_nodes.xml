@@ -252,6 +252,20 @@
       <input_port name="server_timeout"> Server timeout </input_port>
     </Condition>
 
+    <Action ID="LineFollowUpdate">
+      <input_port name="reference_path">Stored reference path</input_port>
+      <output_port name="path">Execution path</output_port>
+      <output_port name="line_state">0 track, 1 avoid, 2 wait, 3 manual</output_port>
+    </Action>
+
+    <Condition ID="LineFollowFlag">
+      <input_port name="value">Blackboard flag</input_port>
+    </Condition>
+
+    <Action ID="LineFollowHold">
+      <input_port name="cmd_vel_topic">Topic that receives zero velocity</input_port>
+    </Action>
+
     <!-- ############################### CONTROL NODES ################################ -->
     <Control ID="PipelineSequence"/>
 

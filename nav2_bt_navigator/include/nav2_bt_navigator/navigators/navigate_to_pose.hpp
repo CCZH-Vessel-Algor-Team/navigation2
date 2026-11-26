@@ -120,6 +120,7 @@ protected:
   void initializeGoalPose(ActionT::Goal::ConstSharedPtr goal);
 
   rclcpp::Time start_time_;
+  bool require_managed_execution_{false};
 
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp_action::Client<ActionT>::SharedPtr self_client_;
